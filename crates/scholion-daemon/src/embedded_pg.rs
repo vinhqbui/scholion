@@ -34,6 +34,11 @@ impl EmbeddedPg {
         settings
             .configuration
             .insert("listen_addresses".into(), "127.0.0.1".into());
+        // TCP only: a distribution's Postgres puts its socket in /var/run/postgresql, which only
+        // the `postgres` user may write, and every connection here is TCP anyway.
+        settings
+            .configuration
+            .insert("unix_socket_directories".into(), "''".into());
         match install_dir {
             Some(path) => {
                 settings.installation_dir = path;
@@ -56,7 +61,14 @@ impl EmbeddedPg {
             // runs; if it does not, Postgres itself removes the stale file on start.
             let _ = pg.stop().await;
         }
-        pg.start().await.map_err(|e| failed("start", dir, e))?;
+        if let Err(e) = pg.start().await {
+            let log = dir.join("data/start.log");
+            return Err(failed(
+                "start",
+                dir,
+                format!("{e}; {}:\n{}", log.display(), tail(&log, 10)),
+            ));
+        }
         if !pg
             .database_exists(DATABASE)
             .await
@@ -85,9 +97,16 @@ impl EmbeddedPg {
 fn failed(what: &str, dir: &Path, e: impl std::fmt::Display) -> AvError {
     AvError::Store(format!(
         "embedded postgres: could not {what} {}: {e} (Postgres refuses to run as root; \
-         set AV_DATABASE_URL to use another server)",
+         AV_DATABASE_URL uses another server instead)",
         dir.display()
     ))
+}
+
+/// The last `n` lines of a log file, or nothing when it cannot be read.
+fn tail(path: &Path, n: usize) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
 /// The theseus Postgres bundle drops tzdata link entries (`UTC`, `GMT`, ...), and sqlx always
