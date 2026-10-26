@@ -3818,6 +3818,7 @@ dependencies = [
  "chrono",
  "futures",
  "globset",
+ "postgresql_embedded",
  "scholion-core",
  "scholion-index",
  "scholion-pack",
