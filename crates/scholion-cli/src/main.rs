@@ -1,5 +1,6 @@
 mod client;
 mod hook;
+mod local;
 mod runner;
 mod taskfile;
 
@@ -48,6 +49,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Start a daemon on this machine in the background (no Docker: it runs its own Postgres
+    /// unless AV_DATABASE_URL is set). Data in $AV_HOME (default ~/.scholion), workspaces in ~/ws.
+    Up,
+    /// Stop the daemon `av up` started.
+    Down,
+    /// Set up the git repository of this directory: start the daemon if needed, add the repo,
+    /// and install the Claude Code hooks and MCP server.
+    Init {
+        /// Repo name (default: the repository's directory name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Leave Claude Code's settings alone.
+        #[arg(long)]
+        no_claude: bool,
+    },
     /// Register a git repository (path as seen by the daemon).
     Repo {
         #[command(subcommand)]
@@ -706,6 +722,15 @@ fn wait_import(client: &Client, name: &str) -> Result<Value> {
 fn run(cli: Cli) -> Result<()> {
     let client = Client::new(&cli.url, cli.token.clone());
     match &cli.cmd {
+        Cmd::Up => local::up(&client, &cli.url)?,
+        Cmd::Down => local::down(&client, &cli.url)?,
+        Cmd::Init { name, no_claude } => local::init(
+            &client,
+            &cli.url,
+            cli.token.as_deref(),
+            name.as_deref(),
+            !no_claude,
+        )?,
         Cmd::Repo {
             cmd: RepoCmd::Add { name, git_source },
         } => {
