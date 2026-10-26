@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "scholion-daemon"
 path = "src/main.rs"
 
+[features]
+# Release builds: the Postgres archive is compiled into the daemon, so lite mode never downloads it.
+bundled-postgres = ["postgresql_embedded/bundled"]
+
 [dependencies]
 scholion-core.workspace = true
 scholion-index = { path = "../scholion-index" }
@@ -23,6 +27,7 @@ axum = "0.8"
 chrono.workspace = true
 futures = "0.3"
 globset = "0.4"
+postgresql_embedded = { version = "0.21", default-features = false, features = ["theseus", "tls-rustls-ring"] }
 serde.workspace = true
 serde_json.workspace = true
 similar = "2"

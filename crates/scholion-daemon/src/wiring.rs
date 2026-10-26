@@ -15,7 +15,14 @@ use crate::embed_choice::{
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub database_url: String,
+    /// `AV_DATABASE_URL`. Unset = lite mode: the daemon runs its own Postgres in `pg_dir`.
+    pub database_url: Option<String>,
+    /// `AV_PG_DIR` (default `$AV_HOME/pg`, `AV_HOME` defaulting to `~/.scholion`): data, password
+    /// and binaries of the daemon's own Postgres.
+    pub pg_dir: PathBuf,
+    /// `AV_PG_INSTALL_DIR`: an existing PostgreSQL installation (the directory holding `bin/`) for
+    /// lite mode, instead of the bundled or downloaded one.
+    pub pg_install_dir: Option<PathBuf>,
     pub store_root: PathBuf,
     pub ws_root: PathBuf,
     pub ws_host_root: PathBuf,
@@ -48,7 +55,7 @@ const DEFAULT_PG_MAX_CONNECTIONS: u32 = 16;
 pub(crate) const DEFAULT_LEASE_SECS: u64 = 1800;
 
 impl Config {
-    /// `AV_DATABASE_URL` (required), `AV_STORE_ROOT`, `AV_WS_ROOT`, `AV_WS_HOST_ROOT` (defaults to
+    /// `AV_DATABASE_URL` (unset = lite mode, see `pg_dir`), `AV_STORE_ROOT`, `AV_WS_ROOT`, `AV_WS_HOST_ROOT` (defaults to
     /// `AV_WS_ROOT`), `AV_LISTEN` (default `0.0.0.0:7420`), `AV_EMBED_API_KEY` (optional).
     ///
     /// Embedding: an `ollama` CLI with a `qwen3-embedding` model is used by default.
@@ -73,9 +80,15 @@ impl Config {
             api_key: embed_api_key.as_deref(),
             provider: provider.as_deref(),
         })?;
+        let av_home = get("AV_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(default_av_home);
         Ok(Config {
-            database_url: get("AV_DATABASE_URL")
-                .ok_or_else(|| AvError::Invalid("AV_DATABASE_URL is required".into()))?,
+            database_url: get("AV_DATABASE_URL"),
+            pg_dir: get("AV_PG_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| av_home.join("pg")),
+            pg_install_dir: get("AV_PG_INSTALL_DIR").map(PathBuf::from),
             store_root: PathBuf::from(get("AV_STORE_ROOT").unwrap_or_else(|| "./store".into())),
             ws_host_root: get("AV_WS_HOST_ROOT")
                 .map(PathBuf::from)
@@ -119,6 +132,15 @@ impl Config {
     }
 }
 
+/// `~/.scholion`, or `./.scholion` when there is no home directory.
+fn default_av_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".scholion")
+}
+
 /// `repo=url` pairs separated by whitespace.
 fn parse_backup_remotes(value: Option<&str>) -> Result<Vec<(String, String)>> {
     value
@@ -152,8 +174,9 @@ pub fn embed_authorization(api_key: Option<&str>) -> Option<String> {
     normalize_secret(api_key.map(str::to_owned)).map(|key| format!("Bearer {key}"))
 }
 
-pub async fn build_state(cfg: &Config) -> Result<AppState> {
-    let store = Arc::new(PgStore::connect_with(&cfg.database_url, cfg.pg_max_connections).await?);
+/// `database_url` is `cfg.database_url`, or the lite-mode server's when that is unset.
+pub async fn build_state(cfg: &Config, database_url: &str) -> Result<AppState> {
+    let store = Arc::new(PgStore::connect_with(database_url, cfg.pg_max_connections).await?);
     let index = Arc::new(PgIndex::new(store.pool().clone()));
     let vcs = Arc::new(JjVcs::new(cfg.store_root.clone(), cfg.ws_root.clone()));
     let state = AppState::new(

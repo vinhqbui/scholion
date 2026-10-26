@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use scholion_daemon::{
-    BACKUP_TICK, Config, EmbedChoice, backup_tick, build_state, router, start_backups, worker_tick,
+    BACKUP_TICK, Config, EmbedChoice, EmbeddedPg, backup_tick, build_state, router, start_backups,
+    worker_tick,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -23,8 +24,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::from_env()?;
     std::fs::create_dir_all(&cfg.store_root)?;
     std::fs::create_dir_all(&cfg.ws_root)?;
-    let state = build_state(&cfg).await?;
+    // Bound before lite mode touches its Postgres: a second daemon fails here instead of stopping
+    // the server the first one runs.
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
+    let (database_url, embedded) = match &cfg.database_url {
+        Some(url) => (url.clone(), None),
+        None => {
+            let pg = EmbeddedPg::start(&cfg.pg_dir, cfg.pg_install_dir.clone()).await?;
+            tracing::info!(dir = %cfg.pg_dir.display(), "lite mode: embedded postgres started");
+            (pg.url().to_owned(), Some(pg))
+        }
+    };
+    let state = build_state(&cfg, &database_url).await?;
     match &cfg.embed {
         Some(EmbedChoice::Ollama { model, base_url }) => {
             tracing::info!(%model, %base_url, "embedder: ollama");
@@ -67,14 +78,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     tracing::info!(listen = %cfg.listen, ws_host_root = %cfg.ws_host_root.display(), "scholion-daemon ready");
     let served = axum::serve(listener, router(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await;
     if let Some(task) = drain {
         task.abort();
     }
     backups.abort();
+    if let Some(pg) = embedded {
+        pg.stop().await?;
+    }
     served?;
     Ok(())
+}
+
+/// Ctrl-C, or SIGTERM (`av down`, `docker stop`).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = async {
+                match term.as_mut() {
+                    Some(t) => { t.recv().await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {}
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }
