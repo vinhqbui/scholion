@@ -117,8 +117,13 @@ pub(crate) async fn coverage(st: &AppState, task: &Task) -> Result<(bool, Vec<St
 async fn gate(st: &AppState, task: &Task, action: &str) -> Result<Vec<String>> {
     let (explained, unrecorded) = coverage(st, task).await?;
     if !explained {
+        let how = if action == "submitting" {
+            "av record ..., or in one call av submit --record \"decision: ... @ path:Symbol\""
+        } else {
+            "av record ..."
+        };
         return Err(AvError::IllegalState(format!(
-            "record a decision, attempt or note before {action} (av record ...); \
+            "record a decision, attempt or note before {action} ({how}); \
              changed symbols with no record: {}",
             if unrecorded.is_empty() {
                 "none".to_owned()
@@ -155,7 +160,8 @@ pub(crate) struct SubmitBody {
 }
 
 /// What an agent does once its task is in review. Fixed copy: agents read this verbatim.
-const NEXT_IN_REVIEW: &str = "in review: a reviewer runs av next / approves; nothing else to do";
+const NEXT_IN_REVIEW: &str =
+    "in review: a reviewer runs av review to approve or request changes; nothing else to do";
 
 /// Turns the inline records of a submit body into `RecordBody`s authored by `agent`. Errors name
 /// the offending index.
@@ -217,6 +223,8 @@ pub(crate) async fn submit(
         check_record(&st, r).await?;
     }
     let (head, changed, _) = snapshot_and_index(&st, &task).await?;
+    // the gate reads source at the task's head, which the snapshot just moved
+    let task = st.store.get_task(task.id).await?;
     if head == task.base_change || changed.is_empty() {
         return Err(AvError::IllegalState(
             "nothing to submit: no changes since the task started".into(),

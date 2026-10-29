@@ -503,6 +503,41 @@ async fn knowledge_on_code_edited_later_is_flagged_after_checkpoint() {
     assert!(line.contains("(changed since recorded)"), "{line}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn record_without_checkpoint_is_not_flagged_changed_after_submit() {
+    // MCP-only clients have no hook to checkpoint: the record itself must see the edit.
+    let e = env().await;
+    let t = start_task(&e, "Improve greeting").await;
+    edit_greeter(&e, &t);
+    let (status, body) = call(
+        &e.app,
+        "POST",
+        &format!("/v1/tasks/{}/records", id(&t)),
+        Some(
+            json!({"kind": "decision", "summary": "hello shouts with a bang", "agent": "claude",
+                    "anchors": [{"path": "app/greeter.py", "symbol": "Greeter.hello"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = submit(&e, &t).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, ctx) = call(
+        &e.app,
+        "GET",
+        &format!("/v1/tasks/{}/context?budget=3000&session=after", id(&t)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{ctx}");
+    let md = ctx["markdown"].as_str().unwrap();
+    let line = md
+        .lines()
+        .find(|l| l.contains("hello shouts with a bang"))
+        .unwrap_or_else(|| panic!("{md}"));
+    assert!(!line.contains("changed since recorded"), "{line}");
+}
+
 // ---- Plan 2b Task 3: conventions over HTTP, required ones survive tiny budgets ----
 
 #[tokio::test(flavor = "multi_thread")]
@@ -616,6 +651,10 @@ async fn submit_refused_without_decision_or_note_and_names_the_symbols() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     let msg = body["error"].as_str().unwrap();
     assert!(msg.contains("record a decision"), "{msg}");
+    assert!(
+        msg.contains("av submit --record"),
+        "names the one-call form: {msg}"
+    );
     assert!(msg.contains("Greeter.wave"), "{msg}");
     let (_, task) = call(&e.app, "GET", &format!("/v1/tasks/{}", id(&t)), None).await;
     assert_eq!(task["task"]["status"], "open");
@@ -752,6 +791,12 @@ async fn submit_says_what_comes_next() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let next = body["next"].as_str().unwrap_or_default();
     assert!(next.contains("av") && next.contains("review"), "{body}");
+    assert_eq!(
+        next,
+        "in review: a reviewer runs av review to approve or request changes; nothing else to do",
+        "{body}"
+    );
+    assert!(!next.contains("av next"), "{body}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1116,6 +1161,10 @@ async fn handoff_requires_gate_and_moves_to_handed_off() {
             .unwrap()
             .contains("record a decision"),
         "{body}"
+    );
+    assert!(
+        !body["error"].as_str().unwrap().contains("av submit"),
+        "a handoff is not told to submit: {body}"
     );
     assert_eq!(task_json(&e, &t).await["task"]["status"], "open");
 
@@ -3096,5 +3145,27 @@ async fn unrecorded_leaves_out_rust_unit_tests_inside_a_source_file() {
     let (status, body) = post(&e, &t, "checkpoint", json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let body = unrecorded(&e, &t).await;
+    assert_eq!(body["unrecorded_symbols"], json!(["add"]), "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_report_leaves_out_rust_unit_tests_without_a_checkpoint() {
+    // the gate must read source at the head the submit just snapshotted, not the stale one
+    let e = env().await;
+    let t = start_task(&e, "Rust sums").await;
+    std::fs::create_dir_all(ws_dir(&e, &t).join("src")).unwrap();
+    write_file(
+        &e,
+        &t,
+        "src/sum.rs",
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(1, 2), 3);\n}\n",
+    );
+    let (status, body) = submit_with(
+        &e,
+        &t,
+        json!([{"kind": "note", "summary": "a note on nothing in particular"}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["unrecorded_symbols"], json!(["add"]), "{body}");
 }

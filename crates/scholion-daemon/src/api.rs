@@ -413,6 +413,11 @@ async fn add_record(
     let _guard = st.lock_task(task_id(id)).await;
     let task = st.store.get_task(task_id(id)).await?;
     fence(&st, &task, &headers).await?;
+    // Clients without hooks never checkpoint: take the snapshot here, so the anchored code is
+    // hashed as it is now and not as it was at the last checkpoint.
+    if task.status == TaskStatus::Open {
+        snapshot_and_index(&st, &task).await?;
+    }
     let receipt_arg = b.receipt.clone();
     let record = write_record(&st, &task, b).await?;
     let receipt = match &receipt_arg {
