@@ -145,7 +145,8 @@ six public repositories (E1), the first pack names the files a fix touches best 
 signatures than BM25 over symbols at 4k and 8k tokens (0.73 vs 0.64 at 4k; level at 2k). With Claude Haiku on a
 25-file Python project (E3, 160 sessions), av took about 12 % fewer turns and 14 % less wall time
 at equal cost (the cost interval contains zero). Not yet measured: larger repositories, merge
-fuzzing, and whether records actually carry knowledge from one agent to the next (E4). Two
+fuzzing, and whether records carry knowledge to the next agent: a first relay test (E4, 90 sessions on
+DeepSeek flash) was inconclusive, every arm solved every task. Two
 eight-agent stress runs (cheap models, a small Python web app) merged every feature through
 Scholion with main green after every merge, which shows the workflow holds up, not that it is
 cheaper.
