@@ -86,6 +86,15 @@ struct SessionArgs {
     /// --hook-arg=--max-code=3`.
     #[arg(long = "hook-arg", allow_hyphen_values = true)]
     hook_args: Vec<String>,
+    /// Also give the av arms the just-in-time hooks: `av hook pre-read` on reads and edits,
+    /// `av hook stop` when the agent stops.
+    #[arg(long)]
+    jit_hooks: bool,
+    /// Cost sessions from token usage at these prices, dollars per million tokens:
+    /// `input,cache_write,cache_read,output`. For models Claude Code cannot price (DeepSeek
+    /// through its Anthropic API); claude's own --max-budget-usd is then not passed.
+    #[arg(long, value_parser = scholion_bench::metrics::Prices::parse)]
+    price_per_mtok: Option<scholion_bench::metrics::Prices>,
 }
 
 #[derive(Subcommand)]
@@ -245,6 +254,8 @@ fn config(s: &SessionArgs) -> RunConfig {
         allow_no_semantic: s.allow_no_semantic,
         index_wait_secs: s.index_wait_secs,
         av_mcp: !s.no_av_mcp,
+        jit_hooks: s.jit_hooks,
+        prices: s.price_per_mtok,
         hook_code: s.hook_code.clone(),
         hook_args: s.hook_args.clone(),
     }
