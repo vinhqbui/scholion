@@ -253,6 +253,7 @@ fn args(out: &Path, import: &Path, no_pack: bool) -> RetrievalArgs {
         allow_no_semantic: true,
         index_wait_secs: 30,
         no_pack,
+        reuse_run: None,
     }
 }
 
@@ -318,4 +319,50 @@ fn packs_come_from_the_daemon_within_budget() {
     );
     let report = std::fs::read_to_string(out.path().join("report.md")).unwrap();
     assert!(report.contains("Pack against each baseline"), "{report}");
+}
+
+#[test]
+fn a_rerun_reuses_the_repos_an_earlier_run_imported() {
+    let d = TempDir::new().unwrap();
+    let (base, fix) = repo(d.path());
+    let import = TempDir::new().unwrap();
+    let td = start_daemon(None);
+    let daemon = Daemon::new(&td.url, None);
+    let goal = "Greeter.hello should end with an exclamation mark";
+    let first = TempDir::new().unwrap();
+    run(
+        &[task(d.path(), &base, &fix, goal)],
+        Some(&daemon),
+        &args(first.path(), import.path(), false),
+    )
+    .unwrap();
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(first.path().join("meta.json")).unwrap()).unwrap();
+    let id = meta["run_id"]
+        .as_str()
+        .expect("meta names the run")
+        .to_owned();
+
+    let again = TempDir::new().unwrap();
+    let mut a = args(again.path(), import.path(), false);
+    // an import would fail: the daemon cannot read this mount
+    a.import_mount = "/nowhere".into();
+    a.reuse_run = Some(id);
+    let rows = run(&[task(d.path(), &base, &fix, goal)], Some(&daemon), &a).unwrap();
+    assert_eq!(rows.iter().filter(|r| r.method == "pack").count(), 2);
+    let text = |dir: &Path| std::fs::read_to_string(dir.join("texts/greet/pack-2000.md")).unwrap();
+    // same repo, new task: only the task's slug and its symbol ids differ
+    let code = |dir: &Path| {
+        let t = text(dir);
+        let c = t[t.find("## Code").unwrap()..].to_owned();
+        c.lines()
+            .map(|l| match l.strip_prefix("- sym:") {
+                Some(r) => r.split_once(' ').map_or(r, |(_, n)| n).to_owned(),
+                None => l.to_owned(),
+            })
+            .filter(|l| !l.starts_with("tokens:"))
+            .collect::<Vec<_>>()
+    };
+    assert!(text(again.path()).contains("Goal: Greeter.hello"));
+    assert_eq!(code(again.path()), code(first.path()));
 }

@@ -726,6 +726,9 @@ pub struct RetrievalArgs {
     pub index_wait_secs: u64,
     /// Skip the pack method (baselines only, no daemon).
     pub no_pack: bool,
+    /// Reuse the repos an earlier run (this id) imported into the same daemon instead of importing
+    /// and embedding them again; only the packing is measured anew.
+    pub reuse_run: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -786,11 +789,13 @@ fn packs(
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or("bad src dir")?;
-    daemon.post(
-        "/v1/repos",
-        json!({"name": name, "git_source": format!("{}/{name}", args.import_mount.trim_end_matches('/'))}),
-        None,
-    )?;
+    if args.reuse_run.is_none() {
+        daemon.post(
+            "/v1/repos",
+            json!({"name": name, "git_source": format!("{}/{name}", args.import_mount.trim_end_matches('/'))}),
+            None,
+        )?;
+    }
     let semantic = wait_semantic(daemon, name, args)?;
     let started = daemon.post(
         "/v1/tasks",
@@ -830,14 +835,16 @@ pub fn run(
     args: &RetrievalArgs,
 ) -> Result<Vec<Row>> {
     std::fs::create_dir_all(args.out.join("texts")).map_err(|e| e.to_string())?;
-    let run_id = format!(
-        "{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            & 0xffffff
-    );
+    let run_id = args.reuse_run.clone().unwrap_or_else(|| {
+        format!(
+            "{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+                & 0xffffff
+        )
+    });
     let mut rows = vec![];
     let mut golds = vec![];
     let mut semantic_any = None;
@@ -912,7 +919,7 @@ pub fn run(
         jsonl(golds.iter().map(|g| g.to_string()).collect()),
     )
     .map_err(|e| e.to_string())?;
-    let meta = json!({"budgets": args.budgets, "tasks": tasks.len(), "scored_tasks": golds.len(),
+    let meta = json!({"run_id": run_id, "budgets": args.budgets, "tasks": tasks.len(), "scored_tasks": golds.len(),
                       "pack": !args.no_pack, "semantic": semantic_any});
     std::fs::write(args.out.join("meta.json"), meta.to_string()).map_err(|e| e.to_string())?;
     std::fs::write(args.out.join("report.md"), report(&rows, &meta)).map_err(|e| e.to_string())?;
