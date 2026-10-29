@@ -404,8 +404,10 @@ opens with a warning naming the culprit merge.
   ends, notes; at most 400 tokens, each record once per session and never one the pack already sent) as
   `additionalContext`, so the why arrives when the file is opened instead of up front
   (`GET /v1/tasks/{id}/records/at?path=…&session=…`). `PostToolUse` on `Edit|Write|MultiEdit` checkpoints at most
-  every 2 s. All three are silent outside a task and never fail the agent (`scholion hook session-start`,
-  `scholion hook pre-read`, `scholion hook post-edit`).
+  every 2 s. `Stop` checkpoints and, when changed symbols have no record of the task anchored to them (what
+  `submit` would list, `GET /v1/tasks/{id}/unrecorded`), blocks the stop once per agent session and asks for the
+  decisions and dead ends behind them. All four are silent outside a task and never fail the agent
+  (`scholion hook session-start`, `scholion hook pre-read`, `scholion hook post-edit`, `scholion hook stop`).
 - **Any other agent**: `integrations/generic/av-wrap.sh <command…>` writes the pack to `$AV_CONTEXT_FILE`, runs the
   command and checkpoints.
 - **Maintenance**: `POST /v1/maintenance/prune` deletes the ledgers of sessions idle for 30 days and parse-cache
