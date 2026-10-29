@@ -284,6 +284,8 @@ enum HookCmd {
     },
     /// Checkpoint the task, at most every 2 s (Claude Code `PostToolUse` on edits).
     PostEdit,
+    /// Ask once per agent session to record the changes no record explains (Claude Code `Stop`).
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -684,6 +686,7 @@ fn run(cli: Cli) -> Result<()> {
                 generation: task["generation"].as_i64(),
                 agent: Some(cli.agent.clone()),
                 last_checkpoint_ms: None,
+                nudged_session: None,
             };
             write_taskfile(&workspace, &tf);
             println!("workspace: {}", workspace.display());
@@ -1160,6 +1163,7 @@ fn run(cli: Cli) -> Result<()> {
                 max_code,
             } => hook::session_start(&client, *budget, code, !*no_map, *max_code),
             HookCmd::PostEdit => hook::post_edit(&client, &cli.agent),
+            HookCmd::Stop => hook::stop(&client, &cli.agent),
         },
         Cmd::Search { query, repo, limit } => {
             let repo = repo_for(&cli, &client, repo)?;
@@ -1333,6 +1337,7 @@ fn run(cli: Cli) -> Result<()> {
                     generation: r["generation"].as_i64(),
                     agent: Some(cli.agent.clone()),
                     last_checkpoint_ms: None,
+                    nudged_session: None,
                 },
             );
             println!("workspace: {}", workspace.display());

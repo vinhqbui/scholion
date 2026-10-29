@@ -2724,3 +2724,57 @@ async fn reindex_refreshes_mains_code_index_and_skips_unchanged_files() {
     let (_, body) = call(&e.app, "POST", "/v1/reindex", None).await;
     assert_eq!(body["code_files_reindexed"], 0, "all repos, same: {body}");
 }
+
+// ---- record-writing nudge (handoff B7): what a Stop hook asks the agent to record ----
+
+async fn unrecorded(e: &Env, t: &Value) -> Value {
+    let (status, body) = call(
+        &e.app,
+        "GET",
+        &format!("/v1/tasks/{}/unrecorded", id(t)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unrecorded_names_changed_symbols_no_record_explains() {
+    let e = env().await;
+    let t = start_task(&e, "Upper names").await;
+    let body = unrecorded(&e, &t).await;
+    assert_eq!(body["status"], "open");
+    assert_eq!(body["unrecorded_symbols"], json!([]), "nothing changed yet");
+
+    write_file(&e, &t, "app/util.py", UPPER);
+    let (status, body) = post(&e, &t, "checkpoint", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body = unrecorded(&e, &t).await;
+    assert_eq!(body["explained"], false, "{body}");
+    assert_eq!(body["unrecorded_symbols"], json!(["format_name"]), "{body}");
+
+    decide(&e, &t).await; // anchored on app/util.py:format_name
+    let body = unrecorded(&e, &t).await;
+    assert_eq!(body["explained"], true, "{body}");
+    assert_eq!(body["unrecorded_symbols"], json!([]), "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_still_reports_the_same_unrecorded_symbols() {
+    let e = env().await;
+    let t = start_task(&e, "Upper names").await;
+    write_file(&e, &t, "app/util.py", UPPER);
+    let (status, body) = post(
+        &e,
+        &t,
+        "records",
+        json!({"kind": "note", "summary": "a note on the greeter", "agent": "claude",
+               "anchors": [{"path": "app/greeter.py"}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = submit(&e, &t).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["unrecorded_symbols"], json!(["format_name"]), "{body}");
+}
