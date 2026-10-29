@@ -38,7 +38,7 @@ pilot session's cost. Check the real spend against
 ```bash
 bench/tallyho/make-repo.sh                        # ~/bench-repos/tallyho
 ~/bench-work/venv/bin/python bench/tasks-relay/reference/check.py   # all 10 pairs ok
-scholion-bench check bench/tasks-relay
+scholion-bench check bench/tasks-relay   # each task's path_prepend puts the venv's bin first on the agent's PATH
 
 unset ANTHROPIC_API_KEY
 export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic

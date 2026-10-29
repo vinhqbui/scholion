@@ -759,6 +759,18 @@ pub fn run_session(
         .stderr(File::create(dir.join("claude.stderr")).map_err(|e| e.to_string())?)
         .env("CLAUDE_CONFIG_DIR", &config_dir)
         .env("AV_AGENT", AGENT);
+    if !spec.path_prepend.is_empty() {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let dirs = spec
+            .path_prepend
+            .iter()
+            .cloned()
+            .chain(std::env::split_paths(&inherited));
+        cmd.env(
+            "PATH",
+            std::env::join_paths(dirs).map_err(|e| format!("path_prepend: {e}"))?,
+        );
+    }
     if cfg.prices.is_none() {
         cmd.args(["--max-budget-usd", &format!("{:.2}", cfg.session_cap_usd)]);
     }
