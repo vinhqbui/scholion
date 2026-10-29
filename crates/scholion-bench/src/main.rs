@@ -171,6 +171,10 @@ enum Cmd {
         /// Baselines only (no daemon).
         #[arg(long)]
         no_pack: bool,
+        /// Reuse the repos the run with this id imported (the `r<id>-` prefix of its repo names)
+        /// into the same daemon: measures a new packer without importing and embedding again.
+        #[arg(long)]
+        reuse_run: Option<String>,
     },
     /// Mine retrieval tasks from a repo's history (small commits to non-test source files).
     Mine {
@@ -505,6 +509,7 @@ fn main() -> ExitCode {
             allow_no_semantic,
             index_wait_secs,
             no_pack,
+            reuse_run,
         } => (|| {
             let tasks = retrieval::load_tasks(&tasks, repos.as_deref().map(expand).as_deref())?;
             let daemon = url.as_deref().map(|u| Daemon::new(u, token.as_deref()));
@@ -519,6 +524,7 @@ fn main() -> ExitCode {
                 allow_no_semantic,
                 index_wait_secs,
                 no_pack,
+                reuse_run,
             };
             retrieval::run(&tasks, daemon.as_ref(), &args)?;
             println!("report: {}", args.out.join("report.md").display());
