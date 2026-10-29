@@ -239,11 +239,88 @@ Ambition without a kill criterion is cosplay. Ship the experiment.
 
 ---
 
+## Site review — openevaluations.si (2026-10-29)
+
+Live site: https://openevaluations.si/#evidence · source: `site/index.html`.
+Reviewed against lean E4, Haiku finals, and current E1 (`2026-10-28-packer-rrf`).
+
+**Verdict.** The evidence *body* has courage. The *hero* spends it. A product
+that publishes the sting must not lead with a number that credits Scholion for
+what a NOTES.md also does.
+
+### What the site gets right
+
+- Brand: “Scholion remembers *why*” + manuscript margin is distinctive. The
+  product name survives if you strip the nav.
+- E4 table (cold / notes / av) and the 13.5px caption are honest: knowledge
+  −42 % vs cold; av ≈ notes (−1.8 %); first MCP run +22 %; next = hundreds of
+  notes. That caption *is* this proposal's thesis, buried.
+- Haiku deltas (−12.9 % turns, ±0 % cost, +5.9 % tokens excluding cache reads)
+  match `04-final-shipped-*`.
+- “Not yet shown” callout on large repos is correct and rare on product sites.
+- Hooks + CLI recommended; MCP for clients without hooks — lean-aligned.
+- Pack demo uses signatures, not pasted bodies.
+
+### What is wrong or soft
+
+1. **Hero −42 % is the main overclaim.**  
+   Copy: “−42% cost per solved task when the last agent's lessons reach the
+   next one (E4).”  
+   Truth: that is **recorded knowledge vs amnesia** (av vs cold −42.2 %; notes
+   vs cold −41.1 %). **Av vs notes is −1.8 %.** The first screen sells a win
+   the repo says you have not earned over a plain file. Fix before any
+   Beat-NOTES.md marketing goes live, or the chapter contradicts the homepage.
+
+2. **E1 table is stale (packer-v2, not RRF).**  
+   Site: av pack files_code **0.91** / named **0.98** / **3,221** tokens.  
+   Current `2026-10-28-packer-rrf` at 4k: files_code **0.86** / named **0.96** /
+   **3,579** tokens; the real A1 win is **symbols_sig 0.73 vs BM25 0.64**, which
+   the table does not show. Publishing yesterday's nicer number is the opposite
+   of “numbers that sting.”
+
+3. **Default budget on the site ≠ product, and ≠ the demo.**  
+   CLI/SessionStart default **800**; pack window shows `--budget 2000`; some
+   HTTP/`start_task` paths still document **4000**. Pick one story.
+
+4. **Progressive tiers / `expand` are marketed as core UX.**  
+   Evidence: ~203 pack exposures, **one** expand. Sell it after Bet 2 makes it
+   real, or demote to “available.”
+
+5. **Hero clutter.** Four CTAs + curl + etymology + manuscript + four stats.
+   First viewport should be brand, one claim, one visual, one CTA. Stats belong
+   under Evidence, attributed correctly.
+
+6. **MCP tool chip cloud still stars `checkpoint`.** Lean killed ritual
+   checkpoints. Show the minimal always-on set; label the rest optional.
+
+7. **“More productive” in the lede is soft.** Measured: fewer turns at equal
+   cost on a 25-file repo; **no** token savings; E4 = parity with NOTES.md.
+   Prefer a claim you can defend under cross-examination.
+
+### Site changes that belong with this chapter
+
+Do these in the same PR series as Bet 1–4 (or a one-file honesty PR first):
+
+| Priority | Change |
+|----------|--------|
+| P0 | Replace hero −42 % with a true number: e.g. −13 % turns at same cost, **or** “−42 % vs no lessons; av ≈ NOTES.md at 10 notes” linking `#evidence`. |
+| P0 | Refresh E1 to `2026-10-28-packer-rrf`; lead with symbols_sig if that is the win. |
+| P0 | Promote E4's honest caption to a callout: beats amnesia; does not yet beat a file. |
+| P1 | Pack demo at `--budget 800`; demote expand/full-body until instrumented. |
+| P1 | Trim hero CTAs; move install/stats below the manuscript. |
+| P2 | MCP chips = lean minimal set; drop starring `checkpoint`. |
+| P2 | `site/README.md`: pin the retrieval result dir so the page cannot drift. |
+
+A homepage that lies politely trains the team to lie politely. Fix the
+attribution of −42 % the same week we bet the product on beating NOTES.md.
+
+---
+
 ## Author's note for Claude (second look)
 
-I am Auto (Composer). I wrote this from the lean-av design, the lean E4
-result, the Haiku pack/cache analysis, Plan 6 claims C1/C2, and HANDOFF §1a
-and §5.
+I am **Auto (Composer)**. I wrote this from the lean-av design, the lean E4
+result, the Haiku pack/cache analysis, Plan 6 claims C1/C2, HANDOFF §1a and
+§5, and a pass over https://openevaluations.si/#evidence (`site/index.html`).
 
 Pressure-test especially:
 
@@ -254,6 +331,9 @@ Pressure-test especially:
 4. Is "kill av's thesis → pivot to adoption" the correct failure mode, or
    should packer/retrieval get one more iteration first?
 5. Any internal contradiction with the 2026-10-18 design or lean-av invariants?
+6. Site: is “replace hero −42 %” correct, or is the attribution salvageable
+   with tighter wording without burying the sting?
 
-Mark disagreements in-line. Do not soften the mission to protect the daemon.
+Mark disagreements in-line. Do not soften the mission to protect the daemon
+or the homepage.
 )
