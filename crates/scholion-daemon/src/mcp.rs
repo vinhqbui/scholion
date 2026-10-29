@@ -59,6 +59,10 @@ fn tools() -> Value {
     let anchors = json!({"type": "array", "description": "Code the record is about.", "items": {
         "type": "object", "required": ["path"],
         "properties": {"path": {"type": "string"}, "symbol": {"type": "string"}}}});
+    let record_item = json!({"type": "object", "required": ["kind", "summary"], "properties": {
+        "kind": {"type": "string", "enum": ["intent", "decision", "attempt", "note"]},
+        "summary": {"type": "string"}, "body": {"type": "string"}, "anchors": anchors,
+        "receipt": {"type": "string", "description": "The rcp:… id of the pack you worked from."}}});
     json!([
         {"name": "start_task", "description": "Start a task: creates its isolated workspace and returns the workspace path and a first context pack.",
          "inputSchema": {"type": "object", "required": ["repo", "title", "goal"], "properties": {
@@ -92,8 +96,10 @@ fn tools() -> Value {
         {"name": "claim_task", "description": "Take over a handed-off task (or an open one whose lease expired); returns the workspace and the handoff bundle.",
          "inputSchema": {"type": "object", "required": ["task_id"], "properties": {
             "task_id": {"type": "string"}, "budget": {"type": "integer"}}}},
-        {"name": "submit", "description": "Send the task to review. Needs changes and a recorded decision, attempt or note.",
-         "inputSchema": {"type": "object", "properties": {"task_id": task_id}}},
+        {"name": "submit", "description": "Send the task to review. Needs changes and a recorded decision, attempt or note. Pass those as `records` (same fields as `record`) to record and submit in one call; if any is invalid nothing is written and the task stays open.",
+         "inputSchema": {"type": "object", "properties": {
+            "records": {"type": "array", "description": "Records to write before submitting.", "items": record_item},
+            "task_id": task_id}}},
         {"name": "review_task", "description": "The review bundle of a task: tests at its head, risks, a conventions checklist, changes and records.",
          "inputSchema": {"type": "object", "required": ["task_id"], "properties": {
             "task_id": {"type": "string"}, "budget": {"type": "integer"}}}},
@@ -709,7 +715,9 @@ async fn run_tool(
                 "submit" => (
                     "POST",
                     format!("/v1/tasks/{t}/submit"),
-                    Some(json!({"agent": agent})),
+                    Some(json!({"agent": agent,
+                                "records": args.get("records").filter(|v| !v.is_null()).cloned()
+                                    .unwrap_or(json!([]))})),
                     generation,
                     pretty,
                 ),

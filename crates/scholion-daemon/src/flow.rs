@@ -9,7 +9,7 @@ use axum::http::HeaderMap;
 use scholion_core::lifecycle::{Event, next};
 use scholion_core::{
     AgentFamily, Anchor, AvError, ChangeId, Convention, HandoffState, MergeOutcome, MergeState,
-    NewRecord, RecordKind, Result, Task, TaskId, TaskStatus, Verdict,
+    NewRecord, RecordId, RecordKind, Result, Task, TaskId, TaskStatus, Verdict,
 };
 use scholion_pack::BundleRequest;
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::api::{DEFAULT_BUDGET, snapshot_and_index};
+use crate::api::{DEFAULT_BUDGET, RecordBody, check_record, snapshot_and_index, write_record};
 use crate::error::ApiResult;
 use crate::indexing::{index_change, reindex_changed};
 
@@ -128,8 +128,29 @@ pub(crate) async fn unrecorded(
 
 #[derive(Deserialize)]
 pub(crate) struct SubmitBody {
-    #[allow(dead_code)] // recorded on review/merge records in later tasks
     agent: String,
+    /// Records to write before the gate (`POST .../records` bodies, without `agent`: they take
+    /// this one). All are checked before any is written.
+    #[serde(default)]
+    records: Vec<Value>,
+}
+
+/// What an agent does once its task is in review. Fixed copy: agents read this verbatim.
+const NEXT_IN_REVIEW: &str = "in review: a reviewer runs av next / approves; nothing else to do";
+
+/// Turns the inline records of a submit body into `RecordBody`s authored by `agent`. Errors name
+/// the offending index.
+fn inline_records(agent: &str, raw: Vec<Value>) -> Result<Vec<RecordBody>> {
+    raw.into_iter()
+        .enumerate()
+        .map(|(i, mut v)| {
+            let obj = v
+                .as_object_mut()
+                .ok_or_else(|| AvError::Invalid(format!("records[{i}] must be an object")))?;
+            obj.insert("agent".into(), Value::String(agent.to_owned()));
+            serde_json::from_value(v).map_err(|e| AvError::Invalid(format!("records[{i}]: {e}")))
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -139,6 +160,10 @@ pub(crate) struct SubmitReport {
     changed: Vec<String>,
     /// Changed symbols that no record of this task anchors to (by symbol or by file). Advisory.
     unrecorded_symbols: Vec<String>,
+    /// Ids of the inline records this call wrote, in order.
+    recorded: Vec<RecordId>,
+    /// What happens next, for the agent to read.
+    next: &'static str,
 }
 
 /// Snapshot, then refuse unless there is something to review and the task explains it: besides
@@ -147,7 +172,7 @@ pub(crate) async fn submit(
     State(st): State<AppState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    Json(_body): Json<SubmitBody>,
+    Json(body): Json<SubmitBody>,
 ) -> ApiResult<SubmitReport> {
     // held until the transition, so no checkpoint moves the head between the gate and the status
     let _guard = st.lock_task(scholion_core::TaskId(id)).await;
@@ -167,6 +192,11 @@ pub(crate) async fn submit(
         task = st.store.get_task(task.id).await?;
     }
     next(task.status, Event::Submit)?; // fail fast, before touching the workspace
+    // Check every inline record before anything is written, so a bad one fails the whole submit.
+    let inline = inline_records(&body.agent, body.records)?;
+    for r in &inline {
+        check_record(&st, r).await?;
+    }
     let (head, changed, _) = snapshot_and_index(&st, &task).await?;
     if head == task.base_change || changed.is_empty() {
         return Err(AvError::IllegalState(
@@ -175,6 +205,11 @@ pub(crate) async fn submit(
         .into());
     }
     refuse_conflict_markers(&st, &task.repo, &head, &changed).await?;
+    // written before the gate, so they count toward it
+    let mut recorded = Vec::with_capacity(inline.len());
+    for r in inline {
+        recorded.push(write_record(&st, &task, r).await?.id);
+    }
     let unrecorded = gate(&st, &task, "submitting").await?;
     let status = st.store.transition(task.id, Event::Submit).await?;
     carry_approval(&st, &st.store.get_task(task.id).await?).await?;
@@ -183,6 +218,8 @@ pub(crate) async fn submit(
         head: head.0,
         changed,
         unrecorded_symbols: unrecorded,
+        recorded,
+        next: NEXT_IN_REVIEW,
     }))
 }
 

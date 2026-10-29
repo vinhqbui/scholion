@@ -653,6 +653,107 @@ async fn submit_ok_moves_to_in_review_and_lists_unrecorded_symbols() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }
 
+async fn submit_with(e: &Env, t: &Value, records: Value) -> (StatusCode, Value) {
+    call(
+        &e.app,
+        "POST",
+        &format!("/v1/tasks/{}/submit", id(t)),
+        Some(json!({"agent": "claude", "records": records})),
+    )
+    .await
+}
+
+async fn task_records(e: &Env, t: &Value) -> Vec<Value> {
+    let (status, body) = call(&e.app, "GET", &format!("/v1/tasks/{}/records", id(t)), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["records"].as_array().unwrap().clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_with_inline_records_passes_the_gate() {
+    let e = env().await;
+    let t = start_task(&e, "Improve greeting").await;
+    edit_greeter(&e, &t);
+    let (status, body) = submit_with(
+        &e,
+        &t,
+        json!([{"kind": "decision", "summary": "Greet by name",
+                "anchors": [{"path": "app/greeter.py"}]}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "in_review");
+    assert_eq!(body["recorded"].as_array().unwrap().len(), 1, "{body}");
+    let recs = task_records(&e, &t).await;
+    let rec = recs
+        .iter()
+        .find(|r| r["summary"] == "Greet by name")
+        .unwrap_or_else(|| panic!("inline record not stored: {recs:?}"));
+    assert_eq!(rec["author_agent"], "claude");
+    assert_eq!(rec["id"], body["recorded"][0]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_with_an_invalid_inline_record_writes_nothing() {
+    let e = env().await;
+    let t = start_task(&e, "Improve greeting").await;
+    edit_greeter(&e, &t);
+    let (status, body) = submit_with(
+        &e,
+        &t,
+        json!([
+            {"kind": "decision", "summary": "Greet by name"},
+            {"kind": "decision", "summary": "x".repeat(201)}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (_, task) = call(&e.app, "GET", &format!("/v1/tasks/{}", id(&t)), None).await;
+    assert_eq!(task["task"]["status"], "open", "{task}");
+    let recs = task_records(&e, &t).await;
+    assert!(
+        !recs.iter().any(|r| r["kind"] == "decision"),
+        "no inline record may be written: {recs:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_with_a_malformed_inline_record_writes_nothing() {
+    let e = env().await;
+    let t = start_task(&e, "Improve greeting").await;
+    edit_greeter(&e, &t);
+    let (status, body) = submit_with(
+        &e,
+        &t,
+        json!([
+            {"kind": "decision", "summary": "Greet by name"},
+            {"kind": "bogus", "summary": "nope"}
+        ]),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status} {body}");
+    let (_, task) = call(&e.app, "GET", &format!("/v1/tasks/{}", id(&t)), None).await;
+    assert_eq!(task["task"]["status"], "open", "{task}");
+    let recs = task_records(&e, &t).await;
+    assert!(!recs.iter().any(|r| r["kind"] == "decision"), "{recs:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_says_what_comes_next() {
+    let e = env().await;
+    let t = start_task(&e, "Improve greeting").await;
+    edit_greeter(&e, &t);
+    let (status, body) = submit_with(
+        &e,
+        &t,
+        json!([{"kind": "note", "summary": "Greeting now shouts"}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let next = body["next"].as_str().unwrap_or_default();
+    assert!(next.contains("av") && next.contains("review"), "{body}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_submit_only_one_wins() {
     let e = env().await;

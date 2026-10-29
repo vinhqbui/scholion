@@ -405,6 +405,52 @@ async fn a_refused_operation_is_a_tool_error_not_a_protocol_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn submit_tool_accepts_records() {
+    let e = env().await;
+    let s = connect(&e, "claude-code").await;
+    let list = send(
+        &e,
+        Some(&s),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let submit = list.body["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "submit")
+        .unwrap()
+        .clone();
+    let records = &submit["inputSchema"]["properties"]["records"];
+    assert_eq!(records["type"], "array", "{submit}");
+    assert_eq!(records["items"]["required"], json!(["kind", "summary"]));
+    assert!(records["items"]["properties"]["anchors"].is_object());
+
+    let t = start_task(&e, "Improve greeting").await;
+    edit_greeter(&e, &t);
+    let r = tool(
+        &e,
+        &s,
+        "submit",
+        json!({"task_id": id(&t), "records": [
+            {"kind": "decision", "summary": "Greet by name",
+             "anchors": [{"path": "app/greeter.py"}]}]}),
+    )
+    .await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let out = text(&r);
+    assert!(out.contains("in_review") || out.contains("review"), "{out}");
+    let status: Value = serde_json::from_str(&text(
+        &tool(&e, &s, "status", json!({"task_id": id(&t)})).await,
+    ))
+    .unwrap();
+    assert_eq!(
+        status["record_count"], 2,
+        "intent + inline decision: {status}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn requests_need_the_session_from_initialize() {
     let e = env().await;
     let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
