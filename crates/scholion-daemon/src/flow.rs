@@ -1,7 +1,7 @@
 //! Task lifecycle operations (Plan 3). Kept in the daemon rather than a separate crate: every
 //! operation first runs the daemon's checkpoint + re-index.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -78,10 +78,29 @@ pub(crate) async fn coverage(st: &AppState, task: &Task) -> Result<(bool, Vec<St
             .map(|a| a.path.clone())
             .collect(),
     );
-    let unrecorded: Vec<String> = st
-        .packer
-        .changed_symbols(task.id)
-        .await?
+    // Test code never needs a record. Only Rust keeps tests inside source files, so only a `.rs`
+    // file that the path and name don't already mark as a test is read (once) at the task's head.
+    let mut rust_src: HashMap<String, Option<String>> = HashMap::new();
+    let mut changed = vec![];
+    for s in st.packer.changed_symbols(task.id).await? {
+        let sym = &s.symbol;
+        let maybe_inline = sym.path.ends_with(".rs")
+            && !scholion_pack::is_test_code(&sym.path, &sym.qname, 0, None);
+        if maybe_inline && !rust_src.contains_key(&sym.path) {
+            let text = st
+                .vcs
+                .read_file(&task.repo, &task.head_change, &sym.path)
+                .await
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned());
+            rust_src.insert(sym.path.clone(), text);
+        }
+        let src = rust_src.get(&sym.path).and_then(|t| t.as_deref());
+        if !scholion_pack::is_test_code(&sym.path, &sym.qname, sym.start_line, src) {
+            changed.push(s);
+        }
+    }
+    let unrecorded: Vec<String> = changed
         .into_iter()
         .filter(|s| {
             !anchored_syms.contains(&s.symbol.qname) && !anchored_paths.contains(&s.symbol.path)

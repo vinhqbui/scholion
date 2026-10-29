@@ -3037,3 +3037,64 @@ async fn submit_still_reports_the_same_unrecorded_symbols() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["unrecorded_symbols"], json!(["format_name"]), "{body}");
 }
+
+const GREETER_TEST: &str = "from greeter import Greeter\n\n\ndef test_greets():\n    assert Greeter().hello(\"ada\") == \"Ada\"\n";
+
+fn write_greeter_test(e: &Env, t: &Value) {
+    std::fs::create_dir_all(ws_dir(e, t).join("tests")).unwrap();
+    write_file(e, t, "tests/test_greeter.py", GREETER_TEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unrecorded_leaves_out_test_functions() {
+    let e = env().await;
+    let t = start_task(&e, "Test the greeter").await;
+    write_greeter_test(&e, &t);
+    let (status, body) = post(&e, &t, "checkpoint", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body = unrecorded(&e, &t).await;
+    assert_eq!(body["unrecorded_symbols"], json!([]), "{body}");
+    assert_eq!(
+        body["explained"], false,
+        "the submit gate is unchanged: {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unrecorded_names_real_code_but_not_its_tests() {
+    let e = env().await;
+    let t = start_task(&e, "Louder greeter and its test").await;
+    write_file(
+        &e,
+        &t,
+        "app/greeter.py",
+        "from util import format_name\n\nclass Greeter:\n    def hello(self, name):\n        return format_name(name) + \"!\"\n",
+    );
+    write_greeter_test(&e, &t);
+    let (status, body) = post(&e, &t, "checkpoint", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body = unrecorded(&e, &t).await;
+    // the class counts as changed too (its range covers the edited method)
+    assert_eq!(
+        body["unrecorded_symbols"],
+        json!(["Greeter", "Greeter.hello"]),
+        "{body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unrecorded_leaves_out_rust_unit_tests_inside_a_source_file() {
+    let e = env().await;
+    let t = start_task(&e, "Rust sums").await;
+    std::fs::create_dir_all(ws_dir(&e, &t).join("src")).unwrap();
+    write_file(
+        &e,
+        &t,
+        "src/sum.rs",
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(1, 2), 3);\n}\n",
+    );
+    let (status, body) = post(&e, &t, "checkpoint", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body = unrecorded(&e, &t).await;
+    assert_eq!(body["unrecorded_symbols"], json!(["add"]), "{body}");
+}
