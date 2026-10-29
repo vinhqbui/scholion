@@ -2697,6 +2697,10 @@ async fn ui_page_is_served_without_a_token_but_its_data_is_not() {
     let html = String::from_utf8_lossy(&html);
     assert!(html.contains("<title>"), "{html}");
     assert!(html.contains("/v1/tasks"), "the page reads the task list");
+    assert!(
+        html.contains("/unrecorded"),
+        "the task drawer shows what no record explains"
+    );
 
     let (status, _) = call(&e.app, "GET", "/v1/tasks", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

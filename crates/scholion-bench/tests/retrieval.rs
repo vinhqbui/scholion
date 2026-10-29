@@ -149,6 +149,14 @@ fn scores_count_shown_code_not_mere_mentions() {
     );
     assert_eq!(map.first_gold, Some(0.0));
 
+    // the index drops the opener (`:` here, ` {` in Rust and TS) from signatures
+    let sig = score(
+        "- sym:9 Greeter.hello (app/greeter.py:5-6)\n  def hello(self, name)\n",
+        &g,
+        &r,
+    );
+    assert_eq!(sig.symbols_sig, 1.0, "a pack's signature line shows it");
+
     let none = score(BILLING, &g, &r);
     assert_eq!(none.files_code + none.symbols_sig + none.gold_share, 0.0);
     assert_eq!(none.first_gold, None);

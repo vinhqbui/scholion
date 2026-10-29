@@ -387,9 +387,11 @@ pub fn score(text: &str, gold: &Gold, repo: &Repo) -> Scores {
     let text_lines: Vec<String> = text.lines().map(norm).collect();
     let line_set: HashSet<&str> = text_lines.iter().map(String::as_str).collect();
     let shown = |l: &str| line_set.contains(l);
+    // without the opener (` {`, `:`) that the index leaves out of a signature
     let sig_shown = |s: &GoldSymbol| {
-        !s.signature.is_empty()
-            && text_lines.iter().any(|l| l.contains(&s.signature))
+        let sig = s.signature.trim_end_matches(['{', ':', ' ']);
+        !sig.is_empty()
+            && text_lines.iter().any(|l| l.contains(sig))
             && (repo.unique(&s.signature) || text.contains(&s.path))
     };
     let ratio = |n: usize, d: usize| if d == 0 { 0.0 } else { n as f64 / d as f64 };

@@ -195,3 +195,25 @@ async fn equal_scores_keep_symbol_order() {
         );
     }
 }
+
+/// Unlike `ts_rank`, BM25 counts how often a term occurs (up to saturation): a function that is
+/// about the term beats a tiny one that mentions it once (E1: ripgrep's `Ignore.add_parents`
+/// ranked 43rd under `ts_rank`, behind one-line flags).
+#[tokio::test]
+async fn using_a_term_often_beats_mentioning_it_once() {
+    let body: String = (0..8)
+        .map(|i| format!("    parent{i} = parent.parent(step_{i}, other_{i})\n"))
+        .collect();
+    let often = format!("def often():\n{body}");
+    let (_db, idx) = index(&[
+        ("app/once.py", "def once():\n    parent = 1\n"),
+        ("app/often.py", &often),
+        ("app/none.py", "def unrelated():\n    pass\n"),
+    ])
+    .await;
+    let hits = idx
+        .search_code_lexical("demo", "main", &terms(&["parent"]), 10)
+        .await
+        .unwrap();
+    assert_eq!(qnames(&idx, &hits).await, vec!["often", "once"], "{hits:?}");
+}

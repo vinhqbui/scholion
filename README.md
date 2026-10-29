@@ -141,7 +141,8 @@ post-merge checks, revert of any merge, bisect and `why` blame.
 
 Measured so far (details in `bench/README.md` and `bench/retrieval/`): offline, on 42 tasks from
 six public repositories (E1), the first pack names the files a fix touches best of all methods
-(0.93–0.98), but BM25 over symbols still shows more of the changed symbols. With Claude Haiku on a
+(0.96–0.98), and since BM25 and rank fusion went in it also shows more of the changed symbols' 
+signatures than BM25 over symbols at 4k and 8k tokens (0.73 vs 0.64 at 4k; level at 2k). With Claude Haiku on a
 25-file Python project (E3, 160 sessions), av took about 12 % fewer turns and 14 % less wall time
 at equal cost (the cost interval contains zero). Not yet measured: larger repositories, merge
 fuzzing, and whether records actually carry knowledge from one agent to the next (E4). Two
