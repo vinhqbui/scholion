@@ -464,6 +464,25 @@ fn the_notes_arm_also_gets_every_note_in_notes_md() {
 }
 
 #[test]
+fn the_cold_arm_gets_nothing_the_earlier_agent_learned() {
+    let _g = serial();
+    let f = relay_fixture("fix");
+    let o = run_session(&f.spec, Arm::Cold, 1, "r3", &f.cfg).unwrap();
+    assert!(o.valid, "{o:?}");
+    let ws = o.run_dir.join("ws");
+    let log = log_messages(&ws);
+    assert!(!log.contains("Swapping the operands"), "{log}");
+    assert_eq!(
+        git(&ws, &["rev-list", "--all", "--count"]),
+        "1",
+        "base only"
+    );
+    assert!(!ws.join("NOTES.md").exists());
+    assert!(!Arm::Cold.uses_av());
+    assert_eq!(Arm::parse("cold").unwrap(), Arm::Cold);
+}
+
+#[test]
 fn the_av_arm_gets_the_notes_as_an_earlier_tasks_anchored_records() {
     let _g = serial();
     let d = start_daemon(None);

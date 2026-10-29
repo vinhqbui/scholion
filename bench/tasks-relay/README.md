@@ -8,6 +8,7 @@ ten).
 
 | arm | where A's lessons are |
 |---|---|
+| `cold` | nowhere: the control, B starts from the base tree alone |
 | `baseline` | commit messages on top of the base (`git log` shows them, nothing points at them) |
 | `notes` | the same commits, plus `NOTES.md` with all ten lessons, which `CLAUDE.md` tells B to read |
 | `av` | the same commits, plus each lesson as a record of an earlier av task, anchored to its code; the pack and the `PreToolUse` hook (`--jit-hooks`) bring them up |
@@ -17,7 +18,12 @@ lessons are in `pool/notes.toml`; `relay_pair` in each spec names its own.
 
 The measures are the usual ones (accepted = hidden test passes; cost and wall time per accepted
 task) plus **dead ends repeated**: the `[[dead_end]]` patterns match the obvious wrong edit in B's
-diff. The report adds the rows `relay: notes vs baseline` and `relay: av vs notes`.
+diff. The report adds the rows `relay: notes vs baseline` and `relay: av vs notes`, and with `cold` each
+channel against it.
+
+The first run (2026-10-28, without `cold`) solved every task in every arm: `baseline` agents ran
+`git log` in 18 of 30 sessions and read the lessons there, and four goals gave the trap away. Run
+`--arms cold` alone first: the tasks are only worth the full run if `cold` fails a fair share.
 
 ## Running it
 
@@ -40,7 +46,7 @@ export ANTHROPIC_AUTH_TOKEN="$(cat ~/.config/deepseek/key)"   # the key alone, c
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-flash ANTHROPIC_SMALL_FAST_MODEL=deepseek-flash
 export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-flash
 
-scholion-bench run bench/tasks-relay --arms baseline,notes,av --jit-hooks --reps 2 \
+scholion-bench run bench/tasks-relay --arms cold,baseline,notes,av --jit-hooks --reps 2 \
   --price-per-mtok 0.30,0.30,0.006,1.20 --session-cap-usd 0.30 --budget-usd 4 \
   --out bench/results/$(date +%F)-relay $COMMON --confirm
 ```
