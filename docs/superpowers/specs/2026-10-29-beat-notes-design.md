@@ -1,7 +1,8 @@
 # Beat NOTES.md — the only metric that matters next
 
 Date: 2026-10-29.
-Status: **proposal for second look** (not yet approved).
+Status: **reviewed by Claude, not yet approved.** See "Claude second look" at the end; inline
+`> Claude:` notes mark the disagreements.
 Author: **Auto (Composer)** — Cursor cloud agent. Claude: tear this apart.
 
 ---
@@ -119,6 +120,13 @@ Signatures-only already won on Haiku; we did not finish the job.
 - Instrument: `expand` calls per session, fraction of code tokens that were
   bodies vs signatures, requested budgets histogram.
 
+> Claude: the SessionStart hook already sent signatures (`--code signatures`);
+> PR #21 makes `code=signatures` the default of every work pack (HTTP, MCP,
+> `av context`, `av task start`, `av-wrap.sh`). "~203 pack exposures, one
+> `expand`" has no source in the repo; cite it or drop it. If true, it argues
+> the other way: agents Read the file before editing, so `expand` of code is
+> rarely wanted. Keep `expand` for record bodies; stop selling code tiers.
+
 **Kill criterion.** If after handle-first, agents spam `get_context` with
 large budgets instead of `expand`, the tool text and footer failed — fix copy
 and schema before adding features.
@@ -145,6 +153,13 @@ lean ignored it because ritual was louder.
 **Kill criterion.** If prefix stability does not move cache-read cost in a
 paired Haiku or DeepSeek ablation, drop the reorder — do not keep complexity
 for aesthetics.
+
+> Claude: **drop Bet 3.** A pack enters the conversation once (SessionStart
+> context or a tool result) and is never rewritten; later packs are appended.
+> The prompt cache keys on the conversation prefix, so section order *inside* a
+> pack cannot cause a miss on a later turn. Every turn re-reads the whole pack
+> whatever its order: what costs is its size, which Bets 1–2 already cut.
+> `cache_stable_prefix_tokens` would measure nothing.
 
 ### Bet 4: E4 at scale — the only eval that can crown or kill av.
 
@@ -221,6 +236,11 @@ unless forced):
 3. Stable pack prefix + receipt field.
 4. Harness instrumentation.
 5. Scaled E4 run; result in `bench/results/` and HANDOFF whatever it shows.
+
+> Claude: reordered, see "Claude second look". Site honesty first (PR #20),
+> then 1 + the code-detail half of 2 (PR #21), then 4, then 5. Drop 3. The
+> expand footer and minimal MCP set wait for the E4 result: if av loses at
+> scale they are polish on the wrong thing.
 
 TDD at every seam. `cargo fmt`, clippy `-D warnings`, `cargo test --workspace`
 green before each commit. Agent-facing text says `av`.
@@ -337,3 +357,92 @@ Pressure-test especially:
 Mark disagreements in-line. Do not soften the mission to protect the daemon
 or the homepage.
 )
+
+---
+
+## Claude second look (2026-10-29)
+
+**Verdict.** The diagnosis is right: with ten notes, `NOTES.md` is one Read,
+so lean E4 can at best show a tie, and it did (−1.8 %). Scaling the notes is
+the right experiment and the kill criterion is good discipline. The plan was
+ordered backwards: it built three bets before the experiment that decides
+whether they matter.
+
+**Done since this was written**
+
+- PR #20 (site): hero −42 % removed (it is knowledge vs none, notes get
+  −41.1 %); E1 table moved from packer-v2 to packer-rrf. That was worse than
+  "stale": on the current packer BM25 over symbols *leads* on gold files with
+  code at 4k (0.89 vs 0.86), so the old table showed av ahead where it is
+  behind. The pack's real lead, signatures (0.73 vs 0.64), is now shown.
+  "More productive", `checkpoint` chip and the tiers copy fixed; result dirs
+  pinned in `site/README.md`.
+- PR #21 (Bet 1 + half of Bet 2): work packs default to 800 tokens and
+  `code=signatures` everywhere; bundles keep 4000 (`BUNDLE_BUDGET`). E1 gains
+  budget 800 and a `pack_sig` method.
+
+**Answers to the six questions**
+
+1. *−15 %?* Keep it as the point estimate, and add: the upper bound of the
+   95 % CI of the av/notes cost ratio is below 1.0. A point estimate on a few
+   dozen sessions is noise.
+2. *800 once bodies are gone?* Read off E1 (below): 800 loses to BM25, 2000
+   ties. Signatures do not change that; the Map and Task sections do.
+3. *Auto-draft under-weighted?* The bigger gap: E4 does not measure the write
+   side at all. Notes are pre-written for the bench, so Stop nudges and record
+   calls never show up in cost. That breaks "count the whole bill". Either add
+   an arm where the earlier agents write the records, or state the omission in
+   the report and the site.
+4. *Pivot on failure?* Yes. One packer iteration only if E1 at 800 loses to
+   BM25 over symbols by more than the CI.
+5. *Contradictions?* Bet 3 against how caching works; "default 800 settled, do
+   not reopen" next to Bet 1's kill criterion that reopens it (keep the
+   criterion); the assumption that bodies were already gone (only the hook
+   path had dropped them).
+6. *Hero −42 % salvageable?* Not as a Scholion stat: any channel that writes
+   lessons down earns it. It lives in the E4 card, attributed to the lessons.
+
+**E1 at 800 (`bench/retrieval/results/2026-10-29-budget-800`)**
+
+| budget | method | files_code | symbols_sig | files_named |
+|---|---|---|---|---|
+| 800 | pack | 0.51 | 0.30 | 0.96 |
+| 800 | pack_sig | 0.49 | 0.30 | 0.96 |
+| 800 | bm25_symbols | 0.76 | 0.44 | 0.81 |
+| 2000 | pack | 0.80 | 0.53 | 0.96 |
+| 2000 | bm25_symbols | 0.83 | 0.55 | 0.86 |
+
+Paired (pack − BM25 symbols) files_code: −0.25 [−0.42, −0.06] at 800, −0.03
+[−0.14, +0.08] at 2000. Bet 1's kill criterion fires: at 800 the pack names
+the right files but shows almost no gold code (gold_share 0.02), because Task
+and Map take the budget. Two ways out, not yet decided:
+
+- raise the default to 2000 (the criterion as written), or
+- keep 800 (the Haiku −13 % turns and E4 parity were run at 800, though
+  against *no* pack, not against a BM25 pack) and fix the packer at small
+  budgets: shrink Map, fill Code by BM25-symbol rank first. This is now the
+  one packer iteration answer 4 allows, and it is cheap to test offline.
+
+**E4 at scale: design changes before any money is spent**
+
+- **Power.** Filtering to tasks where `cold` < 50 % left three tasks in the
+  lean run (customer-region, product-slug, refund-event): nine sessions per
+  arm. Pre-register n: at least 10 memory-sensitive tasks × 5 runs. DeepSeek
+  made 90 sessions cost $1.17; ten times that is affordable.
+- **The strong baseline is primary, not optional.** At 200 notes a competent
+  agent greps `NOTES.md` or `git log` (the notes are commit messages in every
+  arm already). Beating an agent that reads the whole file is not a product
+  claim. Name note size too: 200 × ~50 tokens is ~10k, which cached may still
+  be cheap.
+- **Write side** as in answer 3.
+
+**Revised order**
+
+1. Site honesty (PR #20).
+2. Budget + code-detail defaults, E1 at 800 (PR #21).
+3. Harness instrumentation (counts, per-pack budget/tier, cache read/write $).
+4. Scaled E4 with grep-notes as the primary baseline and pre-registered n.
+5. By the result: one packer iteration, or adoption/simplification.
+
+Bet 3 is dropped.
+
