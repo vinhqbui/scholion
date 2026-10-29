@@ -52,12 +52,13 @@ export PATH=$PWD/target/release:$PATH        # scholion-bench and av (the hooks 
 
 ### 1. A Python env for the arxiv-rag tests
 
-All arms run the agent, `setup_cmd` and `verify_cmd` with the PATH you start `scholion-bench` with,
-plus any directories a task lists in `path_prepend` (put first on the agent's PATH, `~/` expanded;
-`check` warns about one that is missing; the tallyho and relay tasks use `~/bench-work/venv/bin` so
-the agent can run pytest). Either put that on the PATH yourself or
-activate one venv that can run arxiv-rag's unit tests at every task's base commit (both the
-Chroma era and the Qdrant era):
+`setup_cmd` and `verify_cmd` run with the PATH you start `scholion-bench` with. The agent (`claude`)
+gets the same PATH plus any directories a task lists in `path_prepend` (put first, `~/` expanded;
+`check` warns about one that is missing); `path_prepend` does not apply to `setup_cmd` or
+`verify_cmd`. The tallyho and relay tasks use `~/bench-work/venv/bin` there so the agent can run
+pytest. Either put a venv on the PATH yourself or activate one that can run arxiv-rag's unit tests
+at every task's base commit (both the Chroma era and the Qdrant era), because `verify_cmd` needs it
+too:
 
 ```bash
 python3 -m venv ~/bench-work/venv && . ~/bench-work/venv/bin/activate

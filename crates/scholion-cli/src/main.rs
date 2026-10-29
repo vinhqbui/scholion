@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use client::{CliError, Client, Result};
+use scholion_core::{MAX_SUMMARY_CHARS, RecordKind};
 use serde_json::{Value, json};
 use taskfile::TaskFile;
 
@@ -539,13 +540,29 @@ fn read_record_items(src: &str) -> Result<Vec<Value>> {
     })?;
     items
         .into_iter()
-        .map(|mut item| {
+        .enumerate()
+        .map(|(i, mut item)| {
+            // everything the daemon would refuse on its own, checked before the first POST so a
+            // bad item sends nothing
             for key in ["kind", "summary"] {
                 if item[key].as_str().is_none_or(str::is_empty) {
                     return Err(CliError::Local(format!(
-                        "--json: every record needs a {key}: {item}"
+                        "records[{i}]: every record needs a {key}: {item}"
                     )));
                 }
+            }
+            let kind = s(&item["kind"]);
+            if kind.parse::<RecordKind>().is_err() {
+                return Err(CliError::Local(format!(
+                    "records[{i}]: unknown kind {kind:?} (use decision, attempt, note, handoff, \
+                     intent, review or validation)"
+                )));
+            }
+            let n = s(&item["summary"]).chars().count();
+            if n > MAX_SUMMARY_CHARS {
+                return Err(CliError::Local(format!(
+                    "records[{i}]: summary is {n} chars, max {MAX_SUMMARY_CHARS}"
+                )));
             }
             let anchors: Vec<Value> = item["anchors"]
                 .as_array()
@@ -1062,13 +1079,21 @@ fn run(cli: Cli) -> Result<()> {
                 s(&r["head"]).chars().take(12).collect::<String>(),
                 r["changed"].as_array().map_or(0, Vec::len)
             );
+            let recorded = r["recorded"].as_array().map_or(0, Vec::len);
+            if recorded > 0 {
+                println!("recorded {recorded}");
+            }
+            if let Some(next) = r["next"].as_str().filter(|n| !n.is_empty()) {
+                println!("{next}");
+            }
             // Advisory, not an error: agents read stderr output as a failure and resubmit.
             let unrecorded = r["unrecorded_symbols"].as_array().map_or(0, Vec::len);
             if unrecorded > 0 {
                 let plural = if unrecorded == 1 { "" } else { "s" };
                 println!(
                     "advisory: {unrecorded} changed symbol{plural} with no record anchored \
-                     (consider `av record --anchor path:Symbol`)"
+                     (consider `av record --anchor path:Symbol`, or in one call \
+                     `av submit --record \"decision: ... @ path:Symbol\"`)"
                 );
             }
         }

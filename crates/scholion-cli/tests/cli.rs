@@ -312,6 +312,11 @@ fn submit_with_record_flags_records_and_submits_in_one_call() {
         ],
     ));
     assert!(stdout.contains("submitted (in_review)"), "{stdout}");
+    assert!(
+        stdout.contains("av review"),
+        "the daemon's next step: {stdout}"
+    );
+    assert!(stdout.contains("recorded 1"), "{stdout}");
     let st = ok(av(&d, &ws, &["status"]));
     assert!(st.contains("in_review"), "{st}");
     let md = ok(av(&d, &ws, &["context", "--budget", "3000"]));
@@ -356,6 +361,34 @@ fn record_json_writes_every_record() {
         &["record", "--json", "-", "--kind", "note", "--summary", "x"],
     );
     assert!(!both.status.success(), "{}", err(&both));
+}
+
+#[test]
+fn record_json_checks_every_item_before_sending_any() {
+    let (d, ws, _scratch) = started();
+    let items = format!(
+        r#"[{{"kind": "decision", "summary": "first fine record"}},
+            {{"kind": "note", "summary": "{}"}}]"#,
+        "y".repeat(201)
+    );
+    let o = av_stdin(&d, &ws, &["record", "--json", "-"], &items);
+    let e = err(&o);
+    assert!(
+        !o.status.success() && e.contains("records[1]") && e.contains("201"),
+        "{e}"
+    );
+    let bad_kind = r#"[{"kind": "decision", "summary": "fine"}, {"kind": "idea", "summary": "x"}]"#;
+    let o = av_stdin(&d, &ws, &["record", "--json", "-"], bad_kind);
+    let e = err(&o);
+    assert!(
+        !o.status.success() && e.contains("records[1]") && e.contains("idea"),
+        "{e}"
+    );
+    let md = ok(av(&d, &ws, &["context", "--budget", "3000"]));
+    assert!(
+        !md.contains("first fine record") && !md.contains("decision: fine"),
+        "nothing was sent: {md}"
+    );
 }
 
 #[test]
