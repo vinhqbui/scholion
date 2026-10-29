@@ -405,6 +405,33 @@ async fn a_refused_operation_is_a_tool_error_not_a_protocol_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn instructions_do_not_ask_for_manual_checkpoints() {
+    let e = env().await;
+    let r = send(
+        &e,
+        None,
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "claude-code", "version": "1"}}}),
+    )
+    .await;
+    let instructions = r.body["result"]["instructions"].as_str().unwrap();
+    assert!(
+        !instructions.contains("checkpoint` after edits"),
+        "{instructions}"
+    );
+    assert!(instructions.contains("submit checkpoints for you"));
+
+    // get_context without a budget asks for 800 tokens
+    let s = r.session.unwrap();
+    let t = start_task(&e, "Improve greeting").await;
+    let out = text(&tool(&e, &s, "get_context", json!({"task_id": id(&t)})).await);
+    let rcp = out.rsplit("receipt: ").next().unwrap().trim().to_owned();
+    let (_, receipt) = call(&e.app, "GET", &format!("/v1/receipts/{rcp}"), None).await;
+    assert_eq!(receipt["budget"], 800, "{receipt}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn submit_tool_accepts_records() {
     let e = env().await;
     let s = connect(&e, "claude-code").await;

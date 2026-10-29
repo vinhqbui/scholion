@@ -61,10 +61,14 @@ enum Cmd {
     Checkpoint,
     /// Record an intent, decision, attempt (dead end) or note.
     Record {
-        #[arg(long)]
-        kind: String,
-        #[arg(long)]
-        summary: String,
+        #[arg(long, required_unless_present = "json", requires = "summary")]
+        kind: Option<String>,
+        #[arg(long, required_unless_present = "json", requires = "kind")]
+        summary: Option<String>,
+        /// Record many at once: a JSON list of {kind, summary, body?, anchors?: ["path[:Symbol]"]}
+        /// from FILE, or from stdin with `-`. Replaces --kind and --summary.
+        #[arg(long, value_name = "FILE|-", conflicts_with_all = ["kind", "summary", "body", "anchors"])]
+        json: Option<String>,
         #[arg(long)]
         body: Option<String>,
         /// path or path:symbol (repeatable)
@@ -76,7 +80,7 @@ enum Cmd {
     },
     /// Print a token-budgeted context pack for the task.
     Context {
-        #[arg(long, default_value_t = 4000)]
+        #[arg(long, default_value_t = 800)]
         budget: u32,
         #[arg(long)]
         focus: Option<String>,
@@ -113,7 +117,11 @@ enum Cmd {
         repo: Option<String>,
     },
     /// Hand the task to review (a conflicted task is rebased onto main first).
-    Submit,
+    Submit {
+        /// Record and submit in one call: "KIND: SUMMARY @ path[:Symbol]" (repeatable).
+        #[arg(long = "record", value_name = "KIND: SUMMARY @ path[:Symbol]")]
+        records: Vec<String>,
+    },
     /// Run a command in the workspace and record its result at the current head (needed to approve).
     Validate {
         /// The command and its arguments, after `--`.
@@ -488,6 +496,72 @@ fn parse_anchor(s: &str) -> Value {
     }
 }
 
+/// `KIND: SUMMARY @ path[:Symbol]` -> record JSON (the anchor is optional).
+fn parse_record_spec(s: &str) -> Result<Value> {
+    let bad = || {
+        CliError::Local(format!(
+            "expected KIND: SUMMARY @ path[:Symbol], got {s:?} (the anchor after @ is optional)"
+        ))
+    };
+    let (kind, rest) = s.split_once(':').ok_or_else(bad)?;
+    let (summary, anchor) = match rest.rsplit_once(" @ ") {
+        Some((summary, anchor)) => (summary, Some(anchor.trim())),
+        None => (rest, None),
+    };
+    let (kind, summary) = (kind.trim(), summary.trim());
+    if kind.is_empty() || summary.is_empty() {
+        return Err(bad());
+    }
+    let anchors: Vec<Value> = anchor
+        .filter(|a| !a.is_empty())
+        .map(parse_anchor)
+        .into_iter()
+        .collect();
+    Ok(json!({"kind": kind, "summary": summary, "anchors": anchors}))
+}
+
+/// The items of `av record --json`: a JSON list read from FILE or stdin (`-`); anchors are
+/// `path[:Symbol]` strings.
+fn read_record_items(src: &str) -> Result<Vec<Value>> {
+    let text = if src == "-" {
+        let mut t = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut t)
+            .map_err(|e| CliError::Local(format!("cannot read stdin: {e}")))?;
+        t
+    } else {
+        std::fs::read_to_string(src)
+            .map_err(|e| CliError::Local(format!("cannot read {src}: {e}")))?
+    };
+    let items: Vec<Value> = serde_json::from_str(&text).map_err(|e| {
+        CliError::Local(format!(
+            "--json expects a list of {{kind, summary, body?, anchors?}}: {e}"
+        ))
+    })?;
+    items
+        .into_iter()
+        .map(|mut item| {
+            for key in ["kind", "summary"] {
+                if item[key].as_str().is_none_or(str::is_empty) {
+                    return Err(CliError::Local(format!(
+                        "--json: every record needs a {key}: {item}"
+                    )));
+                }
+            }
+            let anchors: Vec<Value> = item["anchors"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|a| match a.as_str() {
+                    Some(text) => parse_anchor(text),
+                    None => a.clone(),
+                })
+                .collect();
+            item["anchors"] = Value::Array(anchors);
+            Ok(item)
+        })
+        .collect()
+}
+
 /// `summary|path:symbol|body` -> finding JSON (anchor and body optional).
 fn parse_finding(s: &str) -> Value {
     let mut parts = s.splitn(3, '|');
@@ -726,19 +800,37 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Record {
             kind,
             summary,
+            json: json_src,
             body,
             anchors,
             receipt,
         } => {
+            let items = match (json_src, kind, summary) {
+                (Some(src), _, _) => read_record_items(src)?,
+                (None, Some(kind), Some(summary)) => {
+                    let anchors: Vec<Value> = anchors.iter().map(|a| parse_anchor(a)).collect();
+                    vec![json!({"kind": kind, "summary": summary, "body": body,
+                                "anchors": anchors})]
+                }
+                _ => {
+                    return Err(CliError::Local(
+                        "give --json FILE|- or both --kind and --summary".into(),
+                    ));
+                }
+            };
             let (task, _) = resolve_task(&cli)?;
-            let anchors: Vec<Value> = anchors.iter().map(|a| parse_anchor(a)).collect();
-            let r = client.post_as(
-                &format!("/v1/tasks/{task}/records"),
-                &json!({"kind": kind, "summary": summary, "body": body, "anchors": anchors,
-                        "agent": cli.agent, "receipt": receipt}),
-                generation_for(&cli, &task),
-            )?;
-            println!("recorded rec:{} ({})", short(s(&r["id"])), s(&r["kind"]));
+            for mut item in items {
+                item["agent"] = json!(cli.agent);
+                if item["receipt"].is_null() {
+                    item["receipt"] = json!(receipt);
+                }
+                let r = client.post_as(
+                    &format!("/v1/tasks/{task}/records"),
+                    &item,
+                    generation_for(&cli, &task),
+                )?;
+                println!("recorded rec:{} ({})", short(s(&r["id"])), s(&r["kind"]));
+            }
         }
         Cmd::Context {
             budget,
@@ -949,11 +1041,19 @@ fn run(cli: Cli) -> Result<()> {
                 println!("conflicts: {}", conflicts.join(", "));
             }
         }
-        Cmd::Submit => {
+        Cmd::Submit { records } => {
+            let records = records
+                .iter()
+                .map(|r| parse_record_spec(r))
+                .collect::<Result<Vec<_>>>()?;
             let (task, _) = resolve_task(&cli)?;
+            let mut body = json!({"agent": cli.agent});
+            if !records.is_empty() {
+                body["records"] = Value::Array(records);
+            }
             let r = client.post_as(
                 &format!("/v1/tasks/{task}/submit"),
-                &json!({"agent": cli.agent}),
+                &body,
                 generation_for(&cli, &task),
             )?;
             println!(
@@ -1396,6 +1496,30 @@ mod tests {
             parse_anchor("a.py:"),
             json!({"path": "a.py", "symbol": null})
         );
+    }
+
+    #[test]
+    fn parse_record_spec_splits_kind_summary_and_anchor() {
+        assert_eq!(
+            parse_record_spec("decision: Use allocate @ tallyho/money.py:Money.allocate").unwrap(),
+            json!({"kind": "decision", "summary": "Use allocate",
+                   "anchors": [{"path": "tallyho/money.py", "symbol": "Money.allocate"}]})
+        );
+        assert_eq!(
+            parse_record_spec("attempt: tried caching").unwrap(),
+            json!({"kind": "attempt", "summary": "tried caching", "anchors": []})
+        );
+        let e = parse_record_spec("no colon here").unwrap_err().to_string();
+        assert!(e.contains("KIND: SUMMARY @ path[:Symbol]"), "{e}");
+    }
+
+    #[test]
+    fn context_budget_defaults_to_800() {
+        let cli = Cli::try_parse_from(["av", "context"]).unwrap();
+        match cli.cmd {
+            Cmd::Context { budget, .. } => assert_eq!(budget, 800),
+            _ => panic!("not a context command"),
+        }
     }
 
     #[test]
