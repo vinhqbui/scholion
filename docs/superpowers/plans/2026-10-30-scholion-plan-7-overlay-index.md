@@ -144,23 +144,26 @@ The overlay does not fix this one, so it lands first, on its own branch.
 
 ### Task 1: `ScopeView` and the migration, no behaviour change
 
-- [ ] Migration `0021_overlay.sql` (tombstone column, `scope_overlays`) and its line in
+- [x] Migration `0021_overlay.sql` (tombstone column, `scope_overlays`) and its line in
   `migrations_frozen.rs`.
-- [ ] `ScopeView` in `scholion-index`. Every read method of `CodeIndex` takes `&ScopeView`. For a
+- [x] `ScopeView` in `scholion-index`. Every read method of `CodeIndex` takes `&ScopeView`. For a
   view with no overlay row the SQL is today's. Callers in `scholion-pack` and `scholion-daemon`
   build the view from the task.
-- [ ] `cargo test --workspace` green with no other change; the goldens are untouched.
+- [x] `cargo test --workspace` green with no other change; the goldens are untouched.
 
 ### Task 2: The differential test (write it before the overlay)
 
-- [ ] `crates/scholion-index/tests/overlay_equiv.rs`, proptest like `merge_fuzz`. Generate a
+- [x] `crates/scholion-index/tests/overlay_equiv.rs`, proptest like `merge_fuzz`. Generate a
   `main` tree of Python, Rust and TypeScript files with shared names (so names fan out), then a
   sequence of task edits (modify, add, delete, revert to `main`'s content) and `main` merges.
   After each step, build the reference index of H with full indexing in a fresh scope. Assert
   equal results for `symbols_in`, `resolve`, `search_symbols`, `search_code_lexical`,
   `neighbors` (1 and 2 hops) and `in_degree`, ids mapped to `(path, qname)`.
-- [ ] It fails until Task 3 lands (the overlay methods are `todo!()`). Keep a generator check that
-  the cases produce masked paths, deletions and fan-out names, as `merge_fuzz` checks its cases.
+- [x] It fails until Task 3 lands, so it is `#[ignore]`d; Task 3 removes the `ignore`. The
+  overlay is written by hand in the test (rows for differing paths, tombstones, a
+  `scope_overlays` row) until Task 4's writes exist. A second test runs the same comparison
+  between two full indexes of one tree, checking the harness itself. Both assert that the cases
+  produced masked paths, deletions and fanned-out names.
 
 ### Task 3: Overlay reads
 
