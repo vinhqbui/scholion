@@ -1,3 +1,4 @@
+mod agents;
 mod client;
 mod hook;
 mod local;
@@ -60,7 +61,11 @@ enum Cmd {
         /// Repo name (default: the repository's directory name).
         #[arg(long)]
         name: Option<String>,
-        /// Leave Claude Code's settings alone.
+        /// Agent CLI to wire to the daemon (repeatable): claude (hooks and MCP), codex, grok,
+        /// gemini (MCP). Default: claude.
+        #[arg(long = "for", value_enum)]
+        agents: Vec<agents::Agent>,
+        /// Leave Claude Code's settings alone (same as naming only other agents).
         #[arg(long)]
         no_claude: bool,
     },
@@ -703,7 +708,7 @@ fn print_notes(r: &Value) {
 }
 
 /// Polls a repo import until it is done; a failed one is an error.
-fn wait_import(client: &Client, name: &str) -> Result<Value> {
+pub(crate) fn wait_import(client: &Client, name: &str) -> Result<Value> {
     loop {
         let job = client.get(&format!("/v1/repos/{name}/import"), &[])?;
         match job["state"].as_str() {
@@ -724,13 +729,28 @@ fn run(cli: Cli) -> Result<()> {
     match &cli.cmd {
         Cmd::Up => local::up(&client, &cli.url)?,
         Cmd::Down => local::down(&client, &cli.url)?,
-        Cmd::Init { name, no_claude } => local::init(
-            &client,
-            &cli.url,
-            cli.token.as_deref(),
-            name.as_deref(),
-            !no_claude,
-        )?,
+        Cmd::Init {
+            name,
+            agents,
+            no_claude,
+        } => {
+            let mut agents = if agents.is_empty() {
+                vec![agents::Agent::Claude]
+            } else {
+                agents.clone()
+            };
+            agents.dedup();
+            if *no_claude {
+                agents.retain(|a| *a != agents::Agent::Claude);
+            }
+            local::init(
+                &client,
+                &cli.url,
+                cli.token.as_deref(),
+                name.as_deref(),
+                &agents,
+            )?
+        }
         Cmd::Repo {
             cmd: RepoCmd::Add { name, git_source },
         } => {

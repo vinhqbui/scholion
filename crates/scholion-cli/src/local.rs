@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::agents::{self, Agent};
 use crate::client::{CliError, Client, Result};
 
 /// First start may unpack Postgres and run initdb.
@@ -79,7 +80,7 @@ fn daemon_bin() -> Result<PathBuf> {
 /// Starts a daemon for `url` in the background unless one already answers there.
 pub fn up(client: &Client, url: &str) -> Result<()> {
     if healthy(client) {
-        println!("daemon already running at {url} (board: {url}/ui)");
+        println!("daemon already running at {url} (dashboard: {url}/ui)");
         return Ok(());
     }
     let port = local_port(url).ok_or_else(|| {
@@ -146,7 +147,7 @@ pub fn up(client: &Client, url: &str) -> Result<()> {
         std::thread::sleep(Duration::from_millis(200));
     }
     println!(
-        "daemon running at {url} (pid {}; board: {url}/ui; log: {})",
+        "daemon running at {url} (pid {}; dashboard: {url}/ui; log: {})",
         child.id(),
         log_path.display()
     );
@@ -254,13 +255,13 @@ pub fn repo_name(dir: &Path) -> String {
     }
 }
 
-/// `av init`: daemon up (when it is local), this git repository added, Claude Code wired.
+/// `av init`: daemon up (when it is local), this git repository added, `agents` wired.
 pub fn init(
     client: &Client,
     url: &str,
     token: Option<&str>,
     name: Option<&str>,
-    claude: bool,
+    agents: &[Agent],
 ) -> Result<()> {
     let root = git_root()?;
     if !healthy(client) {
@@ -279,10 +280,11 @@ pub fn init(
     if exists {
         println!("repo {name} already added");
     } else {
-        let r = client.post(
+        client.post(
             "/v1/repos",
-            &json!({"name": name, "git_source": root.to_string_lossy()}),
+            &json!({"name": name, "git_source": root.to_string_lossy(), "wait": false}),
         )?;
+        let r = crate::wait_import(client, &name)?;
         println!(
             "repo {name} added from {} (main {}, {} files indexed)",
             root.display(),
@@ -296,19 +298,40 @@ pub fn init(
         );
     }
     let mcp_url = format!("{}/mcp", url.trim_end_matches('/'));
-    if claude {
-        let settings = home().join(".claude/settings.json");
-        install_claude_hooks(&settings)?;
-        println!("Claude Code hooks: {}", settings.display());
-        claude_mcp(&mcp_url, token);
+    let codex_home = env_path("CODEX_HOME");
+    for &agent in agents {
+        let path = agent.config_path(&home(), codex_home.clone());
+        match agent {
+            Agent::Claude => {
+                install_claude_hooks(&path)?;
+                println!("Claude Code hooks: {}", path.display());
+                claude_mcp(&mcp_url, token);
+            }
+            Agent::Codex => agents::install_codex(&path, &mcp_url, token.is_some())?,
+            Agent::Grok => agents::install_grok(&path, &mcp_url, token.is_some())?,
+            Agent::Gemini => agents::install_gemini(&path, &mcp_url, token.is_some())?,
+        }
+        if agent != Agent::Claude {
+            println!(
+                "{} MCP server `{}`: {}{}",
+                agent.name(),
+                agents::SERVER,
+                path.display(),
+                if token.is_some() {
+                    " (reads the token from AV_TOKEN when it starts)"
+                } else {
+                    ""
+                }
+            );
+        }
     }
     println!(
-        "Other MCP clients (Cursor, Gemini CLI, ...): streamable HTTP at {mcp_url}\n\
+        "Other MCP clients: streamable HTTP at {mcp_url}\n\
          \n\
          Next: start a task and work in its workspace (or let the agent call the `start_task` tool):\n  \
          av task start --repo {name} --title \"Add retry\" --goal \"retry failed calls with backoff\"\n  \
-         cd <the workspace it prints> && claude\n\
-         Board: {}/ui",
+         cd <the workspace it prints> && claude   (or codex, grok, gemini)\n\
+         Dashboard: {}/ui",
         url.trim_end_matches('/')
     );
     Ok(())
@@ -343,7 +366,7 @@ fn hook(sub: &str) -> Value {
     json!({ "type": "command", "command": format!("command -v av >/dev/null 2>&1 && av hook {sub}; exit 0") })
 }
 
-/// Merges the `SessionStart`, `PostToolUse` and `Stop` hooks into Claude Code's settings,
+/// Merges the `SessionStart`, `PreToolUse`, `PostToolUse` and `Stop` hooks into Claude Code's settings,
 /// replacing earlier Scholion hooks; the previous file is kept as `settings.json.bak`.
 pub fn install_claude_hooks(path: &Path) -> Result<()> {
     let mut settings: Value = match std::fs::read_to_string(path) {
@@ -367,7 +390,11 @@ pub fn install_claude_hooks(path: &Path) -> Result<()> {
             "PostToolUse",
             json!({ "matcher": "Edit|Write|MultiEdit", "hooks": [hook("post-edit")] }),
         ),
-        ("Stop", json!({ "hooks": [hook("usage")] })),
+        (
+            "PreToolUse",
+            json!({ "matcher": "Read|Edit|MultiEdit", "hooks": [hook("pre-read")] }),
+        ),
+        ("Stop", json!({ "hooks": [hook("stop")] })),
     ];
     let hooks = settings
         .as_object_mut()
@@ -487,7 +514,7 @@ mod tests {
             &path,
             r#"{"model":"x","hooks":{"Stop":[
                 {"hooks":[{"type":"command","command":"say done"}]},
-                {"hooks":[{"type":"command","command":"/home/me/.claude/av-hooks/usage.sh"}]}
+                {"hooks":[{"type":"command","command":"/home/me/.claude/av-hooks/stop.sh"}]}
             ]}}"#,
         )
         .unwrap();
@@ -502,8 +529,10 @@ mod tests {
             stop[1]["hooks"][0]["command"]
                 .as_str()
                 .unwrap()
-                .contains("av hook usage")
+                .contains("av hook stop")
         );
+        let pre = &v["hooks"]["PreToolUse"][0];
+        assert_eq!(pre["matcher"], "Read|Edit|MultiEdit");
         assert_eq!(v["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
         assert_eq!(
             v["hooks"]["PostToolUse"][0]["matcher"],

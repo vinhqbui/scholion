@@ -1560,7 +1560,7 @@ fn init_adds_the_repo_and_wires_claude_code() {
         &std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap(),
     )
     .unwrap();
-    for event in ["SessionStart", "PostToolUse", "Stop"] {
+    for event in ["SessionStart", "PreToolUse", "PostToolUse", "Stop"] {
         assert_eq!(
             settings["hooks"][event].as_array().unwrap().len(),
             1,
@@ -1584,6 +1584,39 @@ fn init_adds_the_repo_and_wires_claude_code() {
             "task", "start", "--repo", "demo", "--title", "T", "--goal", "G",
         ],
     ));
+}
+
+#[test]
+fn init_wires_codex_grok_and_gemini_through_mcp() {
+    let d = start_daemon();
+    let home = TempDir::new().unwrap();
+    let env = [("HOME", home.path().to_str().unwrap()), ("CODEX_HOME", "")];
+    let out = ok(av_env(
+        &d.url,
+        &d.src,
+        &env,
+        &[
+            "init", "--name", "demo", "--for", "codex", "--for", "grok", "--for", "gemini",
+        ],
+    ));
+    for name in ["Codex", "Grok Build", "Gemini CLI"] {
+        assert!(out.contains(&format!("{name} MCP server `av`")), "{out}");
+    }
+    let mcp = format!("{}/mcp", d.url);
+    let codex = std::fs::read_to_string(home.path().join(".codex/config.toml")).unwrap();
+    assert!(
+        codex.contains(&format!("[mcp_servers.av]\nurl = \"{mcp}\"")),
+        "{codex}"
+    );
+    let grok = std::fs::read_to_string(home.path().join(".grok/config.toml")).unwrap();
+    assert!(grok.contains(&format!("url = \"{mcp}\"")), "{grok}");
+    let gemini: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".gemini/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(gemini["mcpServers"]["av"]["httpUrl"], mcp.as_str());
+    // naming only other agents leaves Claude Code alone
+    assert!(!home.path().join(".claude").exists());
 }
 
 #[test]
