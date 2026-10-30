@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiResult;
 use crate::flow::fence;
-use crate::indexing::{index_change, reindex_changed};
+use crate::indexing::{index_change, init_task_overlay, reconcile_overlay, update_overlay_changed};
 
 /// Budget of a work pack (start, `context`) when the client names none: agents get small packs and
 /// ask for more.
@@ -374,15 +374,8 @@ async fn prepare_workspace(st: &AppState, task: &Task) -> Result<()> {
     st.store
         .set_workspace(task.id, &st.to_host_path(&info.path), &info.base_change)
         .await?;
-    // A task starts at trunk, which `main` is normally indexed at: copy those rows in Postgres
-    // instead of reading and indexing every file again. Otherwise index from the VCS.
-    let copied = st
-        .index
-        .clone_scope(&task.repo, "main", &task.slug, &info.base_change)
-        .await?;
-    if !copied {
-        index_change(st, &task.repo, &task.slug, &info.base_change).await?;
-    }
+    // Overlay on main: O empty when B = T; reconcile fills changed(B, T) when main moved.
+    init_task_overlay(st, &task.repo, &task.slug, &info.base_change).await?;
     Ok(())
 }
 
@@ -489,18 +482,19 @@ async fn checkpoint(
     ))
 }
 
-/// Snapshot the workspace, re-index what changed, and record the new head.
+/// Snapshot the workspace, update the task overlay for what changed, and record the new head.
 /// Returns (head, changed paths, indexing warnings). The caller holds `AppState::lock_task`.
 pub(crate) async fn snapshot_and_index(
     st: &AppState,
     task: &Task,
 ) -> Result<(ChangeId, Vec<String>, Vec<String>)> {
+    let old_head = task.head_change.clone();
     let head = st.vcs.snapshot(&task.repo, &task.slug).await?;
     let changed = st
         .vcs
         .changed_paths(&task.repo, &task.base_change, &head)
         .await?;
-    let warnings = reindex_changed(st, &task.repo, &task.slug, &head, &changed).await?;
+    let warnings = update_overlay_changed(st, &task.repo, &task.slug, &old_head, &head).await?;
     st.store.set_head(task.id, &head, &changed).await?;
     Ok((head, changed, warnings))
 }
@@ -666,10 +660,19 @@ async fn context(
     Path(id): Path<Uuid>,
     Query(q): Query<ContextQuery>,
 ) -> ApiResult<Pack> {
+    let _guard = st.lock_task(task_id(id)).await;
+    let task = st.store.get_task(task_id(id)).await?;
+    // Idle tasks pick up main's merges here: reconcile before any index read.
+    let head = if task.head_change.0.is_empty() {
+        &task.base_change
+    } else {
+        &task.head_change
+    };
+    reconcile_overlay(&st, &task.repo, &task.slug, head).await?;
     let pack = st
         .packer
         .build(PackRequest {
-            task_id: task_id(id),
+            task_id: task.id,
             budget_tokens: q.budget.unwrap_or(DEFAULT_BUDGET),
             focus: q.focus.filter(|f| !f.trim().is_empty()),
             session: q.session.filter(|s| !s.trim().is_empty()),
@@ -679,7 +682,7 @@ async fn context(
             max_code: q.max_code,
         })
         .await?;
-    Ok(Json(with_main_health(&st, task_id(id), pack).await))
+    Ok(Json(with_main_health(&st, task.id, pack).await))
 }
 
 /// Puts a warning at the top of a pack while main's post-merge check is red, so no agent builds

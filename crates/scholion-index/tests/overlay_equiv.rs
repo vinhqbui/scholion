@@ -6,8 +6,8 @@
 //! tree, symbol ids replaced by `path:qname`.
 //!
 //! The overlay is written by hand here (task-scope rows for the paths whose content differs from
-//! main, tombstones for paths the task deleted, a `scope_overlays` row): the overlay writes are
-//! Plan 7 Task 4.
+//! main, tombstones for paths the task deleted, a `scope_overlays` row). Production writes live in
+//! the daemon (`init_task_overlay` / `update_overlay_changed` / `replace_task_overlay`).
 //!
 //! CI runs a fixed seed. A long run: `PROPTEST_CASES=500 PROPTEST_RNG_SEED=<n> cargo test ...`.
 
@@ -223,12 +223,6 @@ async fn write_overlay(
     task: &Tree,
 ) {
     idx.drop_scope(repo, scope).await.unwrap();
-    sqlx::query("DELETE FROM scope_overlays WHERE repo = $1 AND scope = $2")
-        .bind(repo)
-        .bind(scope)
-        .execute(pool)
-        .await
-        .unwrap();
     let differ: Vec<String> = task
         .iter()
         .filter(|(p, t)| main.get(*p) != Some(t))

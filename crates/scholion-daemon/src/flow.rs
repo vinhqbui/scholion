@@ -20,7 +20,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::api::{BUNDLE_BUDGET, RecordBody, check_record, snapshot_and_index, write_record};
 use crate::error::ApiResult;
-use crate::indexing::{index_change, reindex_changed};
+use crate::indexing::{rebuild_task_overlay, reindex_changed, replace_task_overlay};
 
 /// Serializes merge and undo across the daemon, so a status check and the trunk move it guards
 /// cannot interleave with another merge of the same task.
@@ -250,15 +250,22 @@ pub(crate) async fn submit(
     }))
 }
 
-/// Rebases the task onto main, re-indexes, and stores the new base, head and conflicts.
+/// Rebases the task onto main, replaces the overlay with `changed(T, H')`, and stores the new
+/// base, head and conflicts.
 async fn sync_workspace(st: &AppState, task: &Task) -> Result<Vec<String>> {
     let rebased = st.vcs.rebase_workspace(&task.repo, &task.slug).await?;
     st.store
         .set_workspace(task.id, &task.workspace_path, &rebased.base)
         .await?;
-    index_change(st, &task.repo, &task.slug, &rebased.base).await?;
     let task = st.store.get_task(task.id).await?;
-    snapshot_and_index(st, &task).await?;
+    // After rebase B = T; O is exactly the task's remaining diff against trunk.
+    let head = st.vcs.snapshot(&task.repo, &task.slug).await?;
+    let changed = st
+        .vcs
+        .changed_paths(&task.repo, &rebased.base, &head)
+        .await?;
+    replace_task_overlay(st, &task.repo, &task.slug, &head).await?;
+    st.store.set_head(task.id, &head, &changed).await?;
     let mut state = st.store.merge_state(task.id).await?;
     state.conflicts = rebased.conflicts.clone();
     st.store.set_merge_state(task.id, &state).await?;
@@ -977,12 +984,12 @@ pub(crate) async fn revert(
         )
         .await?;
     crate::backup::spawn_backup(&st, &task.repo);
-    // the merge dropped the task's index scope; its owner works in it again
-    if let Err(e) = index_change(&st, &task.repo, &task.slug, &task.head_change).await {
-        tracing::warn!(task = %task.slug, error = %e, "re-indexing the reverted task failed");
-    }
+    // Restore main's index first so the task overlay diffs against the post-revert tip.
     let changed = st.vcs.changed_paths(&task.repo, &pre, &main).await?;
     reindex_changed(&st, &task.repo, "main", &main, &changed).await?;
+    if let Err(e) = rebuild_task_overlay(&st, &task).await {
+        tracing::warn!(task = %task.slug, error = %e, "rebuilding the reverted task overlay failed");
+    }
     Ok(Json(
         json!({ "status": status.as_str(), "main": main, "reverted": merged }),
     ))
@@ -1013,12 +1020,12 @@ pub(crate) async fn undo(
         .await?;
     let status = st.store.transition(task.id, Event::Undo).await?;
     crate::backup::spawn_backup(&st, &task.repo);
-    // the merge dropped the task's index scope; review needs it again
-    if let Err(e) = index_change(&st, &task.repo, &task.slug, &task.head_change).await {
-        tracing::warn!(task = %task.slug, error = %e, "re-indexing the undone task failed");
-    }
+    // Restore main's index first so the task overlay diffs against the undone tip.
     let changed = st.vcs.changed_paths(&task.repo, &pre, &merged).await?;
     reindex_changed(&st, &task.repo, "main", &pre, &changed).await?;
+    if let Err(e) = rebuild_task_overlay(&st, &task).await {
+        tracing::warn!(task = %task.slug, error = %e, "rebuilding the undone task overlay failed");
+    }
     st.store
         .add_record(NewRecord {
             task_id: task.id,
