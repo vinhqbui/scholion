@@ -9,7 +9,7 @@ pub use std::sync::Arc;
 pub use axum::Router;
 use axum::body::Body;
 pub use axum::http::{Request, StatusCode};
-pub use scholion_daemon::{AppState, router};
+pub use scholion_daemon::{AppState, router_with};
 pub use scholion_index::PgIndex;
 pub use scholion_store::PgStore;
 pub use scholion_testutil::TestDb;
@@ -100,6 +100,22 @@ pub async fn env_with_vcs(
     wrap: impl FnOnce(Arc<dyn scholion_core::Vcs>) -> Arc<dyn scholion_core::Vcs>,
     tweak: impl FnOnce(AppState) -> AppState,
 ) -> Env {
+    env_full(wrap, tweak, Router::new()).await
+}
+
+/// Like `env_with`, with `extra` routes (`router_with`).
+pub async fn env_with_routes(
+    tweak: impl FnOnce(AppState) -> AppState,
+    extra: Router<AppState>,
+) -> Env {
+    env_full(|v| v, tweak, extra).await
+}
+
+async fn env_full(
+    wrap: impl FnOnce(Arc<dyn scholion_core::Vcs>) -> Arc<dyn scholion_core::Vcs>,
+    tweak: impl FnOnce(AppState) -> AppState,
+    extra: Router<AppState>,
+) -> Env {
     let db = TestDb::new().await;
     let src = fixture_git_repo();
     let store_dir = TempDir::new().unwrap();
@@ -119,7 +135,7 @@ pub async fn env_with_vcs(
     );
     let state = tweak(state);
     let token = state.token().map(str::to_owned);
-    let app = router(state);
+    let app = router_with(state, extra);
     let e = Env {
         _db: db,
         store,

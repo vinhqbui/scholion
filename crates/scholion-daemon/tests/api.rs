@@ -3222,3 +3222,145 @@ async fn work_packs_default_to_800_tokens_of_signatures() {
     .await;
     assert_eq!(started["pack"]["markdown"], same["markdown"]);
 }
+
+/// A guard that refuses one kind of action and remembers what it was asked.
+struct Refuse {
+    approve: bool,
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl scholion_daemon::MergeGuard for Refuse {
+    async fn check(&self, action: scholion_daemon::Guarded<'_>) -> Result<(), String> {
+        let (what, refuse) = match action {
+            scholion_daemon::Guarded::Approve { reviewer, .. } => {
+                (format!("approve by {reviewer}"), self.approve)
+            }
+            scholion_daemon::Guarded::Merge { agent, .. } => {
+                (format!("merge by {agent}"), !self.approve)
+            }
+        };
+        self.asked.lock().unwrap().push(what);
+        if refuse {
+            Err("held for a human".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+async fn ready_for_review(e: &Env) -> Value {
+    let t = start_task(e, "Upper names").await;
+    write_file(e, &t, "app/util.py", UPPER);
+    decide(e, &t).await;
+    submit(e, &t).await;
+    validate(e, &t, 0).await;
+    t
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merge_guard_can_refuse_an_approval() {
+    let guard = std::sync::Arc::new(Refuse {
+        approve: true,
+        asked: Default::default(),
+    });
+    let g = guard.clone();
+    let e = env_with(move |s| s.with_merge_guard(g)).await;
+    let t = ready_for_review(&e).await;
+    let (status, body) = review(&e, &t, "reviewer", "approve").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot approve: held for a human"),
+        "{body}"
+    );
+    assert_eq!(*guard.asked.lock().unwrap(), ["approve by reviewer"]);
+    let (_, task) = call(&e.app, "GET", &format!("/v1/tasks/{}", id(&t)), None).await;
+    assert_eq!(task["task"]["status"], "in_review", "{task}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merge_guard_can_refuse_a_merge_and_main_stays() {
+    let guard = std::sync::Arc::new(Refuse {
+        approve: false,
+        asked: Default::default(),
+    });
+    let g = guard.clone();
+    let e = env_with(move |s| s.with_merge_guard(g)).await;
+    let t = ready_for_review(&e).await;
+    let (status, body) = review(&e, &t, "reviewer", "approve").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot merge: held for a human"),
+        "{body}"
+    );
+    assert_eq!(
+        *guard.asked.lock().unwrap(),
+        ["approve by reviewer", "merge by merger"]
+    );
+    let (_, task) = call(&e.app, "GET", &format!("/v1/tasks/{}", id(&t)), None).await;
+    assert_eq!(task["task"]["status"], "in_review", "{task}");
+}
+
+/// What an extension keeps in the state.
+struct Greeting(&'static str);
+
+async fn greet(axum::extract::State(st): axum::extract::State<AppState>) -> axum::Json<Value> {
+    let g = st.extension::<Greeting>().map(|g| g.0);
+    axum::Json(json!({ "greeting": g }))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn extra_routes_find_their_extension_and_sit_behind_the_token() {
+    let extra = axum::Router::new().route("/v1/ee/greet", axum::routing::get(greet));
+    let e = env_with_routes(
+        |s| {
+            s.with_extension(std::sync::Arc::new(Greeting("hello")))
+                .with_token(Some("secret".into()))
+        },
+        extra,
+    )
+    .await;
+    let (status, _) = call(&e.app, "GET", "/v1/ee/greet", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = call_with(
+        &e.app,
+        "GET",
+        "/v1/ee/greet",
+        None,
+        &[("authorization", "Bearer secret")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["greeting"], "hello");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribers_receive_lifecycle_events_in_process() {
+    let state = std::sync::Arc::new(std::sync::Mutex::new(None::<AppState>));
+    let keep = state.clone();
+    let e = env_with(move |s| {
+        *keep.lock().unwrap() = Some(s.clone());
+        s
+    })
+    .await;
+    let st = state.lock().unwrap().clone().unwrap();
+    let mut rx = st.subscribe_events().await.unwrap();
+    let mut rx2 = st.subscribe_events().await.unwrap();
+    let t = start_task(&e, "Upper names").await;
+    for rx in [&mut rx, &mut rx2] {
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap();
+        assert_eq!(ev.kind, "started");
+        assert_eq!(ev.task_id.unwrap().0.to_string(), id(&t));
+    }
+}

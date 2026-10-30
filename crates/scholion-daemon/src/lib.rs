@@ -7,6 +7,7 @@ mod checks;
 mod derived;
 mod embed_choice;
 mod error;
+mod ext;
 mod flow;
 mod indexing;
 mod mcp;
@@ -26,9 +27,10 @@ use scholion_pack::Packer;
 use scholion_semantic::{Embedder, SemanticSearch, VectorIndex};
 use scholion_store::PgStore;
 
-pub use api::router;
+pub use api::{router, router_with};
 pub use backup::{BACKUP_TICK, backoff, backup_tick, start_backups};
 pub use embed_choice::EmbedChoice;
+pub use ext::{AllowAll, Guarded, MergeGuard};
 pub use reindex::{SEMANTIC_LOCK_KEY, worker_tick};
 pub use wiring::{Config, build_state, embed_authorization};
 pub use worker::{DrainStats, OutboxWorker};
@@ -57,6 +59,10 @@ pub struct AppState {
     /// Open MCP sessions (`/mcp`), by `Mcp-Session-Id`.
     pub(crate) mcp: mcp::Sessions,
     task_locks: Arc<Mutex<HashMap<TaskId, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Asked before an approval and a merge; `AllowAll` unless an extension sets one.
+    pub(crate) guard: Arc<dyn MergeGuard>,
+    extensions: ext::Extensions,
+    events: ext::EventFeed,
 }
 
 impl AppState {
@@ -86,7 +92,35 @@ impl AppState {
             token: None,
             mcp: Arc::default(),
             task_locks: Arc::default(),
+            guard: Arc::new(AllowAll),
+            extensions: ext::Extensions::default(),
+            events: ext::EventFeed::default(),
         }
+    }
+
+    /// Keeps an extension's service in the state, one per type; handlers added with
+    /// `router_with` get it back with `extension`.
+    pub fn with_extension<T: Send + Sync + 'static>(mut self, value: Arc<T>) -> Self {
+        self.extensions.insert(value);
+        self
+    }
+
+    /// The service of type `T` given to `with_extension`, if any.
+    pub fn extension<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.extensions.get()
+    }
+
+    /// Asks `guard` before every approval and merge, after the lifecycle rules pass.
+    pub fn with_merge_guard(mut self, guard: Arc<dyn MergeGuard>) -> Self {
+        self.guard = guard;
+        self
+    }
+
+    /// Lifecycle events (`GET /v1/events`, of every repo) committed from now on, in process.
+    pub async fn subscribe_events(
+        &self,
+    ) -> scholion_core::Result<tokio::sync::broadcast::Receiver<scholion_core::AvEvent>> {
+        self.events.subscribe(self.store.clone()).await
     }
 
     /// Serializes the workspace operations of one task (snapshot → re-index → store head), so a

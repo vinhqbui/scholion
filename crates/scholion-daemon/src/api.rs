@@ -25,11 +25,18 @@ pub(crate) const BUNDLE_BUDGET: u32 = 4000;
 const DEFAULT_CODE: CodeDetail = CodeDetail::Signatures;
 
 pub fn router(state: AppState) -> Router {
+    router_with(state, Router::new())
+}
+
+/// `router` plus `extra` routes, which sit behind the same token check as `/v1`. Their handlers
+/// take `State<AppState>` and find their own services with `AppState::extension`.
+pub fn router_with(state: AppState, extra: Router<AppState>) -> Router {
     // `/ui` is a static page with no data in it; what it shows comes from `/v1`, behind the token.
     let open = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/ui", get(crate::ui::page));
     let api = routes()
+        .merge(extra)
         .route(
             "/mcp",
             post(crate::mcp::post)
