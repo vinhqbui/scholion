@@ -51,7 +51,7 @@ green, and E1 on the 42 public tasks must give identical means.
 
 ## Design
 
-### Data model (migration `0021_overlay.sql`; check `main`'s highest number first)
+### Data model (migration `0021_overlay.sql` here, `0022_overlay.sql` in agentvcs, where 0021 is taken; check the default branch's highest number first)
 
 - `index_files` gains `deleted boolean NOT NULL DEFAULT false`, the tombstone. A task scope's
   `index_files` rows are exactly O. `main`'s scope never has tombstones.
