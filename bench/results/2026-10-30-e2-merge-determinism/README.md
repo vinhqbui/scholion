@@ -62,6 +62,11 @@ The README claimed "the same state gives the same pack". Three things broke that
 Each fix has a test that fails without it: write order with ids blanked, and a burst of records
 that must list newest first. Neither golden file changed, and the E1 CI gate passes unchanged.
 
+E1 on the 42 public tasks, `main` against this branch on the same imports (`--reuse-run`), both
+without the semantic layer: 46 of 336 pack rows changed, and the means did not move at three
+decimals except `symbols_sig` at 4k for `pack` (0.732 → 0.735). The fixes change which of
+equally scored items wins, not how well the packer retrieves.
+
 ## Not done yet in E2
 
 - Scale and latency on public repos of about 1k, 10k and 50k files, and the 100-agent load
