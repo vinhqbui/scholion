@@ -70,8 +70,12 @@ to every symbol of that name), which make up most of each copy.
 
 ## Not measured
 
-- **The ~50k-file tier.** rust-lang/rust (39.5k code files) is in `rust/` if its run finished;
-  at the measured rates one start takes many minutes and gigabytes.
+- **The ~50k-file tier.** rust-lang/rust (64k files, 39.5k code files, shallow clone) did not
+  finish importing. After 10 minutes 2,000 of its code files were indexed, with 5.75 million
+  reference edges and a 1.4 GB database. Then the client's 600 s timeout closed the connection,
+  and the daemon dropped the import with it: `POST /v1/repos` runs inside the request, so a
+  disconnect cancels it, half done and without an error in the log. A large import should run
+  as a job the client polls.
 - **Token estimate accuracy per model family.** Claude's tokenizer is not public (it needs an
   API key for `count_tokens`), and this environment's proxy blocks downloading the DeepSeek
   tokenizer. The `calibrate` command does it with a key.
