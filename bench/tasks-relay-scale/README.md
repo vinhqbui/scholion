@@ -32,9 +32,14 @@ scholion-bench check bench/tasks-relay-scale
 
 unset ANTHROPIC_API_KEY
 export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
-export ANTHROPIC_AUTH_TOKEN="$(cat ~/.config/deepseek/key)"
+export ANTHROPIC_AUTH_TOKEN="$(cat ~/.config/deepseek/key)"   # required; empty sessions without it
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-flash ANTHROPIC_SMALL_FAST_MODEL=deepseek-flash
 export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-flash
+
+# Against a host/lite daemon (not compose), set --import-mount = --import-dir and
+# --allow-no-semantic if Qdrant is off, e.g.:
+#   COMMON="--av-url http://127.0.0.1:7430 --allow-no-semantic \
+#     --work-root ~/bench-work --import-dir ~/bench-work/src --import-mount ~/bench-work/src"
 
 # Pilot one memory-critical pair (cold fails these) before a full run:
 scholion-bench run bench/tasks-relay-scale --only relay-customer-region \
@@ -48,5 +53,5 @@ scholion-bench run bench/tasks-relay-scale --arms notes,av --jit-hooks --reps 3 
   --out bench/results/$(date +%F)-relay-scale $COMMON --confirm
 ```
 
-`$COMMON` is the bench stack from `bench/README.md`. Commit the report under
-`bench/results/<date>-relay-scale/` and update `HANDOFF.md`.
+`$COMMON` is the bench stack from `bench/README.md` (compose), or the host form above.
+Commit the report under `bench/results/<date>-relay-scale/` and update `HANDOFF.md`.

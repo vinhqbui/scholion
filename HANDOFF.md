@@ -32,10 +32,25 @@ irrelevant.
 Noise fills `NOTES.md` and av records; it is **not** one empty git commit each (`RelayNote.noise`).
 Noise anchors avoid the ten signal (path, symbol) pairs so PreToolUse on a task file is not flooded.
 
-**Your job:** with a DeepSeek key, run the pilot then the full `notes,av` set, commit
-`bench/results/<date>-relay-scale/`, and write whether av beats `notes` on cost/accepted (and
-acceptance). Suggested commands are in the scale README. Rough budget: pilot ~$1, full 60
-sessions maybe several dollars — check `GET https://api.deepseek.com/user/balance` first.
+**Attempted 2026-10-30 (cloud agent):** harness is green without a key; the paid run is not.
+
+- Lite daemon on `:7430`, tallyho repo, pytest venv, Claude Code 2.1.314 installed.
+- `scholion-bench check bench/tasks-relay-scale` — all 10 ok.
+- Pilot session *did* launch: `NOTES.md` had **300** sections; git history stayed at **12**
+  commits (base + 10 signal + NOTES.md commit); av earlier-work task got **`record_count`: 301**.
+- Claude then exited immediately: `apiKeySource: none`, stderr
+  `[claude-code:unrecognized_model] {"model":"deepseek-flash"}`. No DeepSeek key in this
+  environment (`~/.config/deepseek/key` missing, no `ANTHROPIC_AUTH_TOKEN`).
+- Host-daemon tip: pass `--import-mount` equal to `--import-dir` (default `/import` is the
+  compose mount). Use `--allow-no-semantic` unless Qdrant+embedder are up.
+- Pack peek on the failed av smoke: start pack’s “Decisions & dead ends” led with **noise**
+  (`ValidationError` attempts), not the customer-region lesson — so when you run for real,
+  watch whether targeted delivery still wins or noise crowds the pack.
+
+**Your job:** put a DeepSeek key at `~/.config/deepseek/key` (or export `ANTHROPIC_AUTH_TOKEN`),
+then run the pilot and full `notes,av` set per `bench/tasks-relay-scale/README.md`. Commit
+`bench/results/<date>-relay-scale/` and say whether av beats `notes`. Check
+`GET https://api.deepseek.com/user/balance` first.
 
 ### 1b. Lean E4 result (unchanged, for context)
 
