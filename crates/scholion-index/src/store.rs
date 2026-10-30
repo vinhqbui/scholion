@@ -66,8 +66,9 @@ pub enum AnchorResolution {
     Stale,
 }
 
-/// What a read sees: one scope of a repo. A task's view will also see `main` through the task's
-/// overlay (Plan 7); until then it is the scope alone.
+/// What a read sees: one scope of a repo. When `scope_overlays` has a row for the task, the view
+/// is `main` plus the task's overlay (masked paths come from the overlay, the rest from `main`);
+/// otherwise it is the scope alone.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ScopeView {
     pub repo: String,
@@ -180,6 +181,33 @@ pub struct PgIndex {
 impl PgIndex {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Paths the overlay hides from `main`. `None` means no overlay row (or the scope is `main`):
+    /// callers keep today's scope-only SQL. `Some` (even empty) means the view is `main ∪ overlay`.
+    async fn overlay_mask(&self, view: &ScopeView) -> Result<Option<Vec<String>>> {
+        let (repo, scope) = view.parts();
+        if scope == "main" {
+            return Ok(None);
+        }
+        let has: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM scope_overlays WHERE repo = $1 AND scope = $2)",
+        )
+        .bind(repo)
+        .bind(scope)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(ierr)?;
+        if !has {
+            return Ok(None);
+        }
+        sqlx::query_scalar("SELECT path FROM index_files WHERE repo = $1 AND scope = $2")
+            .bind(repo)
+            .bind(scope)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(ierr)
+            .map(Some)
     }
 }
 
@@ -805,15 +833,35 @@ impl CodeIndex for PgIndex {
 
     async fn symbols_in(&self, view: &ScopeView, path: &str) -> Result<Vec<IndexedSymbol>> {
         let (repo, scope) = view.parts();
-        let rows = sqlx::query(&format!(
-            "SELECT {SYMBOL_COLS} FROM symbols WHERE repo = $1 AND scope = $2 AND path = $3 ORDER BY start_line, id"
-        ))
-        .bind(repo)
-        .bind(scope)
-        .bind(path)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(ierr)?;
+        let rows = match self.overlay_mask(view).await? {
+            None => {
+                sqlx::query(&format!(
+                    "SELECT {SYMBOL_COLS} FROM symbols WHERE repo = $1 AND scope = $2 AND path = $3 ORDER BY start_line, id"
+                ))
+                .bind(repo)
+                .bind(scope)
+                .bind(path)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(ierr)?
+            }
+            Some(masked) => {
+                sqlx::query(&format!(
+                    "SELECT {SYMBOL_COLS} FROM symbols
+                     WHERE repo = $1 AND path = $3 AND (
+                         scope = $2 OR (scope = 'main' AND NOT (path = ANY($4)))
+                     )
+                     ORDER BY start_line, id"
+                ))
+                .bind(repo)
+                .bind(scope)
+                .bind(path)
+                .bind(&masked)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(ierr)?
+            }
+        };
         rows.iter().map(symbol_from_row).collect()
     }
 
@@ -840,20 +888,44 @@ impl CodeIndex for PgIndex {
             return Ok(vec![]);
         }
         // position() is a literal substring test, so '%' and '_' in the query need no escaping.
-        let rows = sqlx::query(&format!(
-            "SELECT {SYMBOL_COLS} FROM symbols
-             WHERE repo = $1 AND scope = $2
-               AND (position(lower($3) in lower(qname)) > 0 OR position(lower($3) in lower(path)) > 0)
-             ORDER BY (lower(qname) = lower($3)) DESC, path COLLATE \"C\", start_line, id
-             LIMIT $4"
-        ))
-        .bind(repo)
-        .bind(scope)
-        .bind(query.trim())
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(ierr)?;
+        let q = query.trim();
+        let rows = match self.overlay_mask(view).await? {
+            None => {
+                sqlx::query(&format!(
+                    "SELECT {SYMBOL_COLS} FROM symbols
+                     WHERE repo = $1 AND scope = $2
+                       AND (position(lower($3) in lower(qname)) > 0 OR position(lower($3) in lower(path)) > 0)
+                     ORDER BY (lower(qname) = lower($3)) DESC, path COLLATE \"C\", start_line, id
+                     LIMIT $4"
+                ))
+                .bind(repo)
+                .bind(scope)
+                .bind(q)
+                .bind(limit as i64)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(ierr)?
+            }
+            Some(masked) => {
+                sqlx::query(&format!(
+                    "SELECT {SYMBOL_COLS} FROM symbols
+                     WHERE repo = $1 AND (
+                         scope = $2 OR (scope = 'main' AND NOT (path = ANY($4)))
+                     )
+                       AND (position(lower($3) in lower(qname)) > 0 OR position(lower($3) in lower(path)) > 0)
+                     ORDER BY (lower(qname) = lower($3)) DESC, path COLLATE \"C\", start_line, id
+                     LIMIT $5"
+                ))
+                .bind(repo)
+                .bind(scope)
+                .bind(q)
+                .bind(&masked)
+                .bind(limit as i64)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(ierr)?
+            }
+        };
         rows.iter().map(symbol_from_row).collect()
     }
 
@@ -867,30 +939,93 @@ impl CodeIndex for PgIndex {
         if terms.is_empty() || limit == 0 {
             return Ok(vec![]);
         }
-        let (n, avgdl): (i64, Option<f64>) = sqlx::query_as(
-            "SELECT count(*), avg(length(tsv))::float8 FROM code_chunks WHERE repo = $1 AND scope = $2",
-        )
-        .bind(repo)
-        .bind(scope)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(ierr)?;
-        let avgdl = avgdl.unwrap_or(1.0).max(1.0);
+        let mask = self.overlay_mask(view).await?;
+        let (n, avgdl) = match &mask {
+            None => {
+                let (n, avgdl): (i64, Option<f64>) = sqlx::query_as(
+                    "SELECT count(*), avg(length(tsv))::float8 FROM code_chunks WHERE repo = $1 AND scope = $2",
+                )
+                .bind(repo)
+                .bind(scope)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(ierr)?;
+                (n, avgdl.unwrap_or(1.0).max(1.0))
+            }
+            // N and avgdl: main's totals, minus masked paths, plus the overlay (small queries over O).
+            Some(masked) => {
+                let (n_main, sum_main): (i64, f64) = sqlx::query_as(
+                    "SELECT count(*), coalesce(sum(length(tsv)), 0)::float8
+                     FROM code_chunks WHERE repo = $1 AND scope = 'main'",
+                )
+                .bind(repo)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(ierr)?;
+                let (n_mask, sum_mask): (i64, f64) = sqlx::query_as(
+                    "SELECT count(*), coalesce(sum(length(tsv)), 0)::float8
+                     FROM code_chunks WHERE repo = $1 AND scope = 'main' AND path = ANY($2)",
+                )
+                .bind(repo)
+                .bind(masked)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(ierr)?;
+                let (n_over, sum_over): (i64, f64) = sqlx::query_as(
+                    "SELECT count(*), coalesce(sum(length(tsv)), 0)::float8
+                     FROM code_chunks WHERE repo = $1 AND scope = $2",
+                )
+                .bind(repo)
+                .bind(scope)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(ierr)?;
+                let n = n_main - n_mask + n_over;
+                let avgdl = if n > 0 {
+                    ((sum_main - sum_mask + sum_over) / n as f64).max(1.0)
+                } else {
+                    1.0
+                };
+                (n, avgdl)
+            }
+        };
         if n == 0 {
             return Ok(vec![]);
         }
-        let dfs: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT t, count(c.symbol_id) FROM unnest($3::text[]) AS t
-             LEFT JOIN code_chunks c ON c.repo = $1 AND c.scope = $2
-                                    AND c.tsv @@ plainto_tsquery('simple', t)
-             GROUP BY t",
-        )
-        .bind(repo)
-        .bind(scope)
-        .bind(terms)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(ierr)?;
+        let dfs: Vec<(String, i64)> = match &mask {
+            None => sqlx::query_as(
+                "SELECT t, count(c.symbol_id) FROM unnest($3::text[]) AS t
+                     LEFT JOIN code_chunks c ON c.repo = $1 AND c.scope = $2
+                                            AND c.tsv @@ plainto_tsquery('simple', t)
+                     GROUP BY t",
+            )
+            .bind(repo)
+            .bind(scope)
+            .bind(terms)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(ierr)?,
+            Some(masked) => sqlx::query_as(
+                "SELECT t,
+                        (SELECT count(*) FROM code_chunks c
+                         WHERE c.repo = $1 AND c.scope = 'main'
+                           AND c.tsv @@ plainto_tsquery('simple', t))
+                      - (SELECT count(*) FROM code_chunks c
+                         WHERE c.repo = $1 AND c.scope = 'main' AND c.path = ANY($3)
+                           AND c.tsv @@ plainto_tsquery('simple', t))
+                      + (SELECT count(*) FROM code_chunks c
+                         WHERE c.repo = $1 AND c.scope = $2
+                           AND c.tsv @@ plainto_tsquery('simple', t))
+                 FROM unnest($4::text[]) AS t",
+            )
+            .bind(repo)
+            .bind(scope)
+            .bind(masked)
+            .bind(terms)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(ierr)?,
+        };
         let (mut words, mut idfs) = (vec![], vec![]);
         for (t, df) in dfs.into_iter().filter(|(_, df)| *df > 0) {
             let (n, df) = (n as f64, df as f64);
@@ -902,32 +1037,64 @@ impl CodeIndex for PgIndex {
         }
         // Okapi BM25 (k1 = 1.2, b = 0.75, as E1's bm25_symbols): a term's count in the chunk is the
         // number of its positions, and a chunk's length is its number of distinct words (cheap,
-        // and the same measure for the average). Ties go by position: ids follow indexing order.
-        let rows: Vec<(i64, f64)> = sqlx::query_as(
-            "SELECT c.symbol_id,
-                    sum(w.idf * tf.n * 2.2 / (tf.n + 1.2 * (0.25 + 0.75 * length(c.tsv) / $6)))::float8 AS s
-             FROM code_chunks c
-             JOIN symbols y ON y.id = c.symbol_id
-             JOIN unnest($3::text[], $4::float8[]) AS w(t, idf)
-               ON c.tsv @@ plainto_tsquery('simple', w.t)
-             CROSS JOIN LATERAL (
-                 SELECT coalesce(sum(coalesce(array_length(u.positions, 1), 1)), 1)::float8 AS n
-                 FROM unnest(c.tsv) AS u WHERE u.lexeme = w.t
-             ) AS tf
-             WHERE c.repo = $1 AND c.scope = $2
-             GROUP BY c.symbol_id, c.path, y.start_line
-             ORDER BY s DESC, c.path COLLATE \"C\", y.start_line, c.symbol_id
-             LIMIT $5",
-        )
-        .bind(repo)
-        .bind(scope)
-        .bind(&words)
-        .bind(&idfs)
-        .bind(limit as i64)
-        .bind(avgdl)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(ierr)?;
+        // and the same measure for the average). Ties go by path, line, then id.
+        let rows: Vec<(i64, f64)> = match &mask {
+            None => {
+                sqlx::query_as(
+                    "SELECT c.symbol_id,
+                            sum(w.idf * tf.n * 2.2 / (tf.n + 1.2 * (0.25 + 0.75 * length(c.tsv) / $6)))::float8 AS s
+                     FROM code_chunks c
+                     JOIN symbols y ON y.id = c.symbol_id
+                     JOIN unnest($3::text[], $4::float8[]) AS w(t, idf)
+                       ON c.tsv @@ plainto_tsquery('simple', w.t)
+                     CROSS JOIN LATERAL (
+                         SELECT coalesce(sum(coalesce(array_length(u.positions, 1), 1)), 1)::float8 AS n
+                         FROM unnest(c.tsv) AS u WHERE u.lexeme = w.t
+                     ) AS tf
+                     WHERE c.repo = $1 AND c.scope = $2
+                     GROUP BY c.symbol_id, c.path, y.start_line
+                     ORDER BY s DESC, c.path COLLATE \"C\", y.start_line, c.symbol_id
+                     LIMIT $5",
+                )
+                .bind(repo)
+                .bind(scope)
+                .bind(&words)
+                .bind(&idfs)
+                .bind(limit as i64)
+                .bind(avgdl)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(ierr)?
+            }
+            Some(masked) => sqlx::query_as(
+                "SELECT c.symbol_id,
+                        sum(w.idf * tf.n * 2.2 / (tf.n + 1.2 * (0.25 + 0.75 * length(c.tsv) / $7)))::float8 AS s
+                 FROM code_chunks c
+                 JOIN symbols y ON y.id = c.symbol_id
+                 JOIN unnest($3::text[], $4::float8[]) AS w(t, idf)
+                   ON c.tsv @@ plainto_tsquery('simple', w.t)
+                 CROSS JOIN LATERAL (
+                     SELECT coalesce(sum(coalesce(array_length(u.positions, 1), 1)), 1)::float8 AS n
+                     FROM unnest(c.tsv) AS u WHERE u.lexeme = w.t
+                 ) AS tf
+                 WHERE c.repo = $1 AND (
+                     c.scope = $2 OR (c.scope = 'main' AND NOT (c.path = ANY($6)))
+                 )
+                 GROUP BY c.symbol_id, c.path, y.start_line
+                 ORDER BY s DESC, c.path COLLATE \"C\", y.start_line, c.symbol_id
+                 LIMIT $5",
+            )
+            .bind(repo)
+            .bind(scope)
+            .bind(&words)
+            .bind(&idfs)
+            .bind(limit as i64)
+            .bind(masked)
+            .bind(avgdl)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(ierr)?,
+        };
         Ok(rows
             .into_iter()
             .map(|(id, s)| (SymbolId(id), s as f32))
@@ -936,30 +1103,68 @@ impl CodeIndex for PgIndex {
 
     async fn resolve(&self, view: &ScopeView, anchor: &Anchor) -> Result<AnchorResolution> {
         let (repo, scope) = view.parts();
+        let mask = self.overlay_mask(view).await?;
         if let Some(q) = &anchor.symbol {
-            let hit: Option<(i64,)> =
-                sqlx::query_as("SELECT id FROM symbols WHERE repo = $1 AND scope = $2 AND path = $3 AND qname = $4")
+            let hit: Option<(i64,)> = match &mask {
+                None => {
+                    sqlx::query_as(
+                        "SELECT id FROM symbols WHERE repo = $1 AND scope = $2 AND path = $3 AND qname = $4",
+                    )
                     .bind(repo)
                     .bind(scope)
                     .bind(&anchor.path)
                     .bind(q)
                     .fetch_optional(&self.pool)
                     .await
-                    .map_err(ierr)?;
+                    .map_err(ierr)?
+                }
+                Some(masked) => sqlx::query_as(
+                    "SELECT id FROM symbols
+                     WHERE repo = $1 AND path = $3 AND qname = $4 AND (
+                         scope = $2 OR (scope = 'main' AND NOT (path = ANY($5)))
+                     )",
+                )
+                .bind(repo)
+                .bind(scope)
+                .bind(&anchor.path)
+                .bind(q)
+                .bind(masked)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(ierr)?,
+            };
             if let Some((id,)) = hit {
                 return Ok(AnchorResolution::Symbol(SymbolId(id)));
             }
         }
-        let file: Option<(i32,)> = sqlx::query_as(
-            "SELECT 1 FROM index_files WHERE repo = $1 AND scope = $2 AND path = $3",
-        )
-        .bind(repo)
-        .bind(scope)
-        .bind(&anchor.path)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(ierr)?;
-        Ok(match file {
+        // PathOnly only when a non-deleted file row is in the view; a tombstone means the path is
+        // gone in H → Stale.
+        let alive: Option<(i32,)> = match &mask {
+            None => sqlx::query_as(
+                "SELECT 1 FROM index_files
+                     WHERE repo = $1 AND scope = $2 AND path = $3 AND NOT deleted",
+            )
+            .bind(repo)
+            .bind(scope)
+            .bind(&anchor.path)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(ierr)?,
+            Some(masked) => sqlx::query_as(
+                "SELECT 1 FROM index_files
+                 WHERE repo = $1 AND path = $3 AND NOT deleted AND (
+                     scope = $2 OR (scope = 'main' AND NOT (path = ANY($4)))
+                 )",
+            )
+            .bind(repo)
+            .bind(scope)
+            .bind(&anchor.path)
+            .bind(masked)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(ierr)?,
+        };
+        Ok(match alive {
             Some(_) => AnchorResolution::PathOnly(anchor.path.clone()),
             None => AnchorResolution::Stale,
         })
@@ -967,7 +1172,7 @@ impl CodeIndex for PgIndex {
 
     async fn neighbors(
         &self,
-        _view: &ScopeView,
+        view: &ScopeView,
         seeds: &[SymbolId],
         hops: u8,
     ) -> Result<Vec<(SymbolId, u8)>> {
@@ -976,22 +1181,78 @@ impl CodeIndex for PgIndex {
         }
         let seed_ids: Vec<i64> = seeds.iter().map(|s| s.0).collect();
         let limit = hops.min(MAX_HOPS) as i32;
-        // Edges only ever connect symbols of the same (repo, scope), so seeds' scope is preserved.
-        let rows = sqlx::query(
-            "WITH RECURSIVE walk(id, hops) AS (
-                 SELECT unnest($1::bigint[]), 0
-               UNION
-                 SELECT CASE WHEN e.src = w.id THEN e.dst ELSE e.src END, w.hops + 1
-                 FROM walk w JOIN symbol_refs e ON (e.src = w.id OR e.dst = w.id)
-                 WHERE w.hops < $2
-             )
-             SELECT id, MIN(hops) AS hops FROM walk WHERE NOT (id = ANY($1)) GROUP BY id ORDER BY MIN(hops), id",
-        )
-        .bind(&seed_ids)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(ierr)?;
+        let (repo, scope) = view.parts();
+        let rows = match self.overlay_mask(view).await? {
+            None => {
+                // Edges only ever connect symbols of the same (repo, scope).
+                sqlx::query(
+                    "WITH RECURSIVE walk(id, hops) AS (
+                         SELECT unnest($1::bigint[]), 0
+                       UNION
+                         SELECT CASE WHEN e.src = w.id THEN e.dst ELSE e.src END, w.hops + 1
+                         FROM walk w JOIN symbol_refs e ON (e.src = w.id OR e.dst = w.id)
+                         WHERE w.hops < $2
+                     )
+                     SELECT id, MIN(hops) AS hops FROM walk WHERE NOT (id = ANY($1))
+                     GROUP BY id ORDER BY MIN(hops), id",
+                )
+                .bind(&seed_ids)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(ierr)?
+            }
+            // View edges: (1) main→main stored refs with both ends unmasked; (2) out-edges of
+            // overlay symbols via their refs[]; (3) in-edges onto overlay symbols via view refs.
+            // Stored task-scope symbol_refs are ignored (Task 4 stops writing them).
+            Some(masked) => sqlx::query(
+                "WITH RECURSIVE
+                 view_syms AS (
+                     SELECT id, name, refs, path, scope FROM symbols
+                     WHERE repo = $1 AND (
+                         scope = $2 OR (scope = 'main' AND NOT (path = ANY($3)))
+                     )
+                 ),
+                 overlay_syms AS (
+                     SELECT id, name, refs FROM view_syms WHERE scope = $2
+                 ),
+                 edges AS (
+                     SELECT e.src, e.dst
+                     FROM symbol_refs e
+                     JOIN symbols s ON s.id = e.src
+                     JOIN symbols d ON d.id = e.dst
+                     WHERE s.repo = $1 AND d.repo = $1
+                       AND s.scope = 'main' AND d.scope = 'main'
+                       AND NOT (s.path = ANY($3)) AND NOT (d.path = ANY($3))
+                     UNION
+                     SELECT o.id, v.id
+                     FROM overlay_syms o
+                     CROSS JOIN LATERAL unnest(o.refs) AS r(name)
+                     JOIN view_syms v ON v.name = r.name AND v.id <> o.id
+                     UNION
+                     SELECT v.id, o.id
+                     FROM overlay_syms o
+                     JOIN view_syms v ON o.name = ANY(v.refs) AND v.id <> o.id
+                 ),
+                 walk(id, hops) AS (
+                     SELECT unnest($4::bigint[]), 0
+                   UNION
+                     SELECT CASE WHEN e.src = w.id THEN e.dst ELSE e.src END, w.hops + 1
+                     FROM walk w JOIN edges e ON (e.src = w.id OR e.dst = w.id)
+                     WHERE w.hops < $5
+                 )
+                 SELECT id, MIN(hops) AS hops FROM walk WHERE NOT (id = ANY($4))
+                 GROUP BY id ORDER BY MIN(hops), id",
+            )
+            .bind(repo)
+            .bind(scope)
+            .bind(&masked)
+            .bind(&seed_ids)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(ierr)?,
+        };
         rows.iter()
             .map(|r| {
                 Ok((
@@ -1065,20 +1326,61 @@ impl CodeIndex for PgIndex {
 
     async fn in_degree(
         &self,
-        _view: &ScopeView,
+        view: &ScopeView,
         ids: &[SymbolId],
     ) -> Result<HashMap<SymbolId, u32>> {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
         let ids: Vec<i64> = ids.iter().map(|s| s.0).collect();
-        let rows: Vec<(i64, i64)> = sqlx::query_as(
-            "SELECT dst, count(*) FROM symbol_refs WHERE dst = ANY($1) GROUP BY dst",
-        )
-        .bind(&ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(ierr)?;
+        let (repo, scope) = view.parts();
+        let rows: Vec<(i64, i64)> = match self.overlay_mask(view).await? {
+            None => sqlx::query_as(
+                "SELECT dst, count(*) FROM symbol_refs WHERE dst = ANY($1) GROUP BY dst",
+            )
+            .bind(&ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(ierr)?,
+            Some(masked) => sqlx::query_as(
+                "WITH
+                 view_syms AS (
+                     SELECT id, name, refs, path, scope FROM symbols
+                     WHERE repo = $1 AND (
+                         scope = $2 OR (scope = 'main' AND NOT (path = ANY($3)))
+                     )
+                 ),
+                 overlay_syms AS (
+                     SELECT id, name, refs FROM view_syms WHERE scope = $2
+                 ),
+                 edges AS (
+                     SELECT e.src, e.dst
+                     FROM symbol_refs e
+                     JOIN symbols s ON s.id = e.src
+                     JOIN symbols d ON d.id = e.dst
+                     WHERE s.repo = $1 AND d.repo = $1
+                       AND s.scope = 'main' AND d.scope = 'main'
+                       AND NOT (s.path = ANY($3)) AND NOT (d.path = ANY($3))
+                     UNION
+                     SELECT o.id, v.id
+                     FROM overlay_syms o
+                     CROSS JOIN LATERAL unnest(o.refs) AS r(name)
+                     JOIN view_syms v ON v.name = r.name AND v.id <> o.id
+                     UNION
+                     SELECT v.id, o.id
+                     FROM overlay_syms o
+                     JOIN view_syms v ON o.name = ANY(v.refs) AND v.id <> o.id
+                 )
+                 SELECT dst, count(*) FROM edges WHERE dst = ANY($4) GROUP BY dst",
+            )
+            .bind(repo)
+            .bind(scope)
+            .bind(&masked)
+            .bind(&ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(ierr)?,
+        };
         Ok(rows
             .into_iter()
             .map(|(id, n)| (SymbolId(id), n as u32))

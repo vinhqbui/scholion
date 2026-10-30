@@ -7,8 +7,7 @@
 //!
 //! The overlay is written by hand here (task-scope rows for the paths whose content differs from
 //! main, tombstones for paths the task deleted, a `scope_overlays` row): the overlay writes are
-//! Plan 7 Task 4. Overlay reads are Task 3; until then `overlay_reads_match_a_full_index` fails
-//! and is ignored. Run it with `cargo test -p scholion-index --test overlay_equiv -- --ignored`.
+//! Plan 7 Task 4.
 //!
 //! CI runs a fixed seed. A long run: `PROPTEST_CASES=500 PROPTEST_RNG_SEED=<n> cargo test ...`.
 
@@ -481,7 +480,6 @@ fn two_full_indexes_of_a_tree_read_the_same() {
 }
 
 #[test]
-#[ignore = "overlay reads are Plan 7 Task 3"]
 fn overlay_reads_match_a_full_index() {
     run(true, 16);
 }
