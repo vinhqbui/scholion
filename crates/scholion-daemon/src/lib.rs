@@ -61,6 +61,12 @@ pub struct AppState {
     task_locks: Arc<Mutex<HashMap<TaskId, Arc<tokio::sync::Mutex<()>>>>>,
     /// Asked before an approval and a merge; `AllowAll` unless an extension sets one.
     pub(crate) guard: Arc<dyn MergeGuard>,
+    /// How many task starts copy an index at once; the others wait their turn. A copy holds a
+    /// pooled connection for its whole length, so without a limit a burst of starts takes every
+    /// connection and other requests fail with `pool timed out`.
+    pub(crate) starts: Arc<tokio::sync::Semaphore>,
+    /// Repo imports by name, running or finished since the daemon started.
+    pub(crate) imports: api::Imports,
     extensions: ext::Extensions,
     events: ext::EventFeed,
 }
@@ -75,6 +81,7 @@ impl AppState {
         ws_host_root: PathBuf,
     ) -> Self {
         let dyn_store: Arc<dyn IntentStore> = store.clone();
+        let starts = default_start_limit(store.pool().options().get_max_connections());
         let packer = Arc::new(Packer::new(vcs.clone(), dyn_store.clone(), index.clone()));
         Self {
             vcs,
@@ -93,9 +100,17 @@ impl AppState {
             mcp: Arc::default(),
             task_locks: Arc::default(),
             guard: Arc::new(AllowAll),
+            starts: Arc::new(tokio::sync::Semaphore::new(starts)),
+            imports: Arc::default(),
             extensions: ext::Extensions::default(),
             events: ext::EventFeed::default(),
         }
+    }
+
+    /// At most `n` task starts copy an index at once (`AV_MAX_CONCURRENT_STARTS`).
+    pub fn with_start_limit(mut self, n: usize) -> Self {
+        self.starts = Arc::new(tokio::sync::Semaphore::new(n.max(1)));
+        self
     }
 
     /// Keeps an extension's service in the state, one per type; handlers added with
@@ -208,4 +223,9 @@ impl AppState {
             Err(_) => p.to_path_buf(),
         }
     }
+}
+
+/// A quarter of the pool copies at once, so the rest serves every other request.
+pub(crate) fn default_start_limit(pool_size: u32) -> usize {
+    (pool_size as usize / 4).max(1)
 }

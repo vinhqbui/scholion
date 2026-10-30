@@ -784,6 +784,15 @@ fn unreachable_server_exits_nonzero_with_clear_message() {
 }
 
 #[test]
+fn repo_add_reports_a_failed_import() {
+    let d = start_daemon();
+    let scratch = TempDir::new().unwrap();
+    let o = av(&d, scratch.path(), &["repo", "add", "x", "/nowhere"]);
+    assert!(!o.status.success());
+    assert!(err(&o).contains("import of x failed"), "{}", err(&o));
+}
+
+#[test]
 fn missing_task_gives_actionable_error() {
     let d = start_daemon();
     let scratch = TempDir::new().unwrap();

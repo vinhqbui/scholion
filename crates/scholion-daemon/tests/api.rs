@@ -3364,3 +3364,97 @@ async fn subscribers_receive_lifecycle_events_in_process() {
         assert_eq!(ev.task_id.unwrap().0.to_string(), id(&t));
     }
 }
+
+async fn import_state(e: &Env, name: &str) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let (status, body) = call(&e.app, "GET", &format!("/v1/repos/{name}/import"), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if body["state"] != "running" {
+            return body;
+        }
+        assert!(std::time::Instant::now() < deadline, "import still running");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_without_wait_answers_at_once_and_is_polled() {
+    let e = env().await;
+    let (status, body) = call(
+        &e.app,
+        "POST",
+        "/v1/repos",
+        Some(json!({"name": "second", "git_source": e.src_path, "wait": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["state"], "running");
+    let done = import_state(&e, "second").await;
+    assert_eq!(done["state"], "done", "{done}");
+    assert!(done["main_change"].as_str().is_some_and(|c| !c.is_empty()));
+    assert!(done["indexed_files"].as_u64().unwrap() > 0, "{done}");
+    // the waiting form answers with the same job, done
+    let (_, first) = call(&e.app, "GET", "/v1/repos/demo/import", None).await;
+    assert_eq!(first["state"], "done", "{first}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_is_reported_and_the_name_is_free_again() {
+    let e = env().await;
+    let (status, body) = call(
+        &e.app,
+        "POST",
+        "/v1/repos",
+        Some(json!({"name": "broken", "git_source": "/nonexistent/repo", "wait": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let failed = import_state(&e, "broken").await;
+    assert_eq!(failed["state"], "failed", "{failed}");
+    assert!(failed["error"].as_str().is_some_and(|m| !m.is_empty()));
+    let (status, body) = call(
+        &e.app,
+        "POST",
+        "/v1/repos",
+        Some(json!({"name": "broken", "git_source": e.src_path})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "done");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_disconnects_does_not_stop_its_import() {
+    let e = env().await;
+    let app = e.app.clone();
+    let src = e.src_path.clone();
+    let request = tokio::spawn(async move {
+        call(
+            &app,
+            "POST",
+            "/v1/repos",
+            Some(json!({"name": "dropped", "git_source": src})),
+        )
+        .await
+    });
+    // disconnect as soon as the job exists
+    loop {
+        let (status, _) = call(&e.app, "GET", "/v1/repos/dropped/import", None).await;
+        if status == StatusCode::OK {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    request.abort();
+    let done = import_state(&e, "dropped").await;
+    assert_eq!(done["state"], "done", "{done}");
+    let (status, body) = call(
+        &e.app,
+        "POST",
+        "/v1/tasks",
+        Some(json!({"repo": "dropped", "title": "t", "goal": "g", "agent": "a", "session": "s"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

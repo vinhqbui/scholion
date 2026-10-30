@@ -686,16 +686,35 @@ fn print_notes(r: &Value) {
     }
 }
 
+/// Polls a repo import until it is done; a failed one is an error.
+fn wait_import(client: &Client, name: &str) -> Result<Value> {
+    loop {
+        let job = client.get(&format!("/v1/repos/{name}/import"), &[])?;
+        match job["state"].as_str() {
+            Some("running") => std::thread::sleep(std::time::Duration::from_secs(1)),
+            Some("done") => return Ok(job),
+            _ => {
+                return Err(CliError::Local(format!(
+                    "import of {name} failed: {}",
+                    job["error"].as_str().unwrap_or("no reason given")
+                )));
+            }
+        }
+    }
+}
+
 fn run(cli: Cli) -> Result<()> {
     let client = Client::new(&cli.url, cli.token.clone());
     match &cli.cmd {
         Cmd::Repo {
             cmd: RepoCmd::Add { name, git_source },
         } => {
-            let r = client.post(
+            // a large repo takes longer than any request timeout: start the import, then poll it
+            client.post(
                 "/v1/repos",
-                &json!({"name": name, "git_source": git_source}),
+                &json!({"name": name, "git_source": git_source, "wait": false}),
             )?;
+            let r = wait_import(&client, name)?;
             println!(
                 "repo {} added (main {}, {} files indexed)",
                 s(&r["name"]),

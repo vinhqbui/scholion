@@ -31,6 +31,9 @@ pub struct Config {
     /// `AV_PG_MAX_CONNECTIONS` (default 16): Postgres pool size. Every concurrent agent request
     /// holds a connection while it runs, so raise it with the number of agents.
     pub pg_max_connections: u32,
+    /// `AV_MAX_CONCURRENT_STARTS` (default a quarter of the pool): task starts that copy an index
+    /// at once. The others wait their turn instead of failing.
+    pub max_concurrent_starts: Option<usize>,
     /// `AV_LEASE_SECS` (default 1800): how long a task's owner holds it without writing; after
     /// that another agent may claim it.
     pub lease_secs: u64,
@@ -96,6 +99,14 @@ impl Config {
                 })?,
                 None => DEFAULT_PG_MAX_CONNECTIONS,
             },
+            max_concurrent_starts: match get("AV_MAX_CONCURRENT_STARTS") {
+                Some(v) => Some(v.trim().parse().ok().filter(|n| *n > 0).ok_or_else(|| {
+                    AvError::Invalid(format!(
+                        "AV_MAX_CONCURRENT_STARTS must be a positive number, got {v}"
+                    ))
+                })?),
+                None => None,
+            },
             lease_secs: match get("AV_LEASE_SECS") {
                 Some(v) => v.trim().parse().map_err(|_| {
                     AvError::Invalid(format!("AV_LEASE_SECS must be a number, got {v}"))
@@ -155,6 +166,10 @@ pub async fn build_state(cfg: &Config) -> Result<AppState> {
     .with_expand_cap(cfg.expand_cap)
     .with_lease_secs(cfg.lease_secs)
     .with_token(cfg.token.clone());
+    let state = match cfg.max_concurrent_starts {
+        Some(n) => state.with_start_limit(n),
+        None => state,
+    };
     // Neither backend connects here: the daemon boots even when Qdrant or the embedder is down.
     Ok(match (&cfg.embed, &cfg.qdrant_url) {
         (Some(choice), Some(qdrant)) => {
