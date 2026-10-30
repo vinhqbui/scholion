@@ -3546,6 +3546,88 @@ async fn idle_task_reconciles_when_main_merges_before_next_read() {
     assert!(md.contains("format_name") || md.contains("util"), "{md}");
 }
 
+/// Bundle (and start pack) must reconcile under `lock_task` before reading the task view —
+/// same lazy path as context, not only GET …/context.
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_task_reconciles_before_bundle_read() {
+    let e = env().await;
+    let idle = start_task(&e, "Idle bundler").await;
+    let idle_slug = idle["task"]["slug"].as_str().unwrap().to_owned();
+
+    let editor = ready_to_merge(&e, "Upper names", UPPER).await;
+    let (status, body) = post(&e, &editor, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(overlay_paths(&e, &idle_slug).await.is_empty());
+
+    let (status, bundle) = call(
+        &e.app,
+        "GET",
+        &format!("/v1/tasks/{}/bundle?kind=pr&budget=2000", id(&idle)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{bundle}");
+    assert_eq!(
+        overlay_paths(&e, &idle_slug).await,
+        vec!["app/util.py"],
+        "bundle reconciles before in_degree / changed_symbols on the task view"
+    );
+}
+
+/// Start's pack must re-reconcile under `lock_task` after overlay init, so a main merge in the
+/// gap between init_task_overlay and pack build is not missed.
+#[tokio::test(flavor = "multi_thread")]
+async fn start_pack_reconciles_when_main_moves_after_overlay_init() {
+    use scholion_daemon::StartPackPause;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let pause = Arc::new(StartPackPause {
+        ready: tokio::sync::Notify::new(),
+        proceed: tokio::sync::Notify::new(),
+        armed: AtomicBool::new(false),
+    });
+    let pause_for_env = pause.clone();
+    let e = env_with(move |s| s.with_extension(pause_for_env)).await;
+
+    // setup without pausing (armed = false)
+    let editor = ready_to_merge(&e, "Upper names", UPPER).await;
+
+    pause.armed.store(true, Ordering::SeqCst);
+    let ready = pause.ready.notified();
+    let start = tokio::spawn({
+        let app = e.app.clone();
+        async move {
+            call(
+                &app,
+                "POST",
+                "/v1/tasks",
+                Some(json!({
+                    "repo": "demo",
+                    "title": "Started during merge",
+                    "goal": "Make hello louder",
+                    "agent": "claude",
+                    "session": "start-race",
+                })),
+            )
+            .await
+        }
+    });
+    ready.await;
+    let (status, body) = post(&e, &editor, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    pause.proceed.notify_waiters();
+
+    let (status, started) = start.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let slug = started["task"]["slug"].as_str().unwrap();
+    assert_eq!(
+        overlay_paths(&e, slug).await,
+        vec!["app/util.py"],
+        "start pack reconciles after main moved between overlay init and pack"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sync_rebuilds_overlay_as_diff_against_trunk() {
     let e = env().await;

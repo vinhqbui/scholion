@@ -113,36 +113,70 @@ pub(crate) async fn init_task_overlay(
     reconcile_overlay(state, repo, scope, base).await
 }
 
+/// Task head used for overlay writes: H after the first checkpoint, else B.
+pub(crate) fn overlay_head(task: &Task) -> &ChangeId {
+    if task.head_change.0.is_empty() {
+        &task.base_change
+    } else {
+        &task.head_change
+    }
+}
+
+/// True when the overlay's `main_at` lags `main`'s indexed tip (or either is missing).
+pub(crate) async fn overlay_needs_reconcile(
+    state: &AppState,
+    repo: &str,
+    scope: &str,
+) -> Result<bool> {
+    let Some(main_at) = state.index.overlay_main_at(repo, scope).await? else {
+        return Ok(false);
+    };
+    let Some(t) = state.index.scope_change(repo, "main").await? else {
+        return Ok(false);
+    };
+    Ok(main_at != t)
+}
+
+/// Reconcile this task's overlay to `main` before any index read. Caller holds `lock_task`.
+pub(crate) async fn reconcile_task_overlay(state: &AppState, task: &Task) -> Result<()> {
+    reconcile_overlay(state, &task.repo, &task.slug, overlay_head(task)).await
+}
+
 /// When `main_at` ≠ T (`main`'s `scope_change`), indexes `changed(main_at, T)` into the overlay
-/// from `head` (unless already in O) and sets `main_at = T`. Caller holds `lock_task`.
+/// from `head` (unless already in O) and sets `main_at = T`. Repeats if main advanced mid-apply.
+/// Caller holds `lock_task`.
 pub(crate) async fn reconcile_overlay(
     state: &AppState,
     repo: &str,
     scope: &str,
     head: &ChangeId,
 ) -> Result<()> {
-    let Some(main_at) = state.index.overlay_main_at(repo, scope).await? else {
-        return Ok(());
-    };
-    let Some(t) = state.index.scope_change(repo, "main").await? else {
-        return Ok(());
-    };
-    if main_at == t {
-        return Ok(());
+    // Main can advance (another task's merge) between reading T and writing main_at. Loop until
+    // stable; a full merge↔reconcile advisory lock is out of scope for this change.
+    for _ in 0..16 {
+        let Some(main_at) = state.index.overlay_main_at(repo, scope).await? else {
+            return Ok(());
+        };
+        let Some(t) = state.index.scope_change(repo, "main").await? else {
+            return Ok(());
+        };
+        if main_at == t {
+            return Ok(());
+        }
+        let changed = state.vcs.changed_paths(repo, &main_at, &t).await?;
+        let existing: HashSet<String> = state
+            .index
+            .overlay_paths(repo, scope)
+            .await?
+            .into_iter()
+            .collect();
+        let needed: Vec<String> = changed
+            .into_iter()
+            .filter(|p| is_indexable(p) && !existing.contains(p))
+            .collect();
+        apply_overlay_from_head(state, repo, scope, head, &t, &needed, false).await?;
+        state.index.set_overlay_main_at(repo, scope, &t).await?;
     }
-    let changed = state.vcs.changed_paths(repo, &main_at, &t).await?;
-    let existing: HashSet<String> = state
-        .index
-        .overlay_paths(repo, scope)
-        .await?
-        .into_iter()
-        .collect();
-    let needed: Vec<String> = changed
-        .into_iter()
-        .filter(|p| is_indexable(p) && !existing.contains(p))
-        .collect();
-    apply_overlay_from_head(state, repo, scope, head, &t, &needed, false).await?;
-    state.index.set_overlay_main_at(repo, scope, &t).await?;
     Ok(())
 }
 
@@ -189,12 +223,7 @@ pub(crate) async fn replace_task_overlay(
 
 /// Rebuilds a task's overlay after undo/revert restored its scope.
 pub(crate) async fn rebuild_task_overlay(state: &AppState, task: &Task) -> Result<()> {
-    let head = if task.head_change.0.is_empty() {
-        &task.base_change
-    } else {
-        &task.head_change
-    };
-    replace_task_overlay(state, &task.repo, &task.slug, head).await?;
+    replace_task_overlay(state, &task.repo, &task.slug, overlay_head(task)).await?;
     Ok(())
 }
 

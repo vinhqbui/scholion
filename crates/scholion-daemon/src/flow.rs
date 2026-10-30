@@ -20,7 +20,9 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::api::{BUNDLE_BUDGET, RecordBody, check_record, snapshot_and_index, write_record};
 use crate::error::ApiResult;
-use crate::indexing::{rebuild_task_overlay, reindex_changed, replace_task_overlay};
+use crate::indexing::{
+    rebuild_task_overlay, reconcile_task_overlay, reindex_changed, replace_task_overlay,
+};
 
 /// Serializes merge and undo across the daemon, so a status check and the trunk move it guards
 /// cannot interleave with another merge of the same task.
@@ -141,7 +143,9 @@ pub(crate) async fn unrecorded(
     State(st): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
+    let _guard = st.lock_task(TaskId(id)).await;
     let task = st.store.get_task(TaskId(id)).await?;
+    reconcile_task_overlay(&st, &task).await?;
     let (explained, unrecorded) = coverage(&st, &task).await?;
     Ok(Json(serde_json::json!({
         "status": task.status.as_str(),
@@ -1141,6 +1145,9 @@ pub(crate) async fn handoff(
             },
         )
         .await?;
+    // snapshot_and_index already reconciled; re-check in case main moved during the handoff write.
+    let task = st.store.get_task(task.id).await?;
+    reconcile_task_overlay(&st, &task).await?;
     let bundle = st
         .packer
         .handoff_bundle(BundleRequest {
@@ -1181,6 +1188,7 @@ pub(crate) async fn claim(
         .store
         .claim_task(TaskId(id), &b.agent, st.lease_secs)
         .await?;
+    reconcile_task_overlay(&st, &task).await?;
     let bundle = st
         .packer
         .handoff_bundle(BundleRequest {

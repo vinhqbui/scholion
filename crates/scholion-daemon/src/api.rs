@@ -15,7 +15,10 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiResult;
 use crate::flow::fence;
-use crate::indexing::{index_change, init_task_overlay, reconcile_overlay, update_overlay_changed};
+use crate::indexing::{
+    index_change, init_task_overlay, overlay_needs_reconcile, reconcile_task_overlay,
+    update_overlay_changed,
+};
 
 /// Budget of a work pack (start, `context`) when the client names none: agents get small packs and
 /// ask for more.
@@ -274,6 +277,14 @@ struct Started {
     pack: Pack,
 }
 
+/// Test seam (`AppState::with_extension`): when `armed`, after workspace init start notifies
+/// `ready` and waits on `proceed` before the pack — so a test can merge main in that gap.
+pub struct StartPackPause {
+    pub ready: tokio::sync::Notify,
+    pub proceed: tokio::sync::Notify,
+    pub armed: std::sync::atomic::AtomicBool,
+}
+
 async fn start_task(State(st): State<AppState>, Json(req): Json<StartTask>) -> ApiResult<Started> {
     // Wait for a turn before anything is written: a client that gives up while queued leaves
     // nothing behind. Then the task is made on a task of its own, so a client that leaves during
@@ -301,21 +312,45 @@ async fn start_task(State(st): State<AppState>, Json(req): Json<StartTask>) -> A
     let task = made
         .await
         .map_err(|e| AvError::Store(format!("task start stopped: {e}")))??;
-    let task = st.store.get_task(task.id).await?;
-    let pack = st
-        .packer
-        .build(PackRequest {
-            task_id: task.id,
-            budget_tokens: req.budget.unwrap_or(DEFAULT_BUDGET),
-            focus: None,
-            session: Some(req.session),
-            family: AgentFamily::default(),
-            code: DEFAULT_CODE,
-            map: true,
-            max_code: None,
-        })
-        .await?;
+    if let Some(pause) = st.extension::<StartPackPause>()
+        && pause.armed.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        pause.ready.notify_waiters();
+        pause.proceed.notified().await;
+    }
+    let pack_req = PackRequest {
+        task_id: task.id,
+        budget_tokens: req.budget.unwrap_or(DEFAULT_BUDGET),
+        focus: None,
+        session: Some(req.session),
+        family: AgentFamily::default(),
+        code: DEFAULT_CODE,
+        map: true,
+        max_code: None,
+    };
+    let (task, pack) = pack_for_task(&st, task.id, pack_req).await?;
     Ok(Json(Started { task, pack }))
+}
+
+/// Reconcile under `lock_task`, then build a pack. If main advanced during the pack, reconcile
+/// and rebuild once so the pack is not built against a stale overlay.
+pub(crate) async fn pack_for_task(
+    st: &AppState,
+    id: TaskId,
+    req: PackRequest,
+) -> Result<(Task, Pack)> {
+    let _guard = st.lock_task(id).await;
+    let task = st.store.get_task(id).await?;
+    reconcile_task_overlay(st, &task).await?;
+    let pack = st.packer.build(req.clone()).await?;
+    if overlay_needs_reconcile(st, &task.repo, &task.slug).await? {
+        reconcile_task_overlay(st, &task).await?;
+        let pack = st.packer.build(req).await?;
+        let task = st.store.get_task(id).await?;
+        return Ok((task, pack));
+    }
+    let task = st.store.get_task(id).await?;
+    Ok((task, pack))
 }
 
 /// Creates the task, its workspace and index scope, its intent record and its lease. A failure
@@ -660,19 +695,11 @@ async fn context(
     Path(id): Path<Uuid>,
     Query(q): Query<ContextQuery>,
 ) -> ApiResult<Pack> {
-    let _guard = st.lock_task(task_id(id)).await;
-    let task = st.store.get_task(task_id(id)).await?;
-    // Idle tasks pick up main's merges here: reconcile before any index read.
-    let head = if task.head_change.0.is_empty() {
-        &task.base_change
-    } else {
-        &task.head_change
-    };
-    reconcile_overlay(&st, &task.repo, &task.slug, head).await?;
-    let pack = st
-        .packer
-        .build(PackRequest {
-            task_id: task.id,
+    let (_, pack) = pack_for_task(
+        &st,
+        task_id(id),
+        PackRequest {
+            task_id: task_id(id),
             budget_tokens: q.budget.unwrap_or(DEFAULT_BUDGET),
             focus: q.focus.filter(|f| !f.trim().is_empty()),
             session: q.session.filter(|s| !s.trim().is_empty()),
@@ -680,9 +707,10 @@ async fn context(
             code: q.code.unwrap_or(DEFAULT_CODE),
             map: q.map.unwrap_or(true),
             max_code: q.max_code,
-        })
-        .await?;
-    Ok(Json(with_main_health(&st, task.id, pack).await))
+        },
+    )
+    .await?;
+    Ok(Json(with_main_health(&st, task_id(id), pack).await))
 }
 
 /// Puts a warning at the top of a pack while main's post-merge check is red, so no agent builds
@@ -985,20 +1013,25 @@ async fn bundle(
     Path(id): Path<Uuid>,
     Query(q): Query<BundleQuery>,
 ) -> ApiResult<scholion_pack::Bundle> {
+    let kind = q.kind.as_deref().unwrap_or("handoff");
+    if kind != "handoff" && kind != "pr" {
+        return Err(AvError::Invalid(format!(
+            "unknown bundle kind {kind:?}; expected handoff or pr"
+        ))
+        .into());
+    }
     let req = scholion_pack::BundleRequest {
         task_id: task_id(id),
         budget_tokens: q.budget.unwrap_or(BUNDLE_BUDGET),
         family: q.family.unwrap_or_default(),
     };
-    let bundle = match q.kind.as_deref().unwrap_or("handoff") {
-        "handoff" => st.packer.handoff_bundle(req).await?,
-        "pr" => st.packer.pr_bundle(req).await?,
-        other => {
-            return Err(AvError::Invalid(format!(
-                "unknown bundle kind {other:?}; expected handoff or pr"
-            ))
-            .into());
-        }
+    let _guard = st.lock_task(task_id(id)).await;
+    let task = st.store.get_task(task_id(id)).await?;
+    reconcile_task_overlay(&st, &task).await?;
+    let bundle = if kind == "pr" {
+        st.packer.pr_bundle(req).await?
+    } else {
+        st.packer.handoff_bundle(req).await?
     };
     Ok(Json(bundle))
 }
