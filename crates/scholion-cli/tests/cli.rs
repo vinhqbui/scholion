@@ -2204,3 +2204,100 @@ fn next_offers_another_agents_task_for_review_and_writes_no_task_file() {
     assert!(got.contains("Review it: review_task"), "{got}");
     assert!(!other.path().join(".av-task").exists());
 }
+
+// ---- Plan 9 Task 8: av watch ----
+
+/// A daemon with claude (code) and grok (image) profiles and one image item queued.
+fn image_item_queued() -> (Daemon, TempDir) {
+    let (d, scratch) = daemon_with_repo();
+    for (name, best) in [("claude", "code"), ("grok", "image")] {
+        ok(av(
+            &d,
+            scratch.path(),
+            &["agent", "set", name, "--best", best, "--cost", "2"],
+        ));
+    }
+    ok(av(
+        &d,
+        scratch.path(),
+        &[
+            "post",
+            "--repo",
+            "demo",
+            "--title",
+            "Draw the logo",
+            "--goal",
+            "A flat logo",
+            "--needs",
+            "image",
+            "--reserve",
+            "0",
+        ],
+    ));
+    (d, scratch)
+}
+
+#[test]
+fn watch_runs_the_command_only_when_work_fits() {
+    let (d, _scratch) = image_item_queued();
+    let dir = TempDir::new().unwrap();
+    let got = ok(av_as(
+        &d,
+        dir.path(),
+        "claude",
+        &["watch", "--once", "--", "sh", "-c", "touch ran"],
+    ));
+    assert!(
+        !dir.path().join("ran").exists(),
+        "nothing fits claude: {got}"
+    );
+    let got = ok(av_as(
+        &d,
+        dir.path(),
+        "grok",
+        &["watch", "--once", "--", "sh", "-c", "touch ran"],
+    ));
+    assert!(dir.path().join("ran").exists(), "{got}");
+    assert!(got.contains("watch: backlog demo/Draw the logo"), "{got}");
+    // the peek took nothing: the item is still queued for grok's agent to take
+    let queued = ok(av(&d, dir.path(), &["backlog", "--state", "queued"]));
+    assert!(queued.contains("Draw the logo"), "{queued}");
+}
+
+#[test]
+fn watch_passes_the_agent_name_and_daemon_url() {
+    let (d, _scratch) = image_item_queued();
+    let dir = TempDir::new().unwrap();
+    ok(av_as(
+        &d,
+        dir.path(),
+        "grok",
+        &[
+            "watch",
+            "--once",
+            "--",
+            "sh",
+            "-c",
+            "echo $AV_AGENT $AV_URL > who",
+        ],
+    ));
+    let who = std::fs::read_to_string(dir.path().join("who")).unwrap();
+    assert_eq!(who.trim(), format!("grok {}", d.url));
+}
+
+#[test]
+fn watch_stops_after_max_runs_and_backs_off_on_failure() {
+    let (d, _scratch) = image_item_queued();
+    let dir = TempDir::new().unwrap();
+    let started = std::time::Instant::now();
+    let o = av_as(
+        &d,
+        dir.path(),
+        "grok",
+        &["watch", "--every", "1", "--max-runs", "2", "--", "false"],
+    );
+    assert!(o.status.success(), "max-runs is a normal end: {}", err(&o));
+    assert_eq!(err(&o).matches("failed").count(), 2, "{}", err(&o));
+    // after the first failure it waited twice the interval
+    assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+}

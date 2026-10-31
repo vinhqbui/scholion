@@ -4,6 +4,7 @@ mod hook;
 mod local;
 mod runner;
 mod taskfile;
+mod watch;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -349,6 +350,25 @@ enum Cmd {
         /// With nothing to take, wait up to this many seconds for something (the daemon caps it).
         #[arg(long)]
         wait: Option<u64>,
+    },
+    /// Run an agent command whenever work fits --agent: looks every --every seconds without taking
+    /// anything, then runs the command (with AV_AGENT and AV_URL set) and waits for it. The command
+    /// takes the work itself, e.g. `av watch --agent grok -- grok -p "take your next av task"`.
+    Watch {
+        #[arg(long)]
+        repo: Option<String>,
+        /// Seconds between looks (and after a run).
+        #[arg(long, default_value_t = 15)]
+        every: u64,
+        /// Stop after this many runs.
+        #[arg(long)]
+        max_runs: Option<u32>,
+        /// Look once, run at most once, then exit.
+        #[arg(long)]
+        once: bool,
+        /// The agent command, after `--`.
+        #[arg(last = true, required = true)]
+        cmd: Vec<String>,
     },
 }
 
@@ -1776,6 +1796,24 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
+        Cmd::Watch {
+            repo,
+            every,
+            max_runs,
+            once,
+            cmd,
+        } => watch::run(
+            &client,
+            &watch::Watch {
+                agent: &cli.agent,
+                url: &cli.url,
+                repo: repo.as_deref(),
+                every: std::time::Duration::from_secs((*every).max(1)),
+                max_runs: *max_runs,
+                once: *once,
+                cmd,
+            },
+        )?,
         Cmd::Next { repo, budget, wait } => {
             let session = cli
                 .session
