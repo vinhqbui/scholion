@@ -620,3 +620,131 @@ async fn mcp_packs_are_800_tokens_of_signatures_unless_asked() {
     );
     assert!(full.contains("n.title()"), "code=full has bodies: {full}");
 }
+
+// ---- Plan 8 Task 5: routing over MCP
+
+async fn put_profile(e: &Env, name: &str, body: Value) {
+    let (status, out) = call(&e.app, "PUT", &format!("/v1/agents/{name}"), Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+}
+
+async fn post_backlog(e: &Env, title: &str, needs: &[&str], reserve: i64) {
+    let (status, out) = call(
+        &e.app,
+        "POST",
+        "/v1/backlog",
+        Some(
+            json!({"repo": "demo", "title": title, "goal": "Make hello louder",
+                    "needs": needs, "reserve_secs": reserve}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn start_task_without_title_and_goal_takes_the_next_backlog_task() {
+    let e = env().await;
+    // Grok introduces itself as `grok-shell-av`; the profile's alias maps it to `grok`.
+    put_profile(
+        &e,
+        "grok",
+        json!({"best": ["image"], "cost_rank": 2, "aliases": ["grok-shell-av"]}),
+    )
+    .await;
+    post_backlog(&e, "look at the logo", &["image"], 600).await;
+    let s = connect(&e, "grok-shell-av").await;
+    let out = text(&tool(&e, &s, "start_task", json!({})).await);
+    assert!(out.contains("workspace:"), "{out}");
+    assert!(out.contains("generation: 1"), "{out}");
+
+    // the session now has a task and its owner is the profile name, so later calls just work
+    let status = text(&tool(&e, &s, "status", json!({})).await);
+    assert!(status.contains("\"owner_agent\": \"grok\""), "{status}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn start_task_without_arguments_says_when_nothing_is_waiting() {
+    let e = env().await;
+    post_backlog(&e, "draw it", &["image"], 0).await;
+    let s = connect(&e, "claude-code").await;
+    let out = text(&tool(&e, &s, "start_task", json!({})).await);
+    assert!(out.contains("No task is waiting for you"), "{out}");
+    assert!(out.contains("1 queued"), "{out}");
+    // no task was remembered
+    let r = tool(&e, &s, "status", json!({})).await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn start_task_with_a_title_still_needs_repo_and_goal() {
+    let e = env().await;
+    let s = connect(&e, "claude-code").await;
+    let r = tool(&e, &s, "start_task", json!({"repo": "demo", "title": "x"})).await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    assert!(
+        r["error"]["message"].as_str().unwrap().contains("goal"),
+        "{r}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_handoff_with_needs_is_claimed_by_start_task_without_arguments() {
+    let e = env().await;
+    put_profile(&e, "grok", json!({"best": ["image"], "cost_rank": 2})).await;
+    let t = start_task(&e, "Make hello louder").await;
+    edit_greeter(&e, &t);
+    record_decision(&e, &t).await;
+
+    // the owner hands off over MCP, naming the tag the next agent must have
+    let first = connect(&e, "claude").await;
+    let out = text(
+        &tool(
+            &e,
+            &first,
+            "handoff",
+            json!({"task_id": id(&t), "done": "shouts", "remaining": "draw the logo",
+                   "needs": ["Image"]}),
+        )
+        .await,
+    );
+    assert!(out.starts_with("handed_off"), "{out}");
+
+    let second = connect(&e, "grok").await;
+    let out = text(&tool(&e, &second, "start_task", json!({})).await);
+    assert!(out.contains("generation: 2"), "{out}");
+    assert!(out.contains("draw the logo"), "{out}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn needs_must_be_a_list_of_strings() {
+    let e = env().await;
+    let s = connect(&e, "claude-code").await;
+    let r = tool(
+        &e,
+        &s,
+        "handoff",
+        json!({"task_id": "00000000-0000-0000-0000-000000000000", "done": "a",
+               "remaining": "b", "needs": "image"}),
+    )
+    .await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tool_list_stays_small() {
+    let e = env().await;
+    let s = connect(&e, "claude-code").await;
+    let r = send(
+        &e,
+        Some(&s),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let bytes = serde_json::to_string(&r.body["result"]["tools"])
+        .unwrap()
+        .len();
+    // Every tool definition is sent to the model on every turn. Plan 8 added 160 bytes (about 40
+    // tokens) to the 10,040 before it; a bigger tool list needs a reason that pays for itself.
+    assert!(bytes <= 10_280, "tools/list is {bytes} bytes; it was 10,200 after Plan 8");
+}
