@@ -42,6 +42,85 @@ pub struct BacklogItem {
     pub created_at: DateTime<Utc>,
 }
 
+/// What the user posts to the backlog (`av post`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewBacklogItem {
+    pub repo: String,
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub needs: Vec<String>,
+    pub prefer: Option<String>,
+    #[serde(default)]
+    pub priority: i32,
+    pub reserve_secs: i64,
+    pub posted_by: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BacklogState {
+    Queued,
+    Taken,
+    Dropped,
+}
+
+impl BacklogState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BacklogState::Queued => "queued",
+            BacklogState::Taken => "taken",
+            BacklogState::Dropped => "dropped",
+        }
+    }
+}
+
+impl std::str::FromStr for BacklogState {
+    type Err = crate::AvError;
+    fn from_str(s: &str) -> crate::Result<Self> {
+        match s {
+            "queued" => Ok(BacklogState::Queued),
+            "taken" => Ok(BacklogState::Taken),
+            "dropped" => Ok(BacklogState::Dropped),
+            other => Err(crate::AvError::Invalid(format!(
+                "unknown backlog state {other:?} (queued, taken or dropped)"
+            ))),
+        }
+    }
+}
+
+/// A backlog row: the item plus what became of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BacklogEntry {
+    #[serde(flatten)]
+    pub item: BacklogItem,
+    pub state: BacklogState,
+    /// The task made for the item once an agent took it.
+    pub task_id: Option<crate::TaskId>,
+    pub taken_by: Option<String>,
+    pub taken_at: Option<DateTime<Utc>>,
+    pub posted_by: String,
+}
+
+/// A handed-off task that names what its next agent needs (`av handoff --needs`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandedOff {
+    pub task: crate::Task,
+    pub needs: Vec<String>,
+    pub prefer: Option<String>,
+    /// When the tags were set: the start of the reserve window.
+    pub since: DateTime<Utc>,
+}
+
+/// Lowercases and trims a tag; blank tags are an error.
+pub fn clean_tag(tag: &str) -> crate::Result<String> {
+    let t = tag.trim().to_lowercase();
+    if t.is_empty() {
+        return Err(crate::AvError::Invalid("a tag must not be blank".into()));
+    }
+    Ok(t)
+}
+
 /// Default reserve window of a backlog item.
 pub const DEFAULT_RESERVE_SECS: i64 = 600;
 

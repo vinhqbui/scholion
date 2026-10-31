@@ -208,6 +208,43 @@ pub trait IntentStore: Send + Sync {
     /// Extends the lease to `lease_secs` from now if `generation` is still the task's; returns
     /// whether it was.
     async fn renew_lease(&self, id: TaskId, generation: i64, lease_secs: u64) -> Result<bool>;
+    // --- Plan 8: routing. Profiles, the backlog and the tags a handoff carries.
+    /// Inserts or replaces the profile of `p.name`. Tags are stored lowercase; blank ones and a
+    /// blank name are `Invalid`.
+    async fn put_profile(&self, p: &crate::routing::Profile) -> Result<()>;
+    /// Cheapest first, then by name.
+    async fn list_profiles(&self) -> Result<Vec<crate::routing::Profile>>;
+    async fn post_backlog(
+        &self,
+        item: crate::routing::NewBacklogItem,
+    ) -> Result<crate::routing::BacklogEntry>;
+    /// Oldest first.
+    async fn list_backlog(
+        &self,
+        repo: Option<&str>,
+        state: Option<crate::routing::BacklogState>,
+    ) -> Result<Vec<crate::routing::BacklogEntry>>;
+    /// Withdraws a queued item. `NotFound` for an unknown id, `IllegalState` unless it is queued.
+    async fn drop_backlog(&self, id: uuid::Uuid) -> Result<()>;
+    /// Marks a queued item taken by `agent`; of racing callers exactly one gets `true`.
+    async fn take_backlog(&self, id: uuid::Uuid, agent: &str) -> Result<bool>;
+    /// Puts a taken item back in the queue, if no task was made for it yet.
+    async fn untake_backlog(&self, id: uuid::Uuid) -> Result<()>;
+    /// Names the task made for a taken item.
+    async fn link_backlog_task(&self, id: uuid::Uuid, task: TaskId) -> Result<()>;
+    /// Tags the next agent of a handed-off task must have. `IllegalState` unless it is handed off.
+    async fn set_handoff_needs(
+        &self,
+        id: TaskId,
+        needs: &[String],
+        prefer: Option<&str>,
+    ) -> Result<()>;
+    /// Handed-off tasks that carry tags or a preferred agent (of `repo`, or all), oldest first. A
+    /// claim clears them.
+    async fn handed_off_with_needs(
+        &self,
+        repo: Option<&str>,
+    ) -> Result<Vec<crate::routing::HandedOff>>;
     async fn set_workspace(&self, id: TaskId, path: &Path, base: &ChangeId) -> Result<()>;
     async fn set_pack_mode(&self, id: TaskId, mode: PackMode) -> Result<()>;
     async fn set_head(&self, id: TaskId, head: &ChangeId, touched: &[String]) -> Result<()>;
