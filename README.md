@@ -359,6 +359,7 @@ Enabling WSL integration for the distro in Docker Desktop avoids all of this.
 
 ```bash
 scholion repo add arxiv-rag /import/arxiv-rag      # path as seen inside the container
+scholion repo list                                 # every imported repo, its main and source
 scholion task start --repo arxiv-rag --title "Add retry" --goal "retry embedder calls with backoff"
 cd ~/ws/arxiv-rag/add-retry                  # printed as `workspace:`
 scholion checkpoint                                # snapshot + refresh the index
@@ -397,6 +398,9 @@ it may take it, so work moves on when an agent runs out of quota. Untagged work 
 cheapest agent. The dashboard lists the queue and who each item is reserved for. Design:
 `docs/superpowers/specs/2026-10-31-agent-routing-design.md`; how to measure whether it pays:
 `docs/superpowers/plans/2026-10-31-plan-8-grok-evaluation.md` (not yet run: no claim is made).
+To try it with real agents, run `examples/routing-smoke/setup.sh`. It sets up a small sample
+project (and your Sunken Crown checkout, if present) with profiles for Claude Code and Grok and a
+tagged backlog. Each table in its README says which agent should take which task.
 
 ### Dashboard
 
