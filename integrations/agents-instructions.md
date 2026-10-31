@@ -1,8 +1,11 @@
 # Instructions for agents without hooks
 
-Agents other than Claude Code reach Scholion only through its MCP server (`av`), so they need to
-be told when to call it. Put this in the instructions file the agent reads (`AGENTS.md` for Codex
-and Grok Build, `GEMINI.md` for Gemini CLI):
+The `av` MCP server already sends short instructions when an agent connects (how to work a task,
+take the next job with `start_task`, and review). Claude Code and Grok Build show them to the
+model, so the basics need no setup. What the server deliberately does not say is to keep taking
+jobs: an agent you open for your own work should not start pulling the backlog. To make an agent
+loop, put this in the instructions file it reads (`AGENTS.md` for Codex and Grok Build, `GEMINI.md`
+for Gemini CLI), or say it in the prompt:
 
 ```markdown
 ## Scholion (`av` MCP server)

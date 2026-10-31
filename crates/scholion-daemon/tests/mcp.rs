@@ -421,6 +421,24 @@ async fn instructions_do_not_ask_for_manual_checkpoints() {
         "{instructions}"
     );
     assert!(instructions.contains("submit checkpoints for you"));
+    // Plan 9: how to take the next job and do a review, and why git status looks empty. Not a
+    // loop: an agent the user opened for their own work must not start pulling backlog work.
+    assert!(
+        instructions.contains("with no title or goal"),
+        "{instructions}"
+    );
+    for step in ["`review_task`", "`validate`", "`post_review`", "`merge`"] {
+        assert!(instructions.contains(step), "{step}: {instructions}");
+    }
+    assert!(instructions.contains("`git status` shows nothing"));
+    assert!(!instructions.to_lowercase().contains("loop"));
+    assert!(!instructions.contains("again"));
+    // sent on every turn: about 160 tokens at most
+    assert!(
+        instructions.len() <= 640,
+        "instructions are {} bytes",
+        instructions.len()
+    );
 
     // get_context without a budget asks for 800 tokens
     let s = r.session.unwrap();

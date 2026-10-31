@@ -50,7 +50,9 @@ const INSTRUCTIONS: &str = "Scholion (av): context-first version control. `start
 `claim_task`), work in the workspace it names, `record` decisions and dead ends when they happen \
 (kind=attempt with why, right after an approach fails), then `submit` with any last records inline; \
 submit checkpoints for you. `get_context` gives more context on demand. Call `checkpoint` only to \
-refresh `get_context` mid-task.";
+refresh `get_context` mid-task. Workspace edits are snapshotted into commits, so `git status` shows \
+nothing. `start_task` with no title or goal gives your next job; to review: `review_task`, run its \
+tests in its workspace, `validate`, `post_review`, then `merge` if approved.";
 
 fn tools() -> Value {
     let task_id = json!({"type": "string", "description": "Task id (default: the task this session started or claimed)."});
