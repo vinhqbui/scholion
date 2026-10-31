@@ -909,9 +909,10 @@ async fn the_tool_list_stays_small() {
         .unwrap()
         .len();
     // Every tool definition is sent to the model on every turn. Plan 8 added 160 bytes (about 40
-    // tokens) to the 10,040 before it; a bigger tool list needs a reason that pays for itself.
+    // tokens) to the 10,040 before it, Plan 9 112 (start_task's wait and its longer description);
+    // a bigger tool list needs a reason that pays for itself.
     assert!(
-        bytes <= 10_280,
-        "tools/list is {bytes} bytes; it was 10,200 after Plan 8"
+        bytes <= 10_320,
+        "tools/list is {bytes} bytes; it was 10,312 after Plan 9"
     );
 }

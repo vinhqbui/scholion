@@ -84,12 +84,27 @@ An `av` installed before Plan 8 lacks `agent`, `post`, `backlog` and `next`. Use
 
 Start each agent in `~/projects/pantry` and paste this prompt:
 
-> You are working through the av MCP server. Loop: call `start_task` with no arguments. If it returns
-> no task, stop and report what you did. Otherwise work ONLY in the workspace path it returns, read
-> its pack, do the goal, run `python3 -m unittest` there, call `validate` with that command and its
-> exit code, then `submit` with at least one `decision` or `note` record explaining why. If the goal
-> tells you to hand off, call `handoff` with the `needs` it names instead of submitting. Pass
-> `task_id` on every call. Then take the next task.
+> You are working through the av MCP server. Loop: call `start_task` with no title or goal and do
+> what it returns. A review: `review_task`, run `python3 -m unittest` in its workspace, `validate`
+> with that command and its exit code, `post_review`, and if you approve, `merge`. A task (new or
+> handed off): work ONLY in the workspace path it returns (git status there shows nothing; that is
+> expected), read its pack, do the goal, run the tests, `validate`, then `submit` with at least one
+> `decision` or `note` record explaining why. If the goal tells you to hand off, call `handoff` with
+> the `needs` it names instead of submitting. Pass `task_id` (or the task's slug) on every call.
+> When it returns no task, call it again with `wait` 50; stop after three empty waits and report
+> what you did.
+
+Instead of keeping each agent open, `av watch` can start it only when there is work for it. It
+asks every 15 s what `start_task` would give the agent (taking nothing) and runs the command when
+something fits:
+
+```bash
+av --agent claude watch --repo pantry -- claude -p "$(cat prompt.txt)"
+av --agent grok watch --repo pantry -- grok -p "$(cat prompt.txt)"
+```
+
+`--once` checks a single time; `--max-runs N` stops after N runs. It runs on your machine; the
+daemon still never starts a process.
 
 For Grok, also set `PYTHONDONTWRITEBYTECODE=1`, otherwise `__pycache__` shows up in the changed
 files. Its `--sandbox workspace` does not confine writes, so watch which paths it edits.
@@ -101,8 +116,10 @@ files. Its `--sandbox workspace` does not confine writes, so watch which paths i
 - When #2 is handed off, Grok claims it (generation 2) and draws `assets/chart.svg` from Claude's
   `totals_by_category`. Claude is not offered it again, because Claude lacks `image`.
 - Each agent's later pack shows the other agent's live work and records.
-- Optional review loop: each agent can `review_task` and `post_review` the other's submitted
-  tasks (an owner cannot approve its own), then `merge`.
+- The review loop: once a task is submitted, the other agent's next `start_task` offers it for
+  review before any new work, and the reviewer merges what it approves. An owner is never offered
+  its own review. Grok reviews Claude's code work; Claude reviews Grok's image work (only Grok can
+  do `image`, so any other agent may review it).
 
 ## Reset
 

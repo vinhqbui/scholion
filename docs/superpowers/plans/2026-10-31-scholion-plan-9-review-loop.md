@@ -20,6 +20,22 @@ and no human prompting between steps.
 
 No migration and no new MCP tool.
 
+**As implemented (2026-10-31; where the code differs from the tasks below, the code wins):**
+- `abandoned_tasks(repo, lease_secs)` takes the lease length and returns `routing::Stale { task,
+  since }` (the time the lease ran out), not `now`.
+- An owner that asks for its own abandoned task resumes it (`flow::resume_as`: lease renewed, same
+  generation) instead of claiming it from itself.
+- Two fallbacks the plan lacked, found by the tests: a review whose tags only its owner has goes to
+  any other agent, and so does an untagged handoff whose inherited tags only the agent that handed
+  it off has. Otherwise such tasks stay in review or handed off for good. Explicit handoff `needs`
+  stay strict.
+- `MAX_WAIT_SECS` is 50, a guess meant to stay under a 60 s client timeout. Task 7's measurement
+  of the real CLIs' MCP timeouts was not run, so no client's timeout is known; one that times out
+  sooner sees a failed call.
+- The test that a stale generation is refused after a rescue lives in `tests/routing.rs`, beside
+  the other rescue tests.
+- `tools/list` grew by 112 bytes (10,200 to 10,312).
+
 **Tech Stack:** Rust 1.97.1 (pinned), axum daemon, Postgres (`PgStore`), hand-rolled MCP in
 `mcp.rs`, clap CLI.
 

@@ -65,7 +65,7 @@ fn tools() -> Value {
         "summary": {"type": "string"}, "body": {"type": "string"}, "anchors": anchors,
         "receipt": {"type": "string", "description": "The rcp:… id of the pack you worked from."}}});
     json!([
-        {"name": "start_task", "description": "Start a task: creates its isolated workspace and returns the workspace path and a first context pack. Omit title and goal to take the next backlog task that fits you.",
+        {"name": "start_task", "description": "Start a task: creates its isolated workspace and returns the workspace path and a first context pack. Omit title and goal for your next job: a review or merge of others' work, a handoff, else a backlog task that fits you. wait: seconds to wait for one.",
          "inputSchema": {"type": "object", "required": [], "properties": {
             "repo": {"type": "string"}, "title": {"type": "string"}, "goal": {"type": "string"},
             "budget": {"type": "integer", "description": "Token budget of the pack (default 800)."},
