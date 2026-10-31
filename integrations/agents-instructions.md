@@ -8,13 +8,16 @@ and Grok Build, `GEMINI.md` for Gemini CLI):
 ## Scholion (`av` MCP server)
 
 - Before you change code, call `start_task` (new work) or `claim_task` (a task someone handed off).
-  Work only in the workspace it returns. Read the pack it returns: it holds the decisions and dead
+  With no task of your own, call `start_task` with no arguments: it gives you the next task waiting
+  for an agent like you, or says there is none. Work only in the workspace it returns. Read the pack it returns: it holds the decisions and dead
   ends of earlier agents. Call `get_context` for more, `expand` for one item.
 - Record why, not what: `record` a `decision` for a choice someone could undo by mistake, an
   `attempt` for a dead end (what you tried and why it failed), a `note` for anything else worth
   knowing. Summaries are one line (at most 200 characters) and anchor to the file or symbol.
 - `checkpoint` after a group of edits. Run the tests yourself, then `validate` with the command and
   its exit code.
-- To stop before you are done, `handoff` (done, remaining, broken, questions). When done,
+- If your process restarts, the task is forgotten: pass `task_id` on later calls.
+- To stop before you are done, `handoff` (done, remaining, broken, questions). If the rest needs
+  something you lack (images, say), pass `needs: ["image"]` so only a fitting agent is offered it. When done,
   `submit`; another agent reviews (`review_task`, `post_review`) and merges.
 ```

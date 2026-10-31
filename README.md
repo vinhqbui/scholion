@@ -374,9 +374,33 @@ scholion log                                       # main's history, newest firs
 scholion abandon                                   # end a task for good (owner only)
 ```
 
+### Several agents, several subscriptions
+
+One daemon serves every agent; each CLI only needs its own config entry for the same `/mcp` URL
+(`av init --for …`). To spread work over agents by what each is good at and what it costs:
+
+```bash
+av agent set claude --best code,tests --can docs --cost 4     # 1 is the cheapest
+av agent set muse --can code,docs --cost 1
+av agent set grok --best image --can ui --cost 2 --alias grok-shell-av
+av post --repo arxiv-rag --title "Redraw the logo" --goal "..." --needs image   # to the backlog
+av next                                    # as an agent: the next task that fits it, or none
+av handoff --done … --remaining … --needs image   # hand off to an agent that has the tag
+```
+
+An agent's own CLI runs the work on its own subscription; Scholion holds no vendor credentials and
+never launches an agent. Agents pull: MCP agents call `start_task` with no arguments, the others
+`av next`. Rules (no model involved): an agent can take an item when every tag it needs is in the
+agent's `best` or `can`; the best-fitting agent (the item's `--prefer`, then most `best` tags, then
+cheapest) has it to itself for `--reserve` seconds (default 600), after which any agent that can do
+it may take it, so work moves on when an agent runs out of quota. Untagged work goes to the
+cheapest agent. The dashboard lists the queue and who each item is reserved for. Design:
+`docs/superpowers/specs/2026-10-31-agent-routing-design.md`; how to measure whether it pays:
+`docs/superpowers/plans/2026-10-31-plan-8-grok-evaluation.md` (not yet run: no claim is made).
+
 ### Dashboard
 
-Open `http://localhost:7420/ui` to watch agents work: tasks by status, a live activity feed (the
+Open `http://localhost:7420/ui` to watch agents work: tasks by status, the backlog, a live activity feed (the
 `/v1/events` long-poll), and for each task its records, changed files, claim and review state.
 "Build context pack" shows exactly what the next agent would receive at a given budget. The page
 is read-only and built into the daemon (no Node, no build step); with `AV_TOKEN` set it asks for the
@@ -458,6 +482,8 @@ opens with a warning naming the culprit merge.
   never the token. These agents get no hooks: they call `start_task`/`claim_task` and `get_context`
   themselves; the instructions to give them are in `integrations/<agent>/README.md`. All of them
   share one memory, so a dead end Claude recorded is in the pack Codex gets.
+- **Muse Code**: installed and its headless mode checked, but its MCP settings file was not (needs a
+  login); see `integrations/muse/README.md` for what works today (`av next` with `av-wrap.sh`).
 - **Across vendors**: `scripts/relay-demo.sh` shows one memory shared by different agents. Claude
   Code tries the obvious fix on a small repo, records why it failed and hands off; Codex claims the
   task, and its first pack leads with that dead end (`--first`/`--second` pick other agents;

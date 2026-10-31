@@ -6,6 +6,8 @@
 
 **Design:** `docs/superpowers/specs/2026-10-31-agent-routing-design.md` (read it first).
 
+**Status (2026-10-31):** Tasks 1–9 are done on branch `plan-8-routing`; Task 10 (`scripts/route-demo.sh`) follows. Task 8 is partly done: Muse Code's MCP settings file could not be checked without a login, so there is no `av init --for muse`; `integrations/muse/README.md` records what was and was not verified. Differences from the text below: the backlog list also returns `best_agent`; `X-Av-Agent` is written for Grok (checked) and Gemini (same header map as `Authorization`, not checked against the real CLI), not Codex.
+
 ## Tasks (TDD each: failing test, code, `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`)
  (TDD each: failing test → code → `cargo fmt`/`clippy -D warnings`/`cargo test --workspace`)
 

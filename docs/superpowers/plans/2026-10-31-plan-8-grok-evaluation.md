@@ -69,6 +69,35 @@ Closes the "fixtures only" caveat and fixes the facts every later step relies on
 Output: `bench/results/<date>-routing-grok/conformance.md` with the observed values, and fixes to
 `integrations/grok/README.md` where reality differs.
 
+### What E-G0 found (Grok Build 1.0.70, 2026-10-31; `bench/results/2026-10-31-routing-grok/conformance.md`)
+
+E-G0 was run; these facts replace the "record, without assuming" list above and shape the runner:
+
+- **Name:** Grok sends `clientInfo.name` `grok-shell-av`. A static `X-Av-Agent` header works, and
+  `av init --for grok` now writes it. Tools appear to the model as `av__<name>`.
+- **Usage:** `--output-format json` gives `usage.input_tokens` (uncached only),
+  `usage.cache_read_input_tokens`, `usage.output_tokens`, `usage.reasoning_tokens` and
+  `total_cost_usd` (an estimate). `grok usage <session>` counts the cache in its input. There is no
+  budget flag: cap with `--max-turns`.
+- **Images:** `--prompt-json` takes ACP blocks `{"type":"image","mimeType":"image/png","data":"<base64>"}`;
+  a path in the prompt also works. An 8x8 image was dropped, a 256x256 one read. **Image task assets
+  must be at least 256x256.**
+- **Workspace:** `--add-dir` is rejected headless, so the task workspace must sit under `--cwd`
+  (`AV_WS_ROOT` inside it). `--sandbox workspace` did **not** stop a write outside the directory, so
+  a headless Grok run can write anywhere this user can: run the benchmark as a throwaway user or in a
+  disposable checkout, never next to work that matters.
+- **Task memory:** a resumed process forgets its task; calls after a restart must pass `task_id`
+  (now in `integrations/agents-instructions.md`).
+- **Noise:** python writes `__pycache__` into `changed`; set `PYTHONDONTWRITEBYTECODE=1` for every
+  agent in the benchmark.
+- **Baseline cost:** one Grok session carried about 413k input tokens (387k cached) from this
+  machine's already-enabled MCP servers and skills, for a two-line repo. **Run every agent in the
+  study with a clean config** (an empty home for each CLI, only the `av` entry), or the per-task
+  token comparison measures the user's setup and not the agent. The E-G0 conformance session cost an
+  estimated $0.26; the whole of E-G0, about $0.46 (subscription estimate, no API money).
+- **Still open from E-G0:** the claim step was checked with a direct MCP client, not with a second
+  `grok -p` process.
+
 ## E-G1. Capability profile (the data behind `best` and `can`)
 
 **Design.** Six tags: `image`, `ui`, `code`, `tests`, `docs`, `math`. Six tasks per tag (36), each a

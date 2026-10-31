@@ -122,6 +122,16 @@ async fn list_backlog(
         .map(str::parse::<BacklogState>)
         .transpose()?;
     let items = st.store.list_backlog(q.repo.as_deref(), state).await?;
+    // the agent each item is reserved for first, so a client need not know the ranking rules
+    let profiles = st.store.list_profiles().await?;
+    let items: Vec<Value> = items
+        .iter()
+        .map(|e| {
+            let mut v = json!(e);
+            v["best_agent"] = json!(routing::rank(&e.item, &profiles).first());
+            v
+        })
+        .collect();
     Ok(Json(json!({ "items": items })))
 }
 

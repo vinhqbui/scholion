@@ -263,3 +263,24 @@ async fn a_handoff_without_tags_is_not_pulled_by_next() {
     let (_, body) = next(&e, "muse").await;
     assert_eq!(body["task"], Value::Null);
 }
+
+#[tokio::test]
+async fn the_backlog_names_the_agent_that_ranks_first_for_each_item() {
+    let e = env().await;
+    put_agent(&e, "muse", &[], &["code"], 1).await;
+    put_agent(&e, "claude", &["code"], &[], 4).await;
+    post_item(&e, "demo", "untagged", &[], 600).await;
+    post_item(&e, "demo", "code", &["code"], 600).await;
+    post_item(&e, "demo", "image", &["image"], 600).await;
+    let items = backlog(&e, "").await;
+    let best = |title: &str| {
+        items
+            .iter()
+            .find(|i| i["title"] == title)
+            .map(|i| i["best_agent"].clone())
+            .unwrap()
+    };
+    assert_eq!(best("untagged"), "muse"); // cheapest
+    assert_eq!(best("code"), "claude"); // best at code
+    assert_eq!(best("image"), Value::Null); // nobody can do it
+}
