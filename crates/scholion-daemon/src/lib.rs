@@ -13,6 +13,7 @@ mod flow;
 mod indexing;
 mod mcp;
 mod reindex;
+mod routing_api;
 mod ui;
 mod wiring;
 mod worker;

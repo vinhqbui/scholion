@@ -117,6 +117,7 @@ pub(crate) fn routes() -> Router<AppState> {
         )
         .route("/v1/maintenance/prune", post(prune))
         .route("/v1/repos/{name}/outbox", get(outbox))
+        .merge(crate::routing_api::routes())
 }
 
 /// Sessions idle this long lose their ledger in `prune`.
@@ -318,18 +319,27 @@ async fn start_task(State(st): State<AppState>, Json(req): Json<StartTask>) -> A
         pause.ready.notify_waiters();
         pause.proceed.notified().await;
     }
-    let pack_req = PackRequest {
-        task_id: task.id,
-        budget_tokens: req.budget.unwrap_or(DEFAULT_BUDGET),
+    let pack_req = first_pack_request(task.id, req.budget, req.session);
+    let (task, pack) = pack_for_task(&st, task.id, pack_req).await?;
+    Ok(Json(Started { task, pack }))
+}
+
+/// The first pack of a started task: small, signatures only, with the repo map.
+pub(crate) fn first_pack_request(
+    task_id: TaskId,
+    budget: Option<u32>,
+    session: String,
+) -> PackRequest {
+    PackRequest {
+        task_id,
+        budget_tokens: budget.unwrap_or(DEFAULT_BUDGET),
         focus: None,
-        session: Some(req.session),
+        session: Some(session),
         family: AgentFamily::default(),
         code: DEFAULT_CODE,
         map: true,
         max_code: None,
-    };
-    let (task, pack) = pack_for_task(&st, task.id, pack_req).await?;
-    Ok(Json(Started { task, pack }))
+    }
 }
 
 /// Reconcile under `lock_task`, then build a pack. If main advanced during the pack, reconcile
@@ -355,7 +365,7 @@ pub(crate) async fn pack_for_task(
 
 /// Creates the task, its workspace and index scope, its intent record and its lease. A failure
 /// abandons the task, so no open task is left without a workspace.
-async fn create_started(
+pub(crate) async fn create_started(
     st: &AppState,
     repo: String,
     title: String,
