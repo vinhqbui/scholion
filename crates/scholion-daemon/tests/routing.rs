@@ -252,16 +252,24 @@ async fn a_handoff_with_a_blank_tag_is_refused_and_leaves_the_task_open() {
 }
 
 #[tokio::test]
-async fn a_handoff_without_tags_is_not_pulled_by_next() {
+async fn an_untagged_handoff_is_offered_to_another_agent() {
     let e = env().await;
     put_agent(&e, "muse", &[], &["code"], 1).await;
+    put_agent(&e, "claude", &["code"], &[], 4).await;
     let t = start_task(&e, "Make hello louder").await;
     edit_greeter(&e, &t);
     record_decision(&e, &t).await;
     let (status, _) = handoff(&e, &t, "claude").await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body) = next(&e, "muse").await;
-    assert_eq!(body["task"], Value::Null);
+    // claude handed it off: it is not offered back to claude, and does not hold its window
+    let (_, body) = next(&e, "claude").await;
+    assert_eq!(body["task"], Value::Null, "{body}");
+    let (status, body) = next(&e, "muse").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["from"], "handoff", "{body}");
+    assert_eq!(body["task"]["id"], t["task"]["id"]);
+    assert_eq!(body["task"]["owner_agent"], "muse");
+    assert_eq!(body["generation"], 2);
 }
 
 #[tokio::test]
@@ -457,4 +465,61 @@ async fn a_resubmitted_task_is_offered_for_review_again_not_as_approved() {
     let (_, body) = next(&e, "grok").await;
     assert_eq!(body["from"], "review", "{body}");
     assert_eq!(body["approved"], false);
+}
+
+// ---- Plan 9 Task 3: next rescues tasks whose owner went quiet ----
+
+/// claude starts a task directly (no backlog item, so no tags) under a 1 s lease, then goes
+/// quiet past it.
+async fn abandoned(e: &Env) -> Value {
+    put_agent(e, "claude", &["code"], &[], 4).await;
+    put_agent(e, "grok", &["image"], &["code"], 2).await;
+    let t = start_task(e, "Make hello louder").await;
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    t
+}
+
+#[tokio::test]
+async fn an_abandoned_task_is_offered_after_its_lease() {
+    let e = env_with(|s| s.with_lease_secs(1)).await;
+    let t = abandoned(&e).await;
+    let (status, body) = next(&e, "grok").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["from"], "abandoned", "{body}");
+    assert_eq!(body["task"]["id"], t["task"]["id"]);
+    assert_eq!(body["task"]["owner_agent"], "grok");
+    assert_eq!(body["generation"], 2);
+}
+
+#[tokio::test]
+async fn a_task_inside_its_lease_is_not_offered() {
+    let e = env_with(|s| s.with_lease_secs(3600)).await;
+    abandoned(&e).await;
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["task"], Value::Null, "{body}");
+}
+
+#[tokio::test]
+async fn an_abandoned_task_goes_back_to_its_restarted_owner() {
+    let e = env_with(|s| s.with_lease_secs(1)).await;
+    let t = abandoned(&e).await;
+    let (_, body) = next(&e, "claude").await;
+    assert_eq!(body["from"], "abandoned", "{body}");
+    assert_eq!(body["task"]["id"], t["task"]["id"]);
+    assert_eq!(body["task"]["owner_agent"], "claude");
+}
+
+#[tokio::test]
+async fn a_rescued_task_refuses_the_old_owners_writes() {
+    let e = env_with(|s| s.with_lease_secs(1)).await;
+    let t = abandoned(&e).await;
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["from"], "abandoned", "{body}");
+    let uri = format!("/v1/tasks/{}/checkpoint", id(&t));
+    let (status, resp) = call_as(&e.app, "POST", &uri, None, Some(1)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{resp}");
+    assert!(
+        resp["error"].as_str().unwrap().contains("claim lost"),
+        "{resp}"
+    );
 }

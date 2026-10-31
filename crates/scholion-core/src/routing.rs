@@ -5,6 +5,8 @@
 //! need in `can`), then by cost (cheapest first), then by name. For `reserve_secs` after an item
 //! is posted only its top-ranked agent may take it; afterwards any agent that can do it may.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -218,11 +220,34 @@ pub fn order_for<'a>(
     profiles: &[Profile],
     now: DateTime<Utc>,
 ) -> Vec<&'a BacklogItem> {
-    let mut out: Vec<(bool, &BacklogItem)> = items
-        .iter()
-        .filter(|i| eligible(agent, i, profiles, now))
-        .map(|i| (rank(i, profiles).first().is_some_and(|r| r == agent), i))
-        .collect();
+    order_for_excluding(agent, items, profiles, now, &HashMap::new())
+}
+
+/// `order_for`, where `excluded` names an agent per item (by item id) that may not take it: the
+/// agent that handed a task off. It neither takes the item nor holds its reserve window, so the
+/// window goes to the best of the others.
+pub fn order_for_excluding<'a>(
+    agent: &str,
+    items: &'a [BacklogItem],
+    profiles: &[Profile],
+    now: DateTime<Utc>,
+    excluded: &HashMap<Uuid, String>,
+) -> Vec<&'a BacklogItem> {
+    let mut out: Vec<(bool, &BacklogItem)> = Vec::new();
+    for i in items {
+        let others: Vec<Profile>;
+        let profiles = match excluded.get(&i.id) {
+            Some(ex) if ex == agent => continue,
+            Some(ex) => {
+                others = profiles.iter().filter(|p| &p.name != ex).cloned().collect();
+                &others[..]
+            }
+            None => profiles,
+        };
+        if eligible(agent, i, profiles, now) {
+            out.push((rank(i, profiles).first().is_some_and(|r| r == agent), i));
+        }
+    }
     out.sort_by(|(af, a), (bf, b)| {
         bf.cmp(af)
             .then(b.priority.cmp(&a.priority))
@@ -396,5 +421,23 @@ mod tests {
         assert_eq!(resolve(&p, "codex-mcp-client").unwrap().name, "codex");
         assert_eq!(resolve(&p, "grok").unwrap().name, "grok");
         assert!(resolve(&p, "nobody").is_none());
+    }
+
+    #[test]
+    fn an_excluded_agent_neither_takes_an_item_nor_holds_its_window() {
+        // claude hands off code work: claude would rank first, but it may not take its own task
+        let it = item(1, &["code"]);
+        let ex: HashMap<Uuid, String> = [(it.id, "claude".to_string())].into();
+        let items = [it];
+        let now = t0(); // inside the reserve window
+        assert!(order_for_excluding("claude", &items, &profiles(), now, &ex).is_empty());
+        // of the others, muse (can code, cost 1) beats codex (can code, cost 3): muse holds it
+        assert_eq!(
+            order_for_excluding("muse", &items, &profiles(), now, &ex).len(),
+            1
+        );
+        assert!(order_for_excluding("codex", &items, &profiles(), now, &ex).is_empty());
+        // without the exclusion claude holds the window and muse waits
+        assert!(order_for("muse", &items, &profiles(), now).is_empty());
     }
 }

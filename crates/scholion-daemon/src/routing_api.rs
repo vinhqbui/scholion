@@ -1,7 +1,7 @@
 //! Plan 8: agent profiles, the backlog and `next` (HTTP). The rules that pick an item for an
 //! agent are `scholion_core::routing`; this module only moves data and starts or claims tasks.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::api::{create_started, first_pack_request, pack_for_task};
 use crate::error::ApiResult;
-use crate::flow::claim_as;
+use crate::flow::{claim_as, resume_as};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -169,6 +169,8 @@ pub(crate) enum Choice {
     Review { task: Task, approved: bool },
     /// A handed-off task to claim; the item stands for it (`id` is the task id).
     Handoff(BacklogItem),
+    /// An open task whose owner went quiet (its lease ran out): claimed, or resumed by its owner.
+    Abandoned(BacklogItem),
     /// A queued backlog item to start.
     Backlog(BacklogItem),
 }
@@ -187,34 +189,63 @@ pub(crate) async fn choose(
         .store
         .list_backlog(repo, Some(BacklogState::Queued))
         .await?;
-    let mut handed = st.store.handed_off_tasks(repo).await?;
-    handed.retain(|h| !h.needs.is_empty() || h.prefer.is_some());
-    // A handed-off task is a candidate under its own id, the reserve window starting when its
-    // tags were set.
+    // Tasks waiting for a new agent are candidates under their own ids: every handoff (its
+    // window starts at the handoff; the agent that handed it off neither takes nor holds it),
+    // and every open task whose owner went quiet (no window: it already waited a whole lease, so
+    // whoever fits and asks first gets it, its restarted owner included).
     let mut items: Vec<BacklogItem> = queued.iter().map(|e| e.item.clone()).collect();
-    let mut handoffs: HashSet<Uuid> = HashSet::new();
-    for h in &handed {
-        handoffs.insert(h.task.id.0);
-        items.push(BacklogItem {
-            id: h.task.id.0,
-            repo: h.task.repo.clone(),
-            title: h.task.title.clone(),
-            goal: h.task.goal.clone(),
-            needs: h.needs.clone(),
-            prefer: h.prefer.clone(),
-            priority: 0,
-            reserve_secs: routing::DEFAULT_RESERVE_SECS,
-            created_at: h.since,
-        });
-    }
-    for item in routing::order_for(agent, &items, profiles, Utc::now()) {
-        choices.push(if handoffs.contains(&item.id) {
-            Choice::Handoff(item.clone())
+    let mut kind: HashMap<Uuid, bool> = HashMap::new(); // task id -> abandoned?
+    let mut excluded: HashMap<Uuid, String> = HashMap::new();
+    for h in st.store.handed_off_tasks(repo).await? {
+        let needs = if h.needs.is_empty() {
+            task_needs(st, &h.task).await?
         } else {
-            Choice::Backlog(item.clone())
+            h.needs.clone()
+        };
+        kind.insert(h.task.id.0, false);
+        excluded.insert(h.task.id.0, h.task.owner_agent.clone());
+        items.push(task_item(
+            &h.task,
+            needs,
+            h.prefer.clone(),
+            h.since,
+            routing::DEFAULT_RESERVE_SECS,
+        ));
+    }
+    for a in st.store.abandoned_tasks(repo, st.lease_secs).await? {
+        let needs = task_needs(st, &a.task).await?;
+        kind.insert(a.task.id.0, true);
+        items.push(task_item(&a.task, needs, None, a.since, 0));
+    }
+    for item in routing::order_for_excluding(agent, &items, profiles, Utc::now(), &excluded) {
+        choices.push(match kind.get(&item.id) {
+            Some(false) => Choice::Handoff(item.clone()),
+            Some(true) => Choice::Abandoned(item.clone()),
+            None => Choice::Backlog(item.clone()),
         });
     }
     Ok((choices, queued.len()))
+}
+
+/// An existing task as a candidate for `routing::order_for` (its `id` is the task id).
+fn task_item(
+    task: &Task,
+    needs: Vec<String>,
+    prefer: Option<String>,
+    since: chrono::DateTime<Utc>,
+    reserve_secs: i64,
+) -> BacklogItem {
+    BacklogItem {
+        id: task.id.0,
+        repo: task.repo.clone(),
+        title: task.title.clone(),
+        goal: task.goal.clone(),
+        needs,
+        prefer,
+        priority: 0,
+        reserve_secs,
+        created_at: since,
+    }
 }
 
 /// The tags a task's agent must have: those of the backlog item it was made from, if any.
@@ -330,6 +361,19 @@ async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<
                     v["from"] = json!("handoff");
                     v
                 }),
+            Choice::Abandoned(item) => {
+                let id = TaskId(item.id);
+                let own = st.store.get_task(id).await?.owner_agent == agent;
+                let taken = if own {
+                    resume_as(&st, id, &agent, b.budget, b.family).await
+                } else {
+                    claim_as(&st, id, &agent, b.budget, b.family).await
+                };
+                taken.map(|mut v| {
+                    v["from"] = json!("abandoned");
+                    v
+                })
+            }
             Choice::Backlog(item) => start_from_backlog(&st, &item, &agent, &b).await,
         };
         match made {
