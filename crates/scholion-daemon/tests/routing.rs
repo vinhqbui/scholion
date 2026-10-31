@@ -523,3 +523,69 @@ async fn a_rescued_task_refuses_the_old_owners_writes() {
         "{resp}"
     );
 }
+
+// ---- Plan 9 Task 6: a dry-run peek ----
+
+async fn peek(e: &Env, agent: &str) -> Value {
+    let (status, body) = call(
+        &e.app,
+        "POST",
+        "/v1/backlog/next",
+        Some(json!({"agent": agent, "session": "s-peek", "dry_run": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+#[tokio::test]
+async fn a_peek_takes_nothing() {
+    let e = env().await;
+    put_agent(&e, "muse", &[], &["code"], 1).await;
+    let item = post_item(&e, "demo", "louder hello", &[], 0).await;
+    let p = peek(&e, "muse").await;
+    assert_eq!(p["would"]["from"], "backlog", "{p}");
+    assert_eq!(p["would"]["backlog_id"], item["id"]);
+    assert_eq!(p["would"]["title"], "louder hello");
+    assert_eq!(p["would"]["repo"], "demo");
+    assert_eq!(backlog(&e, "?state=queued").await.len(), 1, "still queued");
+    let (_, body) = next(&e, "muse").await;
+    assert_eq!(body["backlog_id"], item["id"], "{body}");
+    assert_eq!(peek(&e, "muse").await, json!({"would": null, "queued": 0}));
+}
+
+#[tokio::test]
+async fn a_peek_names_what_next_would_return() {
+    let e = env().await;
+    three_agents(&e).await;
+    // a review
+    let t = take_and_submit(&e, "claude", "louder hello", &["code"]).await;
+    let p = peek(&e, "grok").await;
+    assert_eq!(p["would"]["from"], "review", "{p}");
+    assert_eq!(p["would"]["task_id"], t["task"]["id"]);
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["from"], "review");
+    assert_eq!(body["task"]["id"], p["would"]["task_id"]);
+    // a handoff
+    let h = start_task(&e, "Make goodbye louder").await;
+    edit_greeter(&e, &h);
+    record_decision(&e, &h).await;
+    let (status, _) = hand_off_with(&e, &h, json!({"needs": ["code"], "prefer": "codex"})).await;
+    assert_eq!(status, StatusCode::OK);
+    let p = peek(&e, "codex").await;
+    assert_eq!(p["would"]["from"], "handoff", "{p}");
+    assert_eq!(p["would"]["task_id"], h["task"]["id"]);
+    let (_, body) = next(&e, "codex").await;
+    assert_eq!(body["from"], "handoff", "{body}");
+    assert_eq!(body["task"]["id"], h["task"]["id"]);
+}
+
+#[tokio::test]
+async fn a_peek_does_not_reserve_a_review() {
+    let e = env().await;
+    three_agents(&e).await;
+    let t = take_and_submit(&e, "claude", "louder hello", &["code"]).await;
+    assert_eq!(peek(&e, "codex").await["would"]["task_id"], t["task"]["id"]);
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["task"]["id"], t["task"]["id"], "{body}");
+}

@@ -149,6 +149,9 @@ struct NextBody {
     session: String,
     budget: Option<u32>,
     family: Option<AgentFamily>,
+    /// Only say what `next` would give (Plan 9): nothing is taken, claimed or reserved.
+    #[serde(default)]
+    dry_run: bool,
 }
 
 /// How long a review offered by `next` stays with the agent it was offered to.
@@ -225,6 +228,23 @@ pub(crate) async fn choose(
         });
     }
     Ok((choices, queued.len()))
+}
+
+/// What a dry run says about a choice: its kind, the task or backlog item, its repo and title.
+fn would(c: &Choice) -> Value {
+    let (from, item) = match c {
+        Choice::Review { task, .. } => {
+            return json!({ "from": "review", "task_id": task.id, "repo": task.repo,
+                           "title": task.title });
+        }
+        Choice::Handoff(i) => ("handoff", i),
+        Choice::Abandoned(i) => ("abandoned", i),
+        Choice::Backlog(i) => {
+            return json!({ "from": "backlog", "backlog_id": i.id, "repo": i.repo,
+                           "title": i.title });
+        }
+    };
+    json!({ "from": from, "task_id": item.id, "repo": item.repo, "title": item.title })
 }
 
 /// An existing task as a candidate for `routing::order_for` (its `id` is the task id).
@@ -348,6 +368,12 @@ async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<
         .unwrap_or(agent);
 
     let (choices, queued) = choose(&st, &agent, b.repo.as_deref(), &profiles).await?;
+    if b.dry_run {
+        return Ok(Json(match choices.first() {
+            Some(c) => json!({ "would": would(c) }),
+            None => json!({ "would": null, "queued": queued }),
+        }));
+    }
     // A choice that cannot be acted on goes back and the next one is tried, so one bad item (a
     // repo that is gone) cannot block the rest. The first error is returned only when nothing
     // else worked.
