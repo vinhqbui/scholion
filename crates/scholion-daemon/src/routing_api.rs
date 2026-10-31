@@ -1,7 +1,9 @@
 //! Plan 8: agent profiles, the backlog and `next` (HTTP). The rules that pick an item for an
 //! agent are `scholion_core::routing`; this module only moves data and starts or claims tasks.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, post, put};
@@ -149,25 +151,43 @@ struct NextBody {
     family: Option<AgentFamily>,
 }
 
-/// The one item that fits the caller, made into its task: a queued backlog item is started (a
-/// workspace and a first pack, like `start_task`), a handed-off task that names tags is claimed
-/// (the handoff bundle, like `claim_task`). With nothing to give it returns `{"task": null,
-/// "queued": N}`: N queued items, none of which the caller may take now.
-async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<Value> {
-    let agent = b.agent.trim().to_owned();
-    if agent.is_empty() {
-        return Err(AvError::Invalid("agent must not be empty".into()).into());
-    }
-    let profiles = st.store.list_profiles().await?;
-    let agent = routing::resolve(&profiles, &agent)
-        .map(|p| p.name.clone())
-        .unwrap_or(agent);
+/// How long a review offered by `next` stays with the agent it was offered to.
+pub const REVIEW_RESERVE_SECS: u64 = 600;
+
+/// Reviews offered by `next`: the agent each was offered to, and until when. In memory only: a
+/// restart forgets them, which at worst offers a review twice.
+pub(crate) type Reviews = Arc<Mutex<HashMap<TaskId, (String, Instant)>>>;
+
+const REVIEW_TODO: &str = "Review it: review_task, run its tests in its workspace and validate, \
+                           then post_review. If you approve, merge it.";
+const MERGE_TODO: &str = "It is approved: merge it.";
+
+/// What `next` may give an agent, best first.
+#[derive(Debug)]
+pub(crate) enum Choice {
+    /// Another agent's task in review; `approved` at its current head (then it only needs a merge).
+    Review { task: Task, approved: bool },
+    /// A handed-off task to claim; the item stands for it (`id` is the task id).
+    Handoff(BacklogItem),
+    /// A queued backlog item to start.
+    Backlog(BacklogItem),
+}
+
+/// Everything `agent` may be given now, best first (reviews and merges, then handoffs and backlog
+/// items in the order of `routing::order_for`), and how many items are queued.
+pub(crate) async fn choose(
+    st: &AppState,
+    agent: &str,
+    repo: Option<&str>,
+    profiles: &[Profile],
+) -> Result<(Vec<Choice>, usize)> {
+    let mut choices = review_choices(st, agent, repo, profiles).await?;
 
     let queued = st
         .store
-        .list_backlog(b.repo.as_deref(), Some(BacklogState::Queued))
+        .list_backlog(repo, Some(BacklogState::Queued))
         .await?;
-    let mut handed = st.store.handed_off_tasks(b.repo.as_deref()).await?;
+    let mut handed = st.store.handed_off_tasks(repo).await?;
     handed.retain(|h| !h.needs.is_empty() || h.prefer.is_some());
     // A handed-off task is a candidate under its own id, the reserve window starting when its
     // tags were set.
@@ -187,21 +207,130 @@ async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<
             created_at: h.since,
         });
     }
+    for item in routing::order_for(agent, &items, profiles, Utc::now()) {
+        choices.push(if handoffs.contains(&item.id) {
+            Choice::Handoff(item.clone())
+        } else {
+            Choice::Backlog(item.clone())
+        });
+    }
+    Ok((choices, queued.len()))
+}
 
-    // An item that cannot be made into a task goes back to the queue and the next one is tried,
-    // so one bad item (a repo that is gone) cannot block the rest. The first error is returned
-    // only when nothing else worked.
+/// The tags a task's agent must have: those of the backlog item it was made from, if any.
+async fn task_needs(st: &AppState, task: &Task) -> Result<Vec<String>> {
+    Ok(st
+        .store
+        .list_backlog(Some(&task.repo), Some(BacklogState::Taken))
+        .await?
+        .into_iter()
+        .find(|e| e.task_id == Some(task.id))
+        .map(|e| e.item.needs)
+        .unwrap_or_default())
+}
+
+/// Whether `agent` (its profile, if any) can do work that needs `needs`. With no profile, only
+/// untagged work.
+fn fits(agent: &str, needs: &[String], profiles: &[Profile]) -> bool {
+    match profiles.iter().find(|p| p.name == agent) {
+        Some(p) => p.can_do(needs),
+        None => needs.is_empty(),
+    }
+}
+
+/// Whether a live offer of `task` names another agent than `agent`.
+fn reserved_for_other(st: &AppState, task: TaskId, agent: &str) -> bool {
+    let reviews = st.reviews.lock().unwrap_or_else(|e| e.into_inner());
+    reviews
+        .get(&task)
+        .is_some_and(|(who, until)| who != agent && *until > Instant::now())
+}
+
+/// Tasks in review that `agent` may review or merge, oldest first: not its own, tags it can do,
+/// not offered to another agent right now.
+async fn review_choices(
+    st: &AppState,
+    agent: &str,
+    repo: Option<&str>,
+    profiles: &[Profile],
+) -> Result<Vec<Choice>> {
+    let mut rows = st
+        .pg
+        .list_tasks(repo, Some(TaskStatus::InReview), 500)
+        .await?;
+    rows.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then(a.task.id.0.cmp(&b.task.id.0))
+    });
+    let mut out = Vec::new();
+    for row in rows {
+        let task = row.task;
+        if task.owner_agent == agent || reserved_for_other(st, task.id, agent) {
+            continue;
+        }
+        if !fits(agent, &task_needs(st, &task).await?, profiles) {
+            continue;
+        }
+        let approved = matches!(
+            st.store.latest_verdict(task.id, &task.head_change).await?,
+            Some((_, Verdict::Approve))
+        );
+        out.push(Choice::Review { task, approved });
+    }
+    Ok(out)
+}
+
+/// Offers `task` to `agent` for review: reserves it, unless another agent got it meanwhile.
+fn offer_review(st: &AppState, task: Task, approved: bool, agent: &str) -> Result<Value> {
+    {
+        let mut reviews = st.reviews.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        reviews.retain(|_, (_, until)| *until > now);
+        if reviews.get(&task.id).is_some_and(|(who, _)| who != agent) {
+            return Err(AvError::IllegalState("offered to another agent".into()));
+        }
+        reviews.insert(
+            task.id,
+            (
+                agent.to_owned(),
+                now + Duration::from_secs(REVIEW_RESERVE_SECS),
+            ),
+        );
+    }
+    let todo = if approved { MERGE_TODO } else { REVIEW_TODO };
+    Ok(json!({ "from": "review", "task": task, "approved": approved, "next": todo }))
+}
+
+/// The one item that fits the caller, made into its task: a queued backlog item is started (a
+/// workspace and a first pack, like `start_task`), a handed-off task that names tags is claimed
+/// (the handoff bundle, like `claim_task`). With nothing to give it returns `{"task": null,
+/// "queued": N}`: N queued items, none of which the caller may take now.
+async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<Value> {
+    let agent = b.agent.trim().to_owned();
+    if agent.is_empty() {
+        return Err(AvError::Invalid("agent must not be empty".into()).into());
+    }
+    let profiles = st.store.list_profiles().await?;
+    let agent = routing::resolve(&profiles, &agent)
+        .map(|p| p.name.clone())
+        .unwrap_or(agent);
+
+    let (choices, queued) = choose(&st, &agent, b.repo.as_deref(), &profiles).await?;
+    // A choice that cannot be acted on goes back and the next one is tried, so one bad item (a
+    // repo that is gone) cannot block the rest. The first error is returned only when nothing
+    // else worked.
     let mut first_err: Option<AvError> = None;
-    for item in routing::order_for(&agent, &items, &profiles, Utc::now()) {
-        let made = if handoffs.contains(&item.id) {
-            claim_as(&st, TaskId(item.id), &agent, b.budget, b.family)
+    for choice in choices {
+        let made = match choice {
+            Choice::Review { task, approved } => offer_review(&st, task, approved, &agent),
+            Choice::Handoff(item) => claim_as(&st, TaskId(item.id), &agent, b.budget, b.family)
                 .await
                 .map(|mut v| {
                     v["from"] = json!("handoff");
                     v
-                })
-        } else {
-            start_from_backlog(&st, item, &agent, &b).await
+                }),
+            Choice::Backlog(item) => start_from_backlog(&st, &item, &agent, &b).await,
         };
         match made {
             Ok(v) => return Ok(Json(v)),
@@ -214,7 +343,7 @@ async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<
     }
     match first_err {
         Some(e) => Err(e.into()),
-        None => Ok(Json(json!({ "task": null, "queued": queued.len() }))),
+        None => Ok(Json(json!({ "task": null, "queued": queued }))),
     }
 }
 

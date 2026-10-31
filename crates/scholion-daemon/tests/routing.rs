@@ -284,3 +284,177 @@ async fn the_backlog_names_the_agent_that_ranks_first_for_each_item() {
     assert_eq!(best("code"), "claude"); // best at code
     assert_eq!(best("image"), Value::Null); // nobody can do it
 }
+
+// ---- Plan 9 Task 2: next offers reviews and merges before new work ----
+
+async fn post_for(e: &Env, title: &str, needs: &[&str], agent: &str) {
+    let (status, body) = call(
+        &e.app,
+        "POST",
+        "/v1/backlog",
+        Some(
+            json!({"repo": "demo", "title": title, "goal": "Make hello louder",
+                    "needs": needs, "prefer": agent, "reserve_secs": 600}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+async fn task_op(e: &Env, task_id: &str, op: &str, body: Value) -> (StatusCode, Value) {
+    call(
+        &e.app,
+        "POST",
+        &format!("/v1/tasks/{task_id}/{op}"),
+        Some(body),
+    )
+    .await
+}
+
+/// `agent` takes the backlog item titled `title` (pinned to it) and submits it.
+async fn take_and_submit(e: &Env, agent: &str, title: &str, needs: &[&str]) -> Value {
+    post_for(e, title, needs, agent).await;
+    let (status, t) = next(e, agent).await;
+    assert_eq!(status, StatusCode::OK, "{t}");
+    assert_eq!(t["from"], "backlog", "{t}");
+    assert_eq!(t["task"]["title"], title, "{t}");
+    edit_greeter(e, &t);
+    record_decision(e, &t).await;
+    let (status, b) = task_op(e, &id(&t), "submit", json!({"agent": agent})).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    t
+}
+
+async fn approve(e: &Env, task_id: &str, reviewer: &str) {
+    let (status, b) = task_op(
+        e,
+        task_id,
+        "validate",
+        json!({"agent": reviewer, "command": "pytest", "exit_code": 0}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    let (status, b) = task_op(
+        e,
+        task_id,
+        "review",
+        json!({"reviewer": reviewer, "verdict": "approve"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+}
+
+async fn three_agents(e: &Env) {
+    put_agent(e, "claude", &["code"], &[], 4).await;
+    put_agent(e, "grok", &["image"], &["code"], 2).await;
+    put_agent(e, "codex", &[], &["code"], 3).await;
+}
+
+#[tokio::test]
+async fn next_offers_another_agents_task_in_review_before_backlog_work() {
+    let e = env().await;
+    three_agents(&e).await;
+    let t = take_and_submit(&e, "claude", "louder hello", &["code"]).await;
+    post_item(&e, "demo", "draw it", &["image"], 0).await;
+    let (status, body) = next(&e, "grok").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["from"], "review", "{body}");
+    assert_eq!(body["task"]["id"], t["task"]["id"]);
+    assert_eq!(body["approved"], false);
+    assert_eq!(
+        body["next"],
+        "Review it: review_task, run its tests in its workspace and validate, then post_review. If you approve, merge it."
+    );
+    // the image item is still queued
+    assert_eq!(backlog(&e, "?state=queued").await.len(), 1);
+}
+
+#[tokio::test]
+async fn next_never_offers_an_agent_its_own_review() {
+    let e = env().await;
+    three_agents(&e).await;
+    let t = take_and_submit(&e, "claude", "louder hello", &["code"]).await;
+    let (_, body) = next(&e, "claude").await;
+    assert_ne!(body["task"]["id"], t["task"]["id"], "{body}");
+    assert_eq!(body["task"], Value::Null, "{body}");
+}
+
+#[tokio::test]
+async fn a_review_needs_the_tags_of_the_item() {
+    let e = env().await;
+    three_agents(&e).await;
+    let t = take_and_submit(&e, "grok", "draw it", &["image"]).await;
+    let (_, body) = next(&e, "claude").await;
+    assert_eq!(
+        body["task"],
+        Value::Null,
+        "claude cannot do image work: {body}"
+    );
+    put_agent(&e, "claude", &["code"], &["image"], 4).await;
+    let (_, body) = next(&e, "claude").await;
+    assert_eq!(body["from"], "review", "{body}");
+    assert_eq!(body["task"]["id"], t["task"]["id"]);
+}
+
+#[tokio::test]
+async fn two_agents_are_not_offered_the_same_review() {
+    let e = env().await;
+    three_agents(&e).await;
+    let t = take_and_submit(&e, "claude", "louder hello", &["code"]).await;
+    let (_, first) = next(&e, "codex").await;
+    assert_eq!(first["task"]["id"], t["task"]["id"], "{first}");
+    let (_, second) = next(&e, "grok").await;
+    assert_eq!(second["task"], Value::Null, "reserved for codex: {second}");
+    let (_, again) = next(&e, "codex").await;
+    assert_eq!(again["task"]["id"], t["task"]["id"], "{again}");
+}
+
+#[tokio::test]
+async fn an_approved_task_is_offered_as_merge() {
+    let e = env().await;
+    three_agents(&e).await;
+    let t = take_and_submit(&e, "claude", "louder hello", &["code"]).await;
+    approve(&e, &id(&t), "grok").await;
+    // grok holds the reservation; another agent sees the task once grok's turn is over, but grok
+    // itself is told to merge it
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["from"], "review", "{body}");
+    assert_eq!(body["approved"], true);
+    assert_eq!(body["next"], "It is approved: merge it.");
+    let (status, b) = task_op(&e, &id(&t), "merge", json!({"agent": "grok"})).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    let (_, body) = next(&e, "codex").await;
+    assert_eq!(
+        body["task"],
+        Value::Null,
+        "merged work is not offered: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_resubmitted_task_is_offered_for_review_again_not_as_approved() {
+    let e = env().await;
+    three_agents(&e).await;
+    let t = take_and_submit(&e, "claude", "louder hello", &["code"]).await;
+    let (status, b) = task_op(
+        &e,
+        &id(&t),
+        "review",
+        json!({"reviewer": "grok", "verdict": "request_changes",
+               "findings": [{"summary": "say why it shouts"}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["task"], Value::Null, "back with its owner: {body}");
+    std::fs::write(
+        ws_dir(&e, &t).join("app/greeter.py"),
+        "class Greeter:\n    def hello(self, name):\n        return name.upper()\n",
+    )
+    .unwrap();
+    let (status, b) = task_op(&e, &id(&t), "submit", json!({"agent": "claude"})).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["from"], "review", "{body}");
+    assert_eq!(body["approved"], false);
+}

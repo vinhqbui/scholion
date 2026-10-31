@@ -70,6 +70,8 @@ pub struct AppState {
     pub(crate) starts: Arc<tokio::sync::Semaphore>,
     /// Repo imports by name, running or finished since the daemon started.
     pub(crate) imports: api::Imports,
+    /// Reviews offered by `next`, by task: who was offered it and until when (Plan 9).
+    pub(crate) reviews: routing_api::Reviews,
     extensions: ext::Extensions,
     events: ext::EventFeed,
 }
@@ -105,6 +107,7 @@ impl AppState {
             guard: Arc::new(AllowAll),
             starts: Arc::new(tokio::sync::Semaphore::new(starts)),
             imports: Arc::default(),
+            reviews: Arc::default(),
             extensions: ext::Extensions::default(),
             events: ext::EventFeed::default(),
         }
