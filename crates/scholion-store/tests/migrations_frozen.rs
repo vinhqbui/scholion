@@ -95,6 +95,10 @@ const FROZEN: &[(&str, &str)] = &[
         "0022_routing.sql",
         "d44c0d4d9187703dae27e923a55fdb71c4ae574ac6e3185004bf57fb13f4c2ed",
     ),
+    (
+        "0023_repos.sql",
+        "89bd7e1ec2203faa46008c2411d631dd0f315ceca957f3e3e3ba75ca9bf97165",
+    ),
 ];
 
 #[test]

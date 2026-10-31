@@ -249,11 +249,12 @@ function banner(msg) {
 // ---- data ----
 
 async function loadTasks() {
-  const all = await api("/v1/tasks?limit=500");
-  const repos = [...new Set(all.tasks.map(t => t.repo))].sort();
+  // every imported repo, not only those with tasks: a repo with only a queued backlog shows too
+  const [all, known] = await Promise.all([api("/v1/tasks?limit=500"), api("/v1/repos").catch(() => [])]);
+  const repos = [...new Set([...known.map(r => r.name), ...all.tasks.map(t => t.repo)])].sort();
   const sel = document.getElementById("repo");
   const want = S.repo || store(true, "av_repo") || repos[0] || null;
-  sel.replaceChildren(...(repos.length ? repos : ["(no tasks yet)"]).map(r => h("option", { value: r }, r)));
+  sel.replaceChildren(...(repos.length ? repos : ["(no repos yet)"]).map(r => h("option", { value: r }, r)));
   S.repo = repos.includes(want) ? want : (repos[0] || null);
   if (S.repo) sel.value = S.repo;
   S.tasks = all.tasks.filter(t => t.repo === S.repo);

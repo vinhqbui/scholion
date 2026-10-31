@@ -727,6 +727,36 @@ impl IntentStore for PgStore {
         Ok(())
     }
 
+    async fn register_repo(&self, name: &str, git_source: Option<&str>) -> Result<()> {
+        let name = non_blank("repo", name)?;
+        sqlx::query(
+            "INSERT INTO repos (name, git_source) VALUES ($1, $2)
+             ON CONFLICT (name) DO UPDATE SET git_source = COALESCE(repos.git_source, $2)",
+        )
+        .bind(name)
+        .bind(git_source)
+        .execute(&self.pool)
+        .await
+        .map_err(serr)?;
+        Ok(())
+    }
+
+    async fn list_repos(&self) -> Result<Vec<RepoEntry>> {
+        let rows = sqlx::query("SELECT name, git_source, added_at FROM repos ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(serr)?;
+        rows.iter()
+            .map(|r| {
+                Ok(RepoEntry {
+                    name: r.try_get("name").map_err(serr)?,
+                    git_source: r.try_get("git_source").map_err(serr)?,
+                    added_at: r.try_get("added_at").map_err(serr)?,
+                })
+            })
+            .collect()
+    }
+
     async fn list_profiles(&self) -> Result<Vec<routing::Profile>> {
         let rows = sqlx::query(
             "SELECT name, best, can, cost_rank, aliases FROM agent_profiles

@@ -436,6 +436,8 @@ enum ConventionCmd {
 
 #[derive(Subcommand)]
 enum RepoCmd {
+    /// List the imported repos and the commit each one's main points at.
+    List,
     Add {
         name: String,
         git_source: String,
@@ -1680,6 +1682,21 @@ fn run(cli: Cli) -> Result<()> {
                 &json!({"best": best, "can": can, "cost_rank": cost, "aliases": aliases}),
             )?;
             println!("{}", agent_line(&r["agent"]));
+        }
+        Cmd::Repo { cmd: RepoCmd::List } => {
+            let r = client.get("/v1/repos", &[])?;
+            let repos = r.as_array().cloned().unwrap_or_default();
+            if repos.is_empty() {
+                println!("no repos (av repo add NAME PATH)");
+            }
+            for repo in &repos {
+                let main: String = s(&repo["main_change"]).chars().take(12).collect();
+                let main = if main.is_empty() { "?".into() } else { main };
+                match repo["git_source"].as_str() {
+                    Some(src) => println!("{}  main {main}  from {src}", s(&repo["name"])),
+                    None => println!("{}  main {main}", s(&repo["name"])),
+                }
+            }
         }
         Cmd::Agent {
             cmd: AgentCmd::List,

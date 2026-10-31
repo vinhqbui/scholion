@@ -2137,3 +2137,20 @@ fn a_handoff_with_needs_is_taken_by_next_as_the_agent_that_fits() {
     let status = ok(av_as(&d, &ws, "grok", &["status"]));
     assert!(status.contains("owner grok · generation 2"), "{status}");
 }
+
+#[test]
+fn repo_list_names_the_imported_repos() {
+    let d = start_daemon();
+    let scratch = TempDir::new().unwrap();
+    assert!(
+        out(&av(&d, scratch.path(), &["repo", "list"])).contains("no repos"),
+        "an empty daemon says so"
+    );
+    ok(av(
+        &d,
+        scratch.path(),
+        &["repo", "add", "demo", d.src.to_str().unwrap()],
+    ));
+    let listed = ok(av(&d, scratch.path(), &["repo", "list"]));
+    assert!(listed.starts_with("demo "), "{listed}");
+}

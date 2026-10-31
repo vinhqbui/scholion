@@ -29,7 +29,7 @@ use scholion_pack::Packer;
 use scholion_semantic::{Embedder, SemanticSearch, VectorIndex};
 use scholion_store::PgStore;
 
-pub use api::{StartPackPause, router, router_with};
+pub use api::{StartPackPause, router, router_with, sync_repos};
 pub use backup::{BACKUP_TICK, backoff, backup_tick, start_backups};
 pub use embed_choice::EmbedChoice;
 pub use embedded_pg::EmbeddedPg;

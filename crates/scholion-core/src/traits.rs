@@ -37,6 +37,13 @@ pub trait Vcs: Send + Sync {
         Ok(out)
     }
 
+    /// The names of the imported repos, sorted.
+    async fn list_repos(&self) -> Result<Vec<String>> {
+        Err(AvError::Vcs(
+            "list_repos is not supported by this Vcs".into(),
+        ))
+    }
+
     /// The commit the trunk bookmark points at.
     async fn trunk(&self, _repo: &str) -> Result<ChangeId> {
         Err(AvError::Vcs("trunk is not supported by this Vcs".into()))
@@ -208,6 +215,12 @@ pub trait IntentStore: Send + Sync {
     /// Extends the lease to `lease_secs` from now if `generation` is still the task's; returns
     /// whether it was.
     async fn renew_lease(&self, id: TaskId, generation: i64, lease_secs: u64) -> Result<bool>;
+    /// Records an imported repo. A second call never replaces a known `git_source`; it only
+    /// fills in a missing one. A blank name is `Invalid`.
+    async fn register_repo(&self, name: &str, git_source: Option<&str>) -> Result<()>;
+    /// Every recorded repo, by name.
+    async fn list_repos(&self) -> Result<Vec<crate::types::RepoEntry>>;
+
     // --- Plan 8: routing. Profiles, the backlog and the tags a handoff carries.
     /// Inserts or replaces the profile of `p.name`. Tags are stored lowercase; blank ones and a
     /// blank name are `Invalid`.
