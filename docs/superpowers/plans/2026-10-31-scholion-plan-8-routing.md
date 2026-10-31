@@ -64,3 +64,11 @@
   item.
 - Token check: compare the `tools/list` response size before and after. The target is under 60
   extra tokens.
+
+## Evaluation
+
+How to find out whether routing (and Grok for image work) pays is in
+`2026-10-31-plan-8-grok-evaluation.md`: conformance of Grok Build as an `av` agent (E-G0), a
+per-tag capability profile of the agents (E-G1), routed vs solo vs random (E-G2), quota exhaustion
+(E-G3) and a relay with Grok in the chain (E-G4). It is run after Tasks 1–10 and spends no API money;
+the runner adapter it needs is listed there.
