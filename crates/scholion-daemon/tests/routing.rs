@@ -391,6 +391,8 @@ async fn next_never_offers_an_agent_its_own_review() {
 async fn a_review_needs_the_tags_of_the_item() {
     let e = env().await;
     three_agents(&e).await;
+    // painter can do image work too, so the review waits for an agent that can
+    put_agent(&e, "painter", &[], &["image"], 5).await;
     let t = take_and_submit(&e, "grok", "draw it", &["image"]).await;
     let (_, body) = next(&e, "claude").await;
     assert_eq!(
@@ -398,7 +400,19 @@ async fn a_review_needs_the_tags_of_the_item() {
         Value::Null,
         "claude cannot do image work: {body}"
     );
-    put_agent(&e, "claude", &["code"], &["image"], 4).await;
+    let (_, body) = next(&e, "painter").await;
+    assert_eq!(body["from"], "review", "{body}");
+    assert_eq!(body["task"]["id"], t["task"]["id"]);
+}
+
+/// Only grok can do image work, and grok cannot review its own task: rather than leave it in review
+/// for good, any other agent may review it.
+#[tokio::test]
+async fn a_review_nobody_else_can_do_goes_to_any_other_agent() {
+    let e = env().await;
+    put_agent(&e, "claude", &["code"], &[], 4).await;
+    put_agent(&e, "grok", &["image"], &["code"], 2).await;
+    let t = take_and_submit(&e, "grok", "draw it", &["image"]).await;
     let (_, body) = next(&e, "claude").await;
     assert_eq!(body["from"], "review", "{body}");
     assert_eq!(body["task"]["id"], t["task"]["id"]);

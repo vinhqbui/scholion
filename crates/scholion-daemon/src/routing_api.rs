@@ -306,8 +306,8 @@ fn reserved_for_other(st: &AppState, task: TaskId, agent: &str) -> bool {
         .is_some_and(|(who, until)| who != agent && *until > Instant::now())
 }
 
-/// Tasks in review that `agent` may review or merge, oldest first: not its own, tags it can do,
-/// not offered to another agent right now.
+/// Tasks in review that `agent` may review or merge, oldest first: not its own, tags it can do
+/// (or tags no other agent can do), not offered to another agent right now.
 async fn review_choices(
     st: &AppState,
     agent: &str,
@@ -329,7 +329,13 @@ async fn review_choices(
         if task.owner_agent == agent || reserved_for_other(st, task.id, agent) {
             continue;
         }
-        if !fits(agent, &task_needs(st, &task).await?, profiles) {
+        // An agent reviews work it could have done; but when no agent other than the owner could,
+        // any other agent reviews it rather than nobody.
+        let needs = task_needs(st, &task).await?;
+        let others_can = profiles
+            .iter()
+            .any(|p| p.name != task.owner_agent && p.can_do(&needs));
+        if others_can && !fits(agent, &needs, profiles) {
             continue;
         }
         let approved = matches!(
