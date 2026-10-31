@@ -72,6 +72,8 @@ pub struct AppState {
     pub(crate) imports: api::Imports,
     /// Reviews offered by `next`, by task: who was offered it and until when (Plan 9).
     pub(crate) reviews: routing_api::Reviews,
+    /// The longest `next` holds a call open waiting for work (`wait_secs` is clamped to it).
+    pub(crate) max_wait: std::time::Duration,
     extensions: ext::Extensions,
     events: ext::EventFeed,
 }
@@ -108,6 +110,7 @@ impl AppState {
             starts: Arc::new(tokio::sync::Semaphore::new(starts)),
             imports: Arc::default(),
             reviews: Arc::default(),
+            max_wait: std::time::Duration::from_secs(routing_api::MAX_WAIT_SECS),
             extensions: ext::Extensions::default(),
             events: ext::EventFeed::default(),
         }
@@ -165,6 +168,12 @@ impl AppState {
     /// The configured `AV_TOKEN`, if any.
     pub fn token(&self) -> Option<&str> {
         self.token.as_deref()
+    }
+
+    /// The longest `next` waits for work (default `MAX_WAIT_SECS`); shorter in tests.
+    pub fn with_max_wait(mut self, max: std::time::Duration) -> Self {
+        self.max_wait = max;
+        self
     }
 
     pub fn with_lease_secs(mut self, secs: u64) -> Self {

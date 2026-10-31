@@ -152,7 +152,16 @@ struct NextBody {
     /// Only say what `next` would give (Plan 9): nothing is taken, claimed or reserved.
     #[serde(default)]
     dry_run: bool,
+    /// With nothing to give, wait up to this many seconds for something (at most `max_wait`).
+    wait_secs: Option<u64>,
 }
+
+/// The longest `next` holds a call open waiting for work. Under the 60 s that many HTTP clients
+/// allow a call; MCP clients' own limits were not measured (Plan 9 Task 7 Step 1).
+pub const MAX_WAIT_SECS: u64 = 50;
+
+/// How often a waiting `next` looks again.
+const WAIT_STEP: Duration = Duration::from_secs(2);
 
 /// How long a review offered by `next` stays with the agent it was offered to.
 pub const REVIEW_RESERVE_SECS: u64 = 600;
@@ -367,21 +376,44 @@ async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<
         .map(|p| p.name.clone())
         .unwrap_or(agent);
 
-    let (choices, queued) = choose(&st, &agent, b.repo.as_deref(), &profiles).await?;
-    if b.dry_run {
-        return Ok(Json(match choices.first() {
-            Some(c) => json!({ "would": would(c) }),
-            None => json!({ "would": null, "queued": queued }),
-        }));
+    let deadline = Instant::now() + Duration::from_secs(b.wait_secs.unwrap_or(0)).min(st.max_wait);
+    loop {
+        // profiles are read again on each look: one may change while an agent waits
+        let profiles = st.store.list_profiles().await?;
+        let (choices, queued) = choose(&st, &agent, b.repo.as_deref(), &profiles).await?;
+        if b.dry_run {
+            return Ok(Json(match choices.first() {
+                Some(c) => json!({ "would": would(c) }),
+                None => json!({ "would": null, "queued": queued }),
+            }));
+        }
+        if let Some(v) = act(&st, &agent, &b, choices).await? {
+            return Ok(Json(v));
+        }
+        // nothing to give: wait for something (the call is dropped if the client goes away)
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(Json(json!({ "task": null, "queued": queued })));
+        }
+        tokio::time::sleep(WAIT_STEP.min(deadline - now)).await;
     }
-    // A choice that cannot be acted on goes back and the next one is tried, so one bad item (a
-    // repo that is gone) cannot block the rest. The first error is returned only when nothing
-    // else worked.
+}
+
+/// Acts on the first choice that works: offers a review, claims or resumes a task, or starts a
+/// backlog item. A choice that cannot be acted on is skipped and the next one tried, so one bad
+/// item (a repo that is gone) cannot block the rest; the first error is returned only when
+/// nothing else worked. `None`: there was nothing to act on.
+async fn act(
+    st: &AppState,
+    agent: &str,
+    b: &NextBody,
+    choices: Vec<Choice>,
+) -> Result<Option<Value>> {
     let mut first_err: Option<AvError> = None;
     for choice in choices {
         let made = match choice {
-            Choice::Review { task, approved } => offer_review(&st, task, approved, &agent),
-            Choice::Handoff(item) => claim_as(&st, TaskId(item.id), &agent, b.budget, b.family)
+            Choice::Review { task, approved } => offer_review(st, task, approved, agent),
+            Choice::Handoff(item) => claim_as(st, TaskId(item.id), agent, b.budget, b.family)
                 .await
                 .map(|mut v| {
                     v["from"] = json!("handoff");
@@ -391,19 +423,19 @@ async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<
                 let id = TaskId(item.id);
                 let own = st.store.get_task(id).await?.owner_agent == agent;
                 let taken = if own {
-                    resume_as(&st, id, &agent, b.budget, b.family).await
+                    resume_as(st, id, agent, b.budget, b.family).await
                 } else {
-                    claim_as(&st, id, &agent, b.budget, b.family).await
+                    claim_as(st, id, agent, b.budget, b.family).await
                 };
                 taken.map(|mut v| {
                     v["from"] = json!("abandoned");
                     v
                 })
             }
-            Choice::Backlog(item) => start_from_backlog(&st, &item, &agent, &b).await,
+            Choice::Backlog(item) => start_from_backlog(st, &item, agent, b).await,
         };
         match made {
-            Ok(v) => return Ok(Json(v)),
+            Ok(v) => return Ok(Some(v)),
             // someone else got there first
             Err(AvError::IllegalState(_)) => {}
             Err(e) => {
@@ -412,8 +444,8 @@ async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<
         }
     }
     match first_err {
-        Some(e) => Err(e.into()),
-        None => Ok(Json(json!({ "task": null, "queued": queued }))),
+        Some(e) => Err(e),
+        None => Ok(None),
     }
 }
 

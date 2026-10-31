@@ -346,6 +346,9 @@ enum Cmd {
         repo: Option<String>,
         #[arg(long, default_value_t = 800)]
         budget: u32,
+        /// With nothing to take, wait up to this many seconds for something (the daemon caps it).
+        #[arg(long)]
+        wait: Option<u64>,
     },
 }
 
@@ -1773,14 +1776,15 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
-        Cmd::Next { repo, budget } => {
+        Cmd::Next { repo, budget, wait } => {
             let session = cli
                 .session
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let r = client.post(
                 "/v1/backlog/next",
-                &json!({"repo": repo, "agent": cli.agent, "session": session, "budget": budget}),
+                &json!({"repo": repo, "agent": cli.agent, "session": session, "budget": budget,
+                        "wait_secs": wait}),
             )?;
             if r["task"].is_null() {
                 println!(
@@ -1790,7 +1794,21 @@ fn run(cli: Cli) -> Result<()> {
                 return Ok(());
             }
             let task = &r["task"];
-            let handoff = r["from"] == "handoff";
+            if r["from"] == "review" {
+                // someone else's task: nothing is written here; review it by id
+                println!(
+                    "review: task {} ({}/{}), owner: {}",
+                    s(&task["id"]),
+                    s(&task["repo"]),
+                    s(&task["slug"]),
+                    s(&task["owner_agent"])
+                );
+                println!("workspace: {}", s(&task["workspace_path"]));
+                println!("{}", s(&r["next"]));
+                return Ok(());
+            }
+            // a claimed or resumed task comes with its handoff bundle
+            let handoff = r["from"] == "handoff" || r["from"] == "abandoned";
             let workspace = PathBuf::from(s(&task["workspace_path"]));
             // a claim starts a fresh session; the owner name is the profile's, not an alias
             let session = if handoff {

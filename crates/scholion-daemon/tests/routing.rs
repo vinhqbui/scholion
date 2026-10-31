@@ -589,3 +589,67 @@ async fn a_peek_does_not_reserve_a_review() {
     let (_, body) = next(&e, "grok").await;
     assert_eq!(body["task"]["id"], t["task"]["id"], "{body}");
 }
+
+// ---- Plan 9 Task 7: next waits for work ----
+
+async fn next_waiting(app: &Router, agent: &str, wait: u64) -> (StatusCode, Value) {
+    call(
+        app,
+        "POST",
+        "/v1/backlog/next",
+        Some(json!({"agent": agent, "session": "s-wait", "wait_secs": wait})),
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn next_waits_for_work_that_arrives() {
+    let e = env().await;
+    put_agent(&e, "grok", &["image"], &[], 2).await;
+    let app = e.app.clone();
+    let started = std::time::Instant::now();
+    let waiting = tokio::spawn(async move { next_waiting(&app, "grok", 10).await });
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    post_item(&e, "demo", "draw it", &["image"], 0).await;
+    let (status, body) = waiting.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["from"], "backlog", "{body}");
+    assert_eq!(body["task"]["title"], "draw it");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_is_clamped_and_zero_returns_at_once() {
+    let e = env_with(|s| s.with_max_wait(std::time::Duration::from_secs(1))).await;
+    let t = std::time::Instant::now();
+    let (_, body) = next_waiting(&e.app, "grok", 0).await;
+    assert_eq!(body, json!({"task": null, "queued": 0}));
+    assert!(
+        t.elapsed() < std::time::Duration::from_millis(500),
+        "{:?}",
+        t.elapsed()
+    );
+    let t = std::time::Instant::now();
+    let (_, body) = next_waiting(&e.app, "grok", 100_000).await;
+    assert_eq!(body, json!({"task": null, "queued": 0}));
+    let took = t.elapsed();
+    assert!(
+        took >= std::time::Duration::from_millis(900) && took < std::time::Duration::from_secs(4),
+        "{took:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peek_never_waits() {
+    let e = env().await;
+    let t = std::time::Instant::now();
+    let (_, body) = call(
+        &e.app,
+        "POST",
+        "/v1/backlog/next",
+        Some(json!({"agent": "grok", "session": "s", "dry_run": true, "wait_secs": 30})),
+    )
+    .await;
+    assert_eq!(body, json!({"would": null, "queued": 0}));
+    assert!(t.elapsed() < std::time::Duration::from_millis(500));
+}

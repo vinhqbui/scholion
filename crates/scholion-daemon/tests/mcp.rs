@@ -882,6 +882,20 @@ async fn start_task_without_arguments_offers_a_review_and_does_not_adopt_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn start_task_passes_wait() {
+    let e = env_with(|s| s.with_max_wait(std::time::Duration::from_secs(1))).await;
+    let s = connect(&e, "grok").await;
+    let t = std::time::Instant::now();
+    let out = text(&tool(&e, &s, "start_task", json!({"wait": 30})).await);
+    assert!(out.contains("No task is waiting for you"), "{out}");
+    assert!(
+        t.elapsed() >= std::time::Duration::from_millis(900),
+        "it waited"
+    );
+    assert!(out.contains("wait"), "says it can wait: {out}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_tool_list_stays_small() {
     let e = env().await;
     let s = connect(&e, "claude-code").await;

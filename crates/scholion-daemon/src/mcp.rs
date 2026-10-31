@@ -68,7 +68,8 @@ fn tools() -> Value {
         {"name": "start_task", "description": "Start a task: creates its isolated workspace and returns the workspace path and a first context pack. Omit title and goal to take the next backlog task that fits you.",
          "inputSchema": {"type": "object", "required": [], "properties": {
             "repo": {"type": "string"}, "title": {"type": "string"}, "goal": {"type": "string"},
-            "budget": {"type": "integer", "description": "Token budget of the pack (default 800)."}}}},
+            "budget": {"type": "integer", "description": "Token budget of the pack (default 800)."},
+            "wait": {"type": "integer"}}}},
         {"name": "checkpoint", "description": "Snapshot the workspace and refresh the code index. Only needed to refresh `get_context` mid-task; `submit` checkpoints for you.",
          "inputSchema": {"type": "object", "properties": {"task_id": task_id}}},
         {"name": "record", "description": "Record a decision, attempt (dead end), note or intent, anchored to code. Call `record` with kind=attempt immediately when an approach fails, including why. Summary at most 200 characters.",
@@ -425,13 +426,14 @@ async fn run_tool(
             "POST",
             "/v1/backlog/next".into(),
             Some(json!({"repo": args["repo"], "agent": agent, "session": sid,
-                        "budget": args["budget"]})),
+                        "budget": args["budget"], "wait_secs": args["wait"]})),
             None,
             |r| {
                 if r["task"].is_null() {
                     return format!(
                         "No task is waiting for you ({} queued for other agents or still \
-                         reserved). Ask the user, or start your own task with repo, title and goal.",
+                         reserved). Call start_task again with wait (seconds) to wait for one, \
+                         start your own with repo, title and goal, or ask the user.",
                         r["queued"]
                     );
                 }

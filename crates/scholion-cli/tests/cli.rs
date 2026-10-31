@@ -2154,3 +2154,53 @@ fn repo_list_names_the_imported_repos() {
     let listed = ok(av(&d, scratch.path(), &["repo", "list"]));
     assert!(listed.starts_with("demo "), "{listed}");
 }
+
+#[test]
+fn next_offers_another_agents_task_for_review_and_writes_no_task_file() {
+    let (d, scratch) = daemon_with_repo();
+    // the default agent starts and submits a task; grok, asking next, is offered its review
+    let started = ok(av(
+        &d,
+        scratch.path(),
+        &[
+            "task",
+            "start",
+            "--repo",
+            "demo",
+            "--title",
+            "Improve greeting",
+            "--goal",
+            "Make hello louder",
+        ],
+    ));
+    let ws = d.ws.join("demo/improve-greeting");
+    assert!(started.contains("improve-greeting"), "{started}");
+    std::fs::write(
+        ws.join("app/greeter.py"),
+        "class Greeter:\n    def hello(self, name):\n        return name + \"!\"\n",
+    )
+    .unwrap();
+    ok(av(
+        &d,
+        &ws,
+        &[
+            "record",
+            "--kind",
+            "decision",
+            "--summary",
+            "shout in hello",
+            "--anchor",
+            "app/greeter.py:Greeter.hello",
+        ],
+    ));
+    ok(av(&d, &ws, &["submit"]));
+    let other = TempDir::new().unwrap();
+    let got = ok(av_as(&d, other.path(), "grok", &["next", "--wait", "1"]));
+    assert!(got.starts_with("review: task "), "{got}");
+    assert!(
+        got.contains("(demo/improve-greeting), owner: agent"),
+        "{got}"
+    );
+    assert!(got.contains("Review it: review_task"), "{got}");
+    assert!(!other.path().join(".av-task").exists());
+}
