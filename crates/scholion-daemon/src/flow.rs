@@ -716,7 +716,7 @@ pub(crate) async fn review(
             }
             None => {
                 return Err(AvError::IllegalState(format!(
-                    "cannot approve: tests not run at head {} (the owner runs `av validate -- <cmd>`)",
+                    "cannot approve: tests not run at head {} (run them in the workspace, then `av validate -- <cmd>`)",
                     short(&head.0)
                 ))
                 .into());
