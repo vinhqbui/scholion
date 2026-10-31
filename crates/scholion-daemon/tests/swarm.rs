@@ -765,3 +765,139 @@ async fn a_start_whose_client_leaves_while_queued_leaves_no_task_behind() {
         .collect();
     assert_eq!(titles, ["first"], "{tasks}");
 }
+
+// ---- Plan 8 Task 6: five agents with different profiles pull one mixed backlog
+
+async fn set_profile(e: &Env, name: &str, best: &[&str], can: &[&str], cost: i32) {
+    let (status, body) = call(
+        &e.app,
+        "PUT",
+        &format!("/v1/agents/{name}"),
+        Some(json!({"best": best, "can": can, "cost_rank": cost})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The example set from the design, plus a fifth agent that cannot do code or images.
+async fn five_profiles(e: &Env) {
+    set_profile(e, "grok", &["image"], &["ui"], 2).await;
+    set_profile(e, "claude", &["code", "tests"], &["docs", "ui"], 4).await;
+    set_profile(e, "muse", &[], &["code", "docs"], 1).await;
+    set_profile(e, "codex", &["math"], &["code"], 3).await;
+    set_profile(e, "gemini", &[], &["docs", "ui"], 3).await;
+}
+
+async fn post_items(e: &Env, tag: &str, n: usize, reserve: i64) {
+    for i in 0..n {
+        let needs: Vec<&str> = if tag.is_empty() { vec![] } else { vec![tag] };
+        let (status, body) = post(
+            e,
+            "/v1/backlog",
+            json!({"repo": "demo", "title": format!("{} item {i}", if tag.is_empty() { "untagged" } else { tag }),
+                   "goal": "Extend the greeter", "needs": needs, "reserve_secs": reserve}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+}
+
+/// An agent that keeps pulling until `next` has nothing for it; returns the titles it got.
+async fn pull_all(e: &Env, agent: &str) -> Vec<String> {
+    let mut got = Vec::new();
+    loop {
+        let (status, body) = post(
+            e,
+            "/v1/backlog/next",
+            json!({"agent": agent, "session": format!("sess-{agent}")}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{agent}: {body}");
+        if body["task"].is_null() {
+            return got;
+        }
+        assert_eq!(body["task"]["owner_agent"], agent, "{body}");
+        got.push(body["task"]["title"].as_str().unwrap().to_owned());
+    }
+}
+
+fn count(titles: &[String], prefix: &str) -> usize {
+    titles.iter().filter(|t| t.starts_with(prefix)).count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn five_agents_pull_a_mixed_backlog_and_each_item_goes_to_its_best_agent() {
+    let e = env().await;
+    five_profiles(&e).await;
+    // 5 image + 5 code + 4 math + 3 docs + 3 untagged = 20, all inside their reserve window
+    post_items(&e, "image", 5, 600).await;
+    post_items(&e, "code", 5, 600).await;
+    post_items(&e, "math", 4, 600).await;
+    post_items(&e, "docs", 3, 600).await;
+    post_items(&e, "", 3, 600).await;
+
+    let agents = ["grok", "claude", "muse", "codex", "gemini"];
+    let started = Instant::now();
+    let got: Vec<Vec<String>> = join_all(agents.iter().map(|a| pull_all(&e, a))).await;
+    eprintln!("20 items pulled by 5 agents in {:?}", started.elapsed());
+
+    let by = |name: &str| &got[agents.iter().position(|a| *a == name).unwrap()];
+    // every item went to the agent it ranks first on
+    assert_eq!(by("grok").len(), 5);
+    assert_eq!(count(by("grok"), "image"), 5);
+    assert_eq!(by("claude").len(), 5);
+    assert_eq!(count(by("claude"), "code"), 5);
+    assert_eq!(by("codex").len(), 4);
+    assert_eq!(count(by("codex"), "math"), 4);
+    // muse is the cheapest: docs and untagged work
+    assert_eq!(by("muse").len(), 6);
+    assert_eq!(count(by("muse"), "docs") + count(by("muse"), "untagged"), 6);
+    // gemini is ranked first on nothing, so inside the reserve windows it gets nothing
+    assert!(by("gemini").is_empty(), "{:?}", by("gemini"));
+
+    // each item was taken exactly once, and every taken item has its own task
+    let (_, list) = call(&e.app, "GET", "/v1/backlog?state=taken", None).await;
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items.len(), 20);
+    let mut tasks: Vec<&str> = items
+        .iter()
+        .map(|i| i["task_id"].as_str().unwrap())
+        .collect();
+    tasks.sort();
+    tasks.dedup();
+    assert_eq!(tasks.len(), 20, "two items share a task");
+    let (_, queued) = call(&e.app, "GET", "/v1/backlog?state=queued", None).await;
+    assert!(queued["items"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn when_the_best_agent_stops_pulling_the_others_finish_the_work() {
+    let e = env().await;
+    five_profiles(&e).await;
+    // claude's quota is out: it never pulls. The reserve window has passed (reserve 0), so any
+    // agent that can do code takes the code items; grok and gemini cannot, and image items stay.
+    post_items(&e, "code", 6, 0).await;
+    post_items(&e, "image", 2, 0).await;
+
+    let agents = ["muse", "codex", "gemini"]; // not grok, not claude
+    let got: Vec<Vec<String>> = join_all(agents.iter().map(|a| pull_all(&e, a))).await;
+    let total: usize = got.iter().map(Vec::len).sum();
+    assert_eq!(total, 6, "{got:?}");
+    assert!(
+        got[0].len() + got[1].len() == 6,
+        "muse and codex share the code items"
+    );
+    assert!(got[2].is_empty(), "gemini cannot do code");
+    let (_, queued) = call(&e.app, "GET", "/v1/backlog?state=queued", None).await;
+    let left: Vec<&str> = queued["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert!(left.iter().all(|t| t.starts_with("image")));
+
+    // grok comes back and finishes the images
+    assert_eq!(pull_all(&e, "grok").await.len(), 2);
+}
