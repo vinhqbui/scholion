@@ -209,8 +209,15 @@ pub(crate) async fn choose(
     let mut kind: HashMap<Uuid, bool> = HashMap::new(); // task id -> abandoned?
     let mut excluded: HashMap<Uuid, String> = HashMap::new();
     for h in st.store.handed_off_tasks(repo).await? {
+        // Tags given at the handoff hold. Without them the task keeps its item's tags, unless only
+        // the agent that handed it off has those: then any other agent may take it.
         let needs = if h.needs.is_empty() {
-            task_needs(st, &h.task).await?
+            let inherited = task_needs(st, &h.task).await?;
+            if others_can(&h.task.owner_agent, &inherited, profiles) {
+                inherited
+            } else {
+                Vec::new()
+            }
         } else {
             h.needs.clone()
         };
@@ -289,6 +296,11 @@ async fn task_needs(st: &AppState, task: &Task) -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 
+/// Whether some agent other than `owner` can do work that needs `needs`.
+fn others_can(owner: &str, needs: &[String], profiles: &[Profile]) -> bool {
+    profiles.iter().any(|p| p.name != owner && p.can_do(needs))
+}
+
 /// Whether `agent` (its profile, if any) can do work that needs `needs`. With no profile, only
 /// untagged work.
 fn fits(agent: &str, needs: &[String], profiles: &[Profile]) -> bool {
@@ -332,10 +344,7 @@ async fn review_choices(
         // An agent reviews work it could have done; but when no agent other than the owner could,
         // any other agent reviews it rather than nobody.
         let needs = task_needs(st, &task).await?;
-        let others_can = profiles
-            .iter()
-            .any(|p| p.name != task.owner_agent && p.can_do(&needs));
-        if others_can && !fits(agent, &needs, profiles) {
+        if others_can(&task.owner_agent, &needs, profiles) && !fits(agent, &needs, profiles) {
             continue;
         }
         let approved = matches!(

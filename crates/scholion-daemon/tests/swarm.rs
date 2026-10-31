@@ -901,3 +901,153 @@ async fn when_the_best_agent_stops_pulling_the_others_finish_the_work() {
     // grok comes back and finishes the images
     assert_eq!(pull_all(&e, "grok").await.len(), 2);
 }
+
+// ---- Plan 9 Task 9: agents that only loop on `next` take a backlog all the way to merged
+
+/// What one looping agent saw: the tasks it worked on, the ones it reviewed (with their owners),
+/// and how many times it called `next`.
+#[derive(Debug, Default)]
+struct LoopRun {
+    worked: Vec<String>,
+    reviewed: Vec<(String, String)>,
+    calls: usize,
+}
+
+/// An agent that does only what `next` returns, as the agent instructions say: review, merge,
+/// take a handoff, or work a new task. It stops after `idle` empty waits in a row. When
+/// `hand_off` is set, it hands off the first task it starts, with no tags, instead of finishing.
+async fn loop_agent(e: &Env, agent: &str, idle: usize, hand_off: bool) -> LoopRun {
+    let mut run = LoopRun::default();
+    let mut empty = 0;
+    let mut handed = !hand_off;
+    while empty < idle {
+        run.calls += 1;
+        let (status, body) = post(
+            e,
+            "/v1/backlog/next",
+            json!({"agent": agent, "session": format!("sess-{agent}"), "wait_secs": 1}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{agent}: {body}");
+        if body["task"].is_null() {
+            empty += 1;
+            continue;
+        }
+        empty = 0;
+        let tid = body["task"]["id"].as_str().unwrap().to_owned();
+        let task_op = |op: &str| format!("/v1/tasks/{tid}/{op}");
+        if body["from"] == "review" {
+            let owner = body["task"]["owner_agent"].as_str().unwrap().to_owned();
+            assert_ne!(owner, agent, "{agent} was offered its own review: {body}");
+            if body["approved"] == false {
+                let (s, b) = post(
+                    e,
+                    &task_op("validate"),
+                    json!({"agent": agent, "command": "pytest", "exit_code": 0}),
+                )
+                .await;
+                assert_eq!(s, StatusCode::OK, "{b}");
+                let (s, b) = post(
+                    e,
+                    &task_op("review"),
+                    json!({"reviewer": agent, "verdict": "approve"}),
+                )
+                .await;
+                assert_eq!(s, StatusCode::OK, "{b}");
+            }
+            let (s, b) = post(e, &task_op("merge"), json!({"agent": agent})).await;
+            assert_eq!(s, StatusCode::OK, "{agent} merging {tid}: {b}");
+            run.reviewed.push((tid, owner));
+            continue;
+        }
+        // new work, a handoff or an abandoned task: each task writes its own file, so merges
+        // never conflict
+        assert_eq!(body["task"]["owner_agent"], agent, "{body}");
+        let slug = body["task"]["slug"].as_str().unwrap().to_owned();
+        let module = slug.replace('-', "_");
+        std::fs::write(
+            ws_dir(e, &body).join(format!("app/{module}.py")),
+            format!("def {module}():\n    return {:?}\n", agent),
+        )
+        .unwrap();
+        let (s, b) = post(
+            e,
+            &task_op("records"),
+            json!({"kind": "note", "summary": format!("{agent} wrote app/{module}.py"),
+                   "agent": agent, "anchors": [{"path": format!("app/{module}.py")}]}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        if !handed {
+            handed = true;
+            let (s, b) = post(
+                e,
+                &task_op("handoff"),
+                json!({"agent": agent, "done": "a first draft", "remaining": "finish it",
+                       "broken": "", "questions": ""}),
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK, "{b}");
+            continue;
+        }
+        let (s, b) = post(e, &task_op("submit"), json!({"agent": agent})).await;
+        assert_eq!(s, StatusCode::OK, "{agent} submitting {tid}: {b}");
+        run.worked.push(tid);
+    }
+    run
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn swarm_loop_runs_backlog_to_merged() {
+    let e = env().await;
+    set_profile(&e, "claude", &["code", "tests"], &["docs", "ui"], 4).await;
+    set_profile(&e, "grok", &["image"], &["ui", "docs"], 2).await;
+    post_items(&e, "code", 2, 600).await;
+    post_items(&e, "image", 1, 600).await;
+    post_items(&e, "", 1, 600).await;
+
+    let started = Instant::now();
+    let (claude, grok) = futures::join!(
+        loop_agent(&e, "claude", 4, true),
+        loop_agent(&e, "grok", 4, false)
+    );
+    eprintln!(
+        "loop: {:?}\nclaude {claude:?}\ngrok {grok:?}",
+        started.elapsed()
+    );
+
+    // every backlog item became a task, and every task was merged
+    let (_, list) = call(&e.app, "GET", "/v1/backlog?state=taken", None).await;
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4, "{list}");
+    for item in items {
+        let tid = item["task_id"].as_str().unwrap();
+        let (_, t) = call(&e.app, "GET", &format!("/v1/tasks/{tid}"), None).await;
+        assert_eq!(t["task"]["status"], "merged", "{t}");
+    }
+    // claude handed its first code task off untagged: grok finished it
+    assert_eq!(claude.worked.len(), 1, "{claude:?}");
+    assert_eq!(grok.worked.len(), 3, "{grok:?}");
+    // each submitted task was reviewed exactly once, never by its owner
+    let mut reviewed: Vec<&str> = claude
+        .reviewed
+        .iter()
+        .chain(&grok.reviewed)
+        .map(|(t, _)| t.as_str())
+        .collect();
+    reviewed.sort();
+    let mut worked: Vec<&str> = claude
+        .worked
+        .iter()
+        .chain(&grok.worked)
+        .map(String::as_str)
+        .collect();
+    worked.sort();
+    assert_eq!(reviewed, worked);
+    assert!(claude.reviewed.iter().all(|(_, o)| o == "grok"));
+    assert!(grok.reviewed.iter().all(|(_, o)| o == "claude"));
+    assert!(
+        claude.calls <= 25 && grok.calls <= 25,
+        "{claude:?} {grok:?}"
+    );
+}

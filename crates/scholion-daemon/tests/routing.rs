@@ -418,6 +418,45 @@ async fn a_review_nobody_else_can_do_goes_to_any_other_agent() {
     assert_eq!(body["task"]["id"], t["task"]["id"]);
 }
 
+/// claude takes a `code` backlog item and hands it off without tags.
+async fn take_and_hand_off_untagged(e: &Env) -> Value {
+    post_for(e, "louder hello", &["code"], "claude").await;
+    let (status, t) = next(e, "claude").await;
+    assert_eq!(status, StatusCode::OK, "{t}");
+    edit_greeter(e, &t);
+    record_decision(e, &t).await;
+    let (status, b) = hand_off_with(e, &t, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    t
+}
+
+/// A handoff without tags keeps the tags of the item it was made from.
+#[tokio::test]
+async fn an_untagged_handoff_keeps_the_tags_of_its_item() {
+    let e = env().await;
+    three_agents(&e).await;
+    put_agent(&e, "grok", &["image"], &[], 2).await; // grok cannot code here
+    let t = take_and_hand_off_untagged(&e).await;
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["task"], Value::Null, "{body}");
+    let (_, body) = next(&e, "codex").await;
+    assert_eq!(body["from"], "handoff", "{body}");
+    assert_eq!(body["task"]["id"], t["task"]["id"]);
+}
+
+/// ... unless nobody but the agent that handed it off can do them: then any other agent may take it,
+/// rather than leave it handed off for good.
+#[tokio::test]
+async fn an_untagged_handoff_nobody_else_can_do_goes_to_any_other_agent() {
+    let e = env().await;
+    put_agent(&e, "claude", &["code"], &[], 4).await;
+    put_agent(&e, "grok", &["image"], &[], 2).await;
+    let t = take_and_hand_off_untagged(&e).await;
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["from"], "handoff", "{body}");
+    assert_eq!(body["task"]["id"], t["task"]["id"]);
+}
+
 #[tokio::test]
 async fn two_agents_are_not_offered_the_same_review() {
     let e = env().await;
