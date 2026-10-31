@@ -566,6 +566,17 @@ impl IntentStore for PgStore {
         task_from_row(&row)
     }
 
+    async fn tasks_with_slug(&self, slug: &str) -> Result<Vec<Task>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE slug = $1 ORDER BY repo, id"
+        ))
+        .bind(slug)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(serr)?;
+        rows.iter().map(task_from_row).collect()
+    }
+
     async fn set_status(&self, id: TaskId, status: TaskStatus) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(serr)?;
         let row = sqlx::query("UPDATE tasks SET status = $2 WHERE id = $1 RETURNING repo")
@@ -925,11 +936,12 @@ impl IntentStore for PgStore {
         Ok(())
     }
 
-    async fn handed_off_with_needs(&self, repo: Option<&str>) -> Result<Vec<routing::HandedOff>> {
+    async fn handed_off_tasks(&self, repo: Option<&str>) -> Result<Vec<routing::HandedOff>> {
         let rows = sqlx::query(&format!(
-            "SELECT {TASK_COLS}, needs, prefer, needs_set_at FROM tasks
-             WHERE status = 'handed_off' AND (cardinality(needs) > 0 OR prefer IS NOT NULL)
-               AND ($1::text IS NULL OR repo = $1)
+            "SELECT {TASK_COLS}, needs, prefer,
+                    COALESCE(needs_set_at, 'epoch'::timestamptz) AS needs_set_at
+             FROM tasks
+             WHERE status = 'handed_off' AND ($1::text IS NULL OR repo = $1)
              ORDER BY needs_set_at, id"
         ))
         .bind(repo)
@@ -943,6 +955,36 @@ impl IntentStore for PgStore {
                     needs: r.try_get("needs").map_err(serr)?,
                     prefer: r.try_get("prefer").map_err(serr)?,
                     since: r.try_get("needs_set_at").map_err(serr)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn abandoned_tasks(
+        &self,
+        repo: Option<&str>,
+        lease_secs: u64,
+    ) -> Result<Vec<routing::Stale>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {TASK_COLS}, since FROM (
+                SELECT *, COALESCE(lease_expires,
+                                   created_at + make_interval(secs => $2)) AS since
+                FROM tasks
+                WHERE status = 'open' AND ($1::text IS NULL OR repo = $1)
+             ) t
+             WHERE since < now()
+             ORDER BY since, id"
+        ))
+        .bind(repo)
+        .bind(lease_secs as f64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(serr)?;
+        rows.iter()
+            .map(|r| {
+                Ok(routing::Stale {
+                    task: task_from_row(r)?,
+                    since: r.try_get("since").map_err(serr)?,
                 })
             })
             .collect()

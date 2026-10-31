@@ -112,6 +112,14 @@ pub struct HandedOff {
     pub since: DateTime<Utc>,
 }
 
+/// An open task whose owner went quiet: its lease expired, or it never had one and is older than
+/// a lease. `since` is when it became free to take: the start of its reserve window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Stale {
+    pub task: crate::Task,
+    pub since: DateTime<Utc>,
+}
+
 /// Lowercases and trims a tag; blank tags are an error.
 pub fn clean_tag(tag: &str) -> crate::Result<String> {
     let t = tag.trim().to_lowercase();

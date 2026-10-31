@@ -167,7 +167,8 @@ async fn next(State(st): State<AppState>, Json(b): Json<NextBody>) -> ApiResult<
         .store
         .list_backlog(b.repo.as_deref(), Some(BacklogState::Queued))
         .await?;
-    let handed = st.store.handed_off_with_needs(b.repo.as_deref()).await?;
+    let mut handed = st.store.handed_off_tasks(b.repo.as_deref()).await?;
+    handed.retain(|h| !h.needs.is_empty() || h.prefer.is_some());
     // A handed-off task is a candidate under its own id, the reserve window starting when its
     // tags were set.
     let mut items: Vec<BacklogItem> = queued.iter().map(|e| e.item.clone()).collect();

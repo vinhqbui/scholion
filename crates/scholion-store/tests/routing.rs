@@ -219,26 +219,90 @@ async fn a_handoff_can_carry_tags_until_it_is_claimed() {
     s.set_handoff_needs(t.id, &["Image".to_string()], Some("grok"))
         .await
         .unwrap();
-    let h = s.handed_off_with_needs(Some("demo")).await.unwrap();
+    let h = s.handed_off_tasks(Some("demo")).await.unwrap();
     assert_eq!(h.len(), 1);
     assert_eq!(h[0].task.id, t.id);
     assert_eq!(h[0].needs, ["image"]);
     assert_eq!(h[0].prefer.as_deref(), Some("grok"));
+    assert!(s.handed_off_tasks(Some("other")).await.unwrap().is_empty());
+
+    s.claim_task(t.id, "grok", 600).await.unwrap();
+    assert!(s.handed_off_tasks(None).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn handed_off_tasks_include_untagged_handoffs() {
+    let (_db, s) = store().await;
+    let tagged = s.create_task(new_task()).await.unwrap();
+    let plain = s.create_task(new_task()).await.unwrap();
+    for t in [&tagged, &plain] {
+        s.transition(t.id, lifecycle::Event::Handoff).await.unwrap();
+    }
+    s.set_handoff_needs(tagged.id, &["image".to_string()], None)
+        .await
+        .unwrap();
+    let h = s.handed_off_tasks(None).await.unwrap();
+    let ids: Vec<_> = h.iter().map(|h| h.task.id).collect();
+    assert_eq!(h.len(), 2, "{ids:?}");
+    assert!(ids.contains(&tagged.id) && ids.contains(&plain.id));
+    let p = h.iter().find(|h| h.task.id == plain.id).unwrap();
+    assert!(p.needs.is_empty() && p.prefer.is_none());
+    // a handoff whose time was never stamped (made before Plan 9) counts as old
+    assert!(p.since < chrono::Utc::now() - chrono::Duration::days(365));
+}
+
+#[tokio::test]
+async fn tasks_with_slug_finds_it_in_every_repo() {
+    let (_db, s) = store().await;
+    for repo in ["b", "a"] {
+        let mut t = new_task();
+        t.repo = repo.into();
+        t.title = "Fix login".into();
+        s.create_task(t).await.unwrap();
+    }
+    let found = s.tasks_with_slug("fix-login").await.unwrap();
+    let repos: Vec<_> = found.iter().map(|t| t.repo.as_str()).collect();
+    assert_eq!(repos, ["a", "b"]);
+    assert!(s.tasks_with_slug("nope").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn abandoned_tasks_are_open_tasks_past_their_lease() {
+    let (_db, s) = store().await;
+    let expired = s.create_task(new_task()).await.unwrap();
+    let live = s.create_task(new_task()).await.unwrap();
+    let fresh = s.create_task(new_task()).await.unwrap(); // never leased, just made
+    let reviewed = s.create_task(new_task()).await.unwrap();
+    // a claim with a zero lease expires at once; a long one does not
+    s.transition(expired.id, lifecycle::Event::Handoff)
+        .await
+        .unwrap();
+    s.claim_task(expired.id, "grok", 0).await.unwrap();
+    s.transition(live.id, lifecycle::Event::Handoff)
+        .await
+        .unwrap();
+    s.claim_task(live.id, "grok", 3600).await.unwrap();
+    s.transition(reviewed.id, lifecycle::Event::Submit)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let a = s.abandoned_tasks(None, 3600).await.unwrap();
+    let ids: Vec<_> = a.iter().map(|x| x.task.id).collect();
+    assert_eq!(ids, [expired.id], "only the open task past its lease");
+    assert!(a[0].since <= chrono::Utc::now());
+    // a task that never had a lease is abandoned once it is older than the lease length
+    let a = s.abandoned_tasks(None, 0).await.unwrap();
+    let ids: Vec<_> = a.iter().map(|x| x.task.id).collect();
     assert!(
-        s.handed_off_with_needs(Some("other"))
+        ids.contains(&fresh.id) && ids.contains(&expired.id),
+        "{ids:?}"
+    );
+    assert!(!ids.contains(&live.id) && !ids.contains(&reviewed.id));
+    assert!(
+        s.abandoned_tasks(Some("other"), 0)
             .await
             .unwrap()
             .is_empty()
     );
-
-    s.claim_task(t.id, "grok", 600).await.unwrap();
-    assert!(s.handed_off_with_needs(None).await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn a_handoff_without_tags_is_not_listed() {
-    let (_db, s) = store().await;
-    let t = s.create_task(new_task()).await.unwrap();
-    s.transition(t.id, lifecycle::Event::Handoff).await.unwrap();
-    assert!(s.handed_off_with_needs(None).await.unwrap().is_empty());
 }

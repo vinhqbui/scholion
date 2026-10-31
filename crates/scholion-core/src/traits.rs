@@ -192,6 +192,8 @@ pub trait IntentStore: Send + Sync {
     /// Generates a unique slug from the title (`fix-login`, `fix-login-2`, ...).
     async fn create_task(&self, t: NewTask) -> Result<Task>;
     async fn get_task(&self, id: TaskId) -> Result<Task>;
+    /// Every task with this slug, in any repo and any status, by repo.
+    async fn tasks_with_slug(&self, slug: &str) -> Result<Vec<Task>>;
     /// The task of `repo` with this slug.
     async fn task_by_slug(&self, repo: &str, slug: &str) -> Result<Task>;
     /// Also sets head = base.
@@ -252,12 +254,17 @@ pub trait IntentStore: Send + Sync {
         needs: &[String],
         prefer: Option<&str>,
     ) -> Result<()>;
-    /// Handed-off tasks that carry tags or a preferred agent (of `repo`, or all), oldest first. A
-    /// claim clears them.
-    async fn handed_off_with_needs(
+    /// Every handed-off task (of `repo`, or all), with the tags and preferred agent it may carry,
+    /// oldest handoff first. `since` is the handoff time (the epoch for a handoff made before it
+    /// was recorded). A claim clears the tags.
+    async fn handed_off_tasks(&self, repo: Option<&str>) -> Result<Vec<crate::routing::HandedOff>>;
+    /// Open tasks whose owner went quiet (of `repo`, or all): the lease expired, or there never
+    /// was one and the task is older than `lease_secs`. Oldest first.
+    async fn abandoned_tasks(
         &self,
         repo: Option<&str>,
-    ) -> Result<Vec<crate::routing::HandedOff>>;
+        lease_secs: u64,
+    ) -> Result<Vec<crate::routing::Stale>>;
     async fn set_workspace(&self, id: TaskId, path: &Path, base: &ChangeId) -> Result<()>;
     async fn set_pack_mode(&self, id: TaskId, mode: PackMode) -> Result<()>;
     async fn set_head(&self, id: TaskId, head: &ChangeId, touched: &[String]) -> Result<()>;
