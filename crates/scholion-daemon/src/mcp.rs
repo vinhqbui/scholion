@@ -317,6 +317,40 @@ fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args[key].as_str().filter(|s| !s.is_empty())
 }
 
+/// The id of the task `given` names: an id as is, else `repo/slug`, else a slug in any repo (an
+/// error that lists the matches when it is in several).
+async fn task_ref(st: &AppState, given: &str) -> Result<String, RpcError> {
+    let given = given.trim();
+    if Uuid::parse_str(given).is_ok() {
+        return Ok(given.to_owned());
+    }
+    let found = match given.split_once('/') {
+        Some((repo, slug)) => match st.store.task_by_slug(repo, slug).await {
+            Ok(t) => vec![t],
+            Err(scholion_core::AvError::NotFound(_)) => vec![],
+            Err(e) => return Err(invalid(e.to_string())),
+        },
+        None => st
+            .store
+            .tasks_with_slug(given)
+            .await
+            .map_err(|e| invalid(e.to_string()))?,
+    };
+    match found.as_slice() {
+        [t] => Ok(t.id.to_string()),
+        [] => Err(invalid(format!(
+            "no task {given:?}: pass a task id, a slug or repo/slug"
+        ))),
+        many => Err(invalid(format!(
+            "{given:?} names several tasks; pass one of: {}",
+            many.iter()
+                .map(|t| format!("{}/{}", t.repo, t.slug))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
 fn session(st: &AppState, sid: &str) -> Option<McpSession> {
     st.mcp
         .lock()
@@ -401,7 +435,18 @@ async fn run_tool(
                         r["queued"]
                     );
                 }
-                let md = if r["from"] == "handoff" {
+                if r["from"] == "review" {
+                    return format!(
+                        "review: task {} ({}/{}), owner: {}\nworkspace: {}\n{}",
+                        r["task"]["id"].as_str().unwrap_or_default(),
+                        r["task"]["repo"].as_str().unwrap_or_default(),
+                        r["task"]["slug"].as_str().unwrap_or_default(),
+                        r["task"]["owner_agent"].as_str().unwrap_or_default(),
+                        r["task"]["workspace_path"].as_str().unwrap_or_default(),
+                        r["next"].as_str().unwrap_or_default()
+                    );
+                }
+                let md = if r["from"] == "handoff" || r["from"] == "abandoned" {
                     &r["bundle"]["markdown"]
                 } else {
                     &r["pack"]["markdown"]
@@ -852,8 +897,11 @@ async fn run_tool(
     if status.is_success() {
         match name {
             "start_task" => {
-                // `{"task": null}`: nothing was waiting, so there is nothing to remember
-                if let Some(id) = out["task"]["id"].as_str() {
+                // `{"task": null}`: nothing was waiting, so there is nothing to remember; a
+                // review is someone else's task, so it is not this session's either
+                if let Some(id) = out["task"]["id"].as_str()
+                    && out["from"] != "review"
+                {
                     remember(st, sid, id, out["task"]["generation"].as_i64());
                 }
             }
@@ -904,6 +952,11 @@ async fn call_tool(
     };
     check_args(&tool["inputSchema"], &args)?;
     check_sizes(&args)?;
+    // a task may be named by its slug (or repo/slug): from here on it is its id
+    let mut args = args;
+    if let Some(given) = args["task_id"].as_str() {
+        args["task_id"] = json!(task_ref(st, given).await?);
+    }
     let (text, is_error) = match run_tool(st, sid, s, name, &args).await? {
         Ok(text) => (text, false),
         Err(text) => (text, true),

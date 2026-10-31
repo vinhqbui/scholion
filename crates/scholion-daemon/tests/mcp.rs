@@ -731,6 +731,156 @@ async fn needs_must_be_a_list_of_strings() {
     assert_eq!(r["error"]["code"], -32602, "{r}");
 }
 
+// ---- Plan 9 Task 4: slugs for task ids; review offers over MCP
+
+async fn op(e: &Env, task: &str, op: &str, body: Value) {
+    let (status, out) = call(
+        &e.app,
+        "POST",
+        &format!("/v1/tasks/{task}/{op}"),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{op}: {out}");
+}
+
+/// A task of `demo` that claude submitted, ready for review.
+async fn submitted(e: &Env, title: &str) -> Value {
+    let t = start_task(e, title).await;
+    edit_greeter(e, &t);
+    record_decision(e, &t).await;
+    op(e, &id(&t), "submit", json!({"agent": "claude"})).await;
+    t
+}
+
+fn slug(t: &Value) -> String {
+    t["task"]["slug"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_takes_a_slug() {
+    let e = env().await;
+    let t = start_task(&e, "Improve greeting").await;
+    let s = connect(&e, "grok").await;
+    let by_id = text(&tool(&e, &s, "status", json!({"task_id": id(&t)})).await);
+    let by_slug = text(&tool(&e, &s, "status", json!({"task_id": slug(&t)})).await);
+    assert_eq!(by_id, by_slug);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_task_takes_repo_slash_slug() {
+    let e = env().await;
+    let t = submitted(&e, "Improve greeting").await;
+    let s = connect(&e, "grok").await;
+    let out = text(
+        &tool(
+            &e,
+            &s,
+            "review_task",
+            json!({"task_id": format!("demo/{}", slug(&t))}),
+        )
+        .await,
+    );
+    assert!(out.contains("## Tests"), "{out}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ambiguous_slug_names_every_match() {
+    let e = env().await;
+    let (status, out) = call(
+        &e.app,
+        "POST",
+        "/v1/repos",
+        Some(json!({"name": "other", "git_source": e.src_path})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let t = start_task(&e, "Improve greeting").await;
+    let (status, out) = call(
+        &e.app,
+        "POST",
+        "/v1/tasks",
+        Some(
+            json!({"repo": "other", "title": "Improve greeting", "goal": "g",
+                    "agent": "claude", "session": "s-2"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let s = connect(&e, "grok").await;
+    let r = tool(&e, &s, "status", json!({"task_id": slug(&t)})).await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    let msg = r["error"]["message"].as_str().unwrap();
+    assert!(msg.contains(&format!("demo/{}", slug(&t))), "{msg}");
+    assert!(msg.contains(&format!("other/{}", slug(&t))), "{msg}");
+    // naming the repo picks one
+    let out = text(
+        &tool(
+            &e,
+            &s,
+            "status",
+            json!({"task_id": format!("other/{}", slug(&t))}),
+        )
+        .await,
+    );
+    assert!(out.contains("\"repo\": \"other\""), "{out}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merged_task_resolves_by_slug() {
+    let e = env().await;
+    let t = submitted(&e, "Improve greeting").await;
+    op(
+        &e,
+        &id(&t),
+        "validate",
+        json!({"agent": "grok", "command": "pytest", "exit_code": 0}),
+    )
+    .await;
+    op(
+        &e,
+        &id(&t),
+        "review",
+        json!({"reviewer": "grok", "verdict": "approve"}),
+    )
+    .await;
+    op(&e, &id(&t), "merge", json!({"agent": "grok"})).await;
+    let s = connect(&e, "grok").await;
+    let out = text(&tool(&e, &s, "status", json!({"task_id": slug(&t)})).await);
+    assert!(out.contains("\"status\": \"merged\""), "{out}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_slug_says_so() {
+    let e = env().await;
+    let s = connect(&e, "grok").await;
+    let r = tool(&e, &s, "status", json!({"task_id": "no-such-task"})).await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    let msg = r["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("no task") && msg.contains("no-such-task"),
+        "{msg}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn start_task_without_arguments_offers_a_review_and_does_not_adopt_it() {
+    let e = env().await;
+    let t = submitted(&e, "Improve greeting").await;
+    let s = connect(&e, "grok").await;
+    let out = text(&tool(&e, &s, "start_task", json!({})).await);
+    assert!(out.starts_with("review:"), "{out}");
+    assert!(
+        out.contains(&id(&t)) && out.contains(&format!("demo/{}", slug(&t))),
+        "{out}"
+    );
+    assert!(out.contains("owner: claude"), "{out}");
+    assert!(out.contains("Review it: review_task"), "{out}");
+    // the reviewer does not own it: the session has no task of its own
+    let r = tool(&e, &s, "status", json!({})).await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_tool_list_stays_small() {
     let e = env().await;
