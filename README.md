@@ -269,6 +269,9 @@ Several agents work against one daemon at once:
   background (60 s timeout, no credential prompts, never forced); a failure is stored and retried
   after 1 s, 2 s, 4 s … up to 5 min, and `scholion status` / `scholion repo backup` show it. Credentials are the
   daemon's own (for SSH, a read-only mounted key and `AV_BACKUP_SSH_COMMAND` in compose).
+  By default main is pushed to a branch of the same name; `scholion repo backup NAME --remote URL
+  --branch av-main` pushes it to `refs/heads/av-main` instead (still never forced), for example to
+  open a pull request from it. Setting only `--remote` goes back to the trunk's name.
 - Starting a task cleans up after itself: if the workspace cannot be created, the task is marked
   abandoned rather than left open.
 

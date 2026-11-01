@@ -472,11 +472,15 @@ enum RepoCmd {
         name: String,
         git_source: String,
     },
-    /// Show the git backup of main; --set a remote (URL or path), --clear it, or --push now.
+    /// Show the git backup of main; --set a remote (URL or path, also spelled --remote) and
+    /// optionally the --branch main is pushed to (default: its own name), --clear it, or --push now.
     Backup {
         name: String,
-        #[arg(long, conflicts_with = "clear")]
+        #[arg(long, visible_alias = "remote", conflicts_with = "clear")]
         set: Option<String>,
+        /// Remote branch to push main to instead of its own name (needs --set).
+        #[arg(long, requires = "set")]
+        branch: Option<String>,
         #[arg(long)]
         clear: bool,
         #[arg(long)]
@@ -592,6 +596,9 @@ fn backup_line(b: &Value) -> String {
         return "backup: off".to_owned();
     };
     let mut line = format!("backup: {remote}");
+    if let Some(branch) = b["branch"].as_str() {
+        line.push_str(&format!(" (branch {branch})"));
+    }
     match b["last_pushed"].as_str() {
         Some(c) => line.push_str(&format!(
             " · pushed {}",
@@ -961,13 +968,14 @@ fn run(cli: Cli) -> Result<()> {
                 RepoCmd::Backup {
                     name,
                     set,
+                    branch,
                     clear,
                     push,
                 },
         } => {
             let path = format!("/v1/repos/{name}/backup");
             let mut r = if let Some(url) = set {
-                client.post(&path, &json!({"remote": url}))?
+                client.post(&path, &json!({"remote": url, "branch": branch}))?
             } else if *clear {
                 client.post(&path, &json!({"remote": null}))?
             } else {

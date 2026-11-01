@@ -1571,6 +1571,65 @@ async fn successful_retry_clears_failure_state_and_pushes_main() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn backup_can_push_main_to_a_named_branch() {
+    let e = env().await;
+    let dir = TempDir::new().unwrap();
+    let remote = dir.path().join("backup.git");
+    bare_repo(&remote);
+    let t = ready_to_merge(&e, "Upper names", UPPER).await;
+    let (_, merged) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    let (status, state) = call(
+        &e.app,
+        "POST",
+        "/v1/repos/demo/backup",
+        Some(json!({"remote": remote.to_str().unwrap(), "branch": "av-main"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    assert_eq!(state["branch"], "av-main", "{state}");
+    let done = settled(&e).await;
+    assert_eq!(done["failures"], 0, "{done}");
+    assert_eq!(done["last_pushed"], merged["main"], "{done}");
+    assert_eq!(
+        done["branch"], "av-main",
+        "the target survives the push: {done}"
+    );
+    assert_eq!(
+        git_out(&remote, &["rev-parse", "refs/heads/av-main"]),
+        merged["main"].as_str().unwrap()
+    );
+    let (status, _) = call(&e.app, "POST", "/v1/repos/demo/backup/push", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(backup(&e).await["branch"], "av-main");
+
+    // setting only the remote goes back to the trunk name
+    let (_, state) = call(
+        &e.app,
+        "POST",
+        "/v1/repos/demo/backup",
+        Some(json!({"remote": remote.to_str().unwrap()})),
+    )
+    .await;
+    assert_eq!(state["branch"], Value::Null, "{state}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_backup_branch_is_rejected_and_changes_nothing() {
+    let e = env().await;
+    for bad in ["", "-x", "a..b", "a b", "x.lock", "/x"] {
+        let (status, body) = call(
+            &e.app,
+            "POST",
+            "/v1/repos/demo/backup",
+            Some(json!({"remote": "/srv/b.git", "branch": bad})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}: {body}");
+    }
+    assert_eq!(backup(&e).await["remote"], Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn option_like_backup_remote_is_rejected() {
     let e = env().await;
     let (status, body) = call(

@@ -977,6 +977,42 @@ fn repo_backup_sets_a_remote_and_pushes_main() {
 }
 
 #[test]
+fn repo_backup_branch_names_where_main_is_pushed() {
+    let (d, ws, scratch) = started();
+    let remote = TempDir::new().unwrap();
+    git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+    let url = remote.path().to_str().unwrap();
+    let set = ok(av(
+        &d,
+        scratch.path(),
+        &[
+            "repo", "backup", "demo", "--remote", url, "--branch", "av-main", "--push",
+        ],
+    ));
+    assert!(
+        set.contains(&format!("backup: {url} (branch av-main) · pushed ")),
+        "{set}"
+    );
+    let status = ok(av(&d, &ws, &["status"]));
+    assert!(
+        status.contains(&format!("backup: {url} (branch av-main)")),
+        "{status}"
+    );
+    // --branch without a remote to set is refused
+    let out = av(
+        &d,
+        scratch.path(),
+        &["repo", "backup", "demo", "--branch", "x"],
+    );
+    assert!(!out.status.success());
+    ok(av(
+        &d,
+        scratch.path(),
+        &["repo", "backup", "demo", "--clear"],
+    ));
+}
+
+#[test]
 fn search_log_and_abandon() {
     let (d, ws, scratch) = started();
     ok(av(
