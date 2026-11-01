@@ -1,6 +1,8 @@
 //! `av init --for NAME`: wires an agent CLI to the daemon's MCP server (`/mcp`). Claude Code
-//! also gets hooks (`local::install_claude_hooks`); Codex, Grok Build, Gemini CLI and Cursor Agent get the MCP
-//! server only, and their agent calls `start_task` and `context` itself (or runs under
+//! gets hooks in `~/.claude/settings.json` (`local::install_claude_hooks`). Grok Build gets the
+//! same SessionStart and Stop hooks in `~/.grok/hooks/av.json` unless that settings file already
+//! loads them (Grok runs both). Codex, Gemini CLI and Cursor Agent get the MCP server only, and
+//! their agent calls `start_task` and `context` itself (or runs under
 //! `integrations/generic/av-wrap.sh`). `mcp-json` merges the same server into any JSON file that
 //! has an `mcpServers` object (`--path`). Each writer merges into the CLI's own config file, keeps
 //! everything else in it, replaces an earlier `av` entry, and keeps the previous file as `*.bak`.

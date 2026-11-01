@@ -590,7 +590,10 @@ fn jit_hooks_add_pre_read_and_stop_to_the_av_arms() {
     let stop = v["hooks"]["Stop"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
-    assert!(stop.contains("hook stop"), "{s}");
+    assert!(
+        stop.contains("AV_HOOK_WAIT_SECS=0") && stop.contains("hook stop"),
+        "{s}"
+    );
     f.cfg.jit_hooks = false;
     let o = run_session(&f.spec, Arm::Av, 2, "r4", &f.cfg).unwrap();
     let s = std::fs::read_to_string(o.run_dir.join("settings.json")).unwrap();

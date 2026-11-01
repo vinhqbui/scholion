@@ -601,7 +601,10 @@ fn settings(arm: Arm, cfg: &RunConfig, dir: &Path) -> Value {
     });
     if cfg.jit_hooks {
         let read = format!("echo pre-read >> {count}; {av} hook pre-read");
-        let stop = format!("echo stop >> {count}; {av} hook stop");
+        // The prefix is on the hook command: a bench backlog is empty, and the default
+        // wait is 600s. A Stop hook that does not inherit the session environment would
+        // otherwise stall the run.
+        let stop = format!("echo stop >> {count}; AV_HOOK_WAIT_SECS=0 {av} hook stop");
         hooks["PreToolUse"] = json!([{"matcher": "Read|Edit|MultiEdit",
                                       "hooks": [{"type": "command", "command": read}]}]);
         hooks["Stop"] = json!([{"hooks": [{"type": "command", "command": stop}]}]);
@@ -737,7 +740,8 @@ pub fn run_session(
         .env("CLAUDE_CONFIG_DIR", &config_dir)
         .env("AV_AGENT", AGENT)
         // The Stop hook (`--jit-hooks`) would wait up to 600 s for backlog work; a bench task's
-        // backlog is empty, so that wait would only eat the session timeout.
+        // backlog is empty, so that wait would only eat the session timeout. The hook command
+        // also prefixes AV_HOOK_WAIT_SECS=0, in case the CLI does not pass this environment in.
         .env("AV_HOOK_WAIT_SECS", "0")
         .path_prepend(spec.path_prepend.clone())
         .timeout(Duration::from_secs(spec.session_timeout_secs))

@@ -329,3 +329,58 @@ fn generation(tf: &TaskFile, agent: &str) -> Option<i64> {
         _ => tf.generation,
     }
 }
+
+/// Which agent `av hook` acts as.
+///
+/// `named` is true when `--agent` or a non-empty `AV_AGENT` was set (`cli_agent` is that
+/// value). Otherwise a Grok hook (`grok_hook`: `GROK_HOOK_EVENT` or `GROK_SESSION_ID`) acts as
+/// `grok`, and anything else keeps `cli_agent` (the Claude default, `agent` when unset).
+pub fn pick_hook_agent(cli_agent: &str, named: bool, grok_hook: bool) -> String {
+    if named {
+        cli_agent.to_owned()
+    } else if grok_hook {
+        "grok".to_owned()
+    } else {
+        cli_agent.to_owned()
+    }
+}
+
+/// `pick_hook_agent` for this process: `--agent` / `AV_AGENT`, else `grok` under Grok's hook
+/// environment, else `cli_agent`.
+pub fn hook_agent(cli_agent: &str) -> String {
+    let named =
+        agent_flag_present() || std::env::var("AV_AGENT").is_ok_and(|v| !v.trim().is_empty());
+    let grok_hook = std::env::var_os("GROK_HOOK_EVENT").is_some()
+        || std::env::var_os("GROK_SESSION_ID").is_some();
+    pick_hook_agent(cli_agent, named, grok_hook)
+}
+
+fn agent_flag_present() -> bool {
+    for arg in std::env::args().skip(1) {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--agent" || arg.starts_with("--agent=") {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hook_agent_is_grok_under_grok_and_the_claude_default_otherwise() {
+        assert_eq!(pick_hook_agent("agent", false, true), "grok");
+        assert_eq!(pick_hook_agent("agent", false, false), "agent");
+        assert_eq!(stop_timeout_for(600), 660);
+    }
+
+    #[test]
+    fn an_explicit_agent_wins_over_the_grok_hook_environment() {
+        assert_eq!(pick_hook_agent("muse", true, true), "muse");
+        assert_eq!(pick_hook_agent("cursor", true, false), "cursor");
+    }
+}

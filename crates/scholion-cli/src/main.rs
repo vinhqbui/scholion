@@ -1553,9 +1553,9 @@ fn run(cli: Cli) -> Result<()> {
                 no_map,
                 max_code,
             } => hook::session_start(&client, *budget, code, !*no_map, *max_code),
-            HookCmd::PostEdit => hook::post_edit(&client, &cli.agent),
+            HookCmd::PostEdit => hook::post_edit(&client, &hook::hook_agent(&cli.agent)),
             HookCmd::PreRead => hook::pre_read(&client),
-            HookCmd::Stop => hook::stop(&client, &cli.agent),
+            HookCmd::Stop => hook::stop(&client, &hook::hook_agent(&cli.agent)),
         },
         Cmd::Search { query, repo, limit } => {
             let repo = repo_for(&cli, &client, repo)?;

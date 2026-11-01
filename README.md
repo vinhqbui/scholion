@@ -590,8 +590,11 @@ opens with a warning naming the culprit merge.
   `~/.gemini/settings.json` or `~/.cursor/mcp.json`, keeps everything else in the file and the
   previous one as `*.bak`. With `AV_TOKEN` set, the file only names the variable (Codex
   `bearer_token_env_var`, Grok and Gemini `${AV_TOKEN}`, Cursor `${env:AV_TOKEN}` in a header),
-  never the token. These agents get no hooks: they call `start_task`/`claim_task` and `get_context`
-  themselves; the instructions to give them are in `integrations/<agent>/README.md`. All of them
+  never the token. Codex, Gemini and Cursor get no hooks: they call `start_task`/`claim_task` and
+  `get_context` themselves. Grok gets `SessionStart` and `Stop` in `~/.grok/hooks/av.json` unless
+  `~/.claude/settings.json` already loads them (Grok runs both; see `integrations/grok/README.md`
+  for the 8-continuation cap and folder trust). The instructions to give an agent are in
+  `integrations/<agent>/README.md`. All of them
   share one memory, so a dead end Claude recorded is in the pack Codex gets.
 - **Muse Code**: installed and its headless mode checked, but its MCP settings file was not (needs a
   login); see `integrations/muse/README.md` for what works today (`av next` with `av-wrap.sh`).
