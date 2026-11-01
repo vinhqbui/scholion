@@ -63,12 +63,15 @@ enum Cmd {
         #[arg(long)]
         name: Option<String>,
         /// Agent CLI to wire to the daemon (repeatable): claude (hooks and MCP), codex, grok,
-        /// gemini, cursor (MCP). Default: claude.
+        /// gemini, cursor (MCP), or mcp-json (merge into --path). Default: claude.
         #[arg(long = "for", value_enum)]
         agents: Vec<agents::Agent>,
         /// Leave Claude Code's settings alone (same as naming only other agents).
         #[arg(long)]
         no_claude: bool,
+        /// JSON file for `--for mcp-json`. Merges `mcpServers.av` into it.
+        #[arg(long, value_name = "FILE")]
+        path: Option<PathBuf>,
     },
     /// Register a git repository (path as seen by the daemon).
     Repo {
@@ -880,6 +883,7 @@ fn run(cli: Cli) -> Result<()> {
             name,
             agents,
             no_claude,
+            path,
         } => {
             let mut agents = if agents.is_empty() {
                 vec![agents::Agent::Claude]
@@ -890,12 +894,20 @@ fn run(cli: Cli) -> Result<()> {
             if *no_claude {
                 agents.retain(|a| *a != agents::Agent::Claude);
             }
+            if agents.contains(&agents::Agent::McpJson) && path.is_none() {
+                return Err(CliError::Local("--for mcp-json needs --path FILE".into()));
+            }
+            if path.is_some() && !agents.contains(&agents::Agent::McpJson) {
+                return Err(CliError::Local("--path is only for --for mcp-json".into()));
+            }
             local::init(
                 &client,
                 &cli.url,
                 cli.token.as_deref(),
                 name.as_deref(),
                 &agents,
+                path.as_deref(),
+                &cli.agent,
             )?
         }
         Cmd::Repo {
