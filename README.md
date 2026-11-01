@@ -45,6 +45,29 @@ claude mcp add --transport http av http://localhost:7420/mcp   # or any MCP clie
 av repo add myrepo /import/myrepo                              # path inside the container
 ```
 
+## Editions
+
+Community is this repository. Commercial is not available yet, and this section names no price.
+
+**Community** (free, [MIT](LICENSE)). Connect any number of agents: Claude Code, Codex, Grok,
+Gemini, Cursor, or any MCP client.
+
+```bash
+av init --for claude --for codex --for grok --for gemini --for cursor
+av --agent muse init --for mcp-json --path PATH/TO/settings.json
+```
+
+They share one memory (records next to the code, and the context pack), a review loop (another
+agent reviews, and the reviewer merges), and routing by strength (`av agent set NAME --best …`,
+then cost). There is no seat cap. `--max-open` on a profile is a limit you set, not a license.
+The daemon does not launch agents and holds no keys for the agents' own models. Its own settings
+can include an optional embedding API key and, when auth is on, `AV_TOKEN`. Details:
+[Many agents at once](#many-agents-at-once).
+
+**Commercial** (agentvcs, hosted) is not available. The plan, and only the plan, is a service that
+runs agents for you: personas, a model connection that is managed or your own key and endpoint,
+budgets in subscription credits, and approval gates. There is nothing to buy.
+
 ## How this was built
 
 Scholion is **vibe-coded**: AI coding agents (mostly Claude Code, with some help from other
@@ -397,7 +420,7 @@ that calls `next` gets the work that fits it.
 
 ```bash
 av init --for claude                 # and --for codex, grok, gemini, cursor
-av --agent muse init --for mcp-json --path ~/.muse/settings.json
+av --agent muse init --for mcp-json --path PATH/TO/settings.json   # Muse's own path is unverified
 
 av agent set claude --best code,tests --can docs --cost 4
 av agent set grok --best docs,review --can code,tests --cost 2
@@ -436,8 +459,9 @@ av handoff --done … --remaining … --needs image   # hand off to an agent tha
 av --agent grok watch -- grok -p "take your next av job"   # start grok only when work fits it
 ```
 
-An agent's own CLI runs the work on its own subscription; Scholion holds no vendor credentials and
-never launches an agent. Agents pull: MCP agents call `start_task` with no arguments, the others
+An agent's own CLI runs the work on its own subscription; Scholion holds no keys for the agents'
+own models. Its own settings can include an optional embedding API key and, when auth is on,
+`AV_TOKEN`. The daemon does not launch agents (`av watch` does, on your machine). Agents pull: MCP agents call `start_task` with no arguments, the others
 `av next`. Rules (no model involved): an agent can take an item when every tag it needs is in the
 agent's `best` or `can`; the best-fitting agent (the item's `--prefer`, then most `best` tags, then
 cheapest) has it to itself for `--reserve` seconds (default 600), after which any agent that can do
