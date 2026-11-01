@@ -525,13 +525,21 @@ async fn run_tool(
                         r["next"].as_str().unwrap_or_default()
                     );
                 }
-                let md = if r["from"] == "handoff" || r["from"] == "abandoned" {
+                let md = if ["handoff", "abandoned", "conflicted"]
+                    .iter()
+                    .any(|from| r["from"] == *from)
+                {
                     &r["bundle"]["markdown"]
                 } else {
                     &r["pack"]["markdown"]
                 };
+                // a conflicted task says what to do first
+                let todo = r["next"]
+                    .as_str()
+                    .map(|n| format!("{n}\n\n"))
+                    .unwrap_or_default();
                 format!(
-                    "workspace: {}\ntask: {} ({})\ngeneration: {}\n\n{}",
+                    "workspace: {}\ntask: {} ({})\ngeneration: {}\n\n{todo}{}",
                     r["task"]["workspace_path"].as_str().unwrap_or_default(),
                     r["task"]["id"].as_str().unwrap_or_default(),
                     r["task"]["slug"].as_str().unwrap_or_default(),

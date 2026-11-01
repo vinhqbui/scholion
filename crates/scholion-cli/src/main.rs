@@ -1916,7 +1916,9 @@ fn run(cli: Cli) -> Result<()> {
                 return Ok(());
             }
             // a claimed or resumed task comes with its handoff bundle
-            let handoff = r["from"] == "handoff" || r["from"] == "abandoned";
+            let handoff = ["handoff", "abandoned", "conflicted"]
+                .iter()
+                .any(|from| r["from"] == *from);
             let workspace = PathBuf::from(s(&task["workspace_path"]));
             // a claim starts a fresh session; the owner name is the profile's, not an alias
             let session = if handoff {
@@ -1947,6 +1949,10 @@ fn run(cli: Cli) -> Result<()> {
             println!("session: {session}");
             if handoff {
                 println!("generation: {}\n", r["generation"]);
+                // a conflicted task says what to do first
+                if r["from"] == "conflicted" {
+                    println!("{}\n", s(&r["next"]));
+                }
                 println!("{}", s(&r["bundle"]["markdown"]));
             } else {
                 println!();

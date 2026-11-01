@@ -734,12 +734,14 @@ impl IntentStore for PgStore {
     async fn claim_task(&self, id: TaskId, agent: &str, lease_secs: u64) -> Result<Task> {
         let row = sqlx::query(&format!(
             "UPDATE tasks
-             SET status = 'open', owner_agent = $2, generation = generation + 1,
+             SET status = CASE WHEN status = 'conflicted' THEN 'conflicted' ELSE 'open' END,
+                 owner_agent = $2, generation = generation + 1,
                  lease_expires = now() + make_interval(secs => $3),
                  needs = '{{}}', prefer = NULL, needs_set_at = NULL
              WHERE id = $1 AND owner_agent <> $2
                AND (status = 'handed_off'
-                    OR (status = 'open' AND (lease_expires IS NULL OR lease_expires < now())))
+                    OR (status IN ('open', 'conflicted')
+                        AND (lease_expires IS NULL OR lease_expires < now())))
              RETURNING {TASK_COLS}"
         ))
         .bind(id.0)
@@ -767,7 +769,7 @@ impl IntentStore for PgStore {
         let t = self.get_task(id).await?;
         Err(AvError::IllegalState(if t.owner_agent == agent {
             format!("task {} is already yours ({agent})", t.slug)
-        } else if t.status == TaskStatus::Open {
+        } else if matches!(t.status, TaskStatus::Open | TaskStatus::Conflicted) {
             format!(
                 "{} holds task {} with a lease until {}; it can be claimed once the lease \
                  expires or after a handoff",
@@ -779,7 +781,7 @@ impl IntentStore for PgStore {
             )
         } else {
             format!(
-                "only a handed-off task, or an open one whose lease expired, can be claimed; \
+                "only a handed-off task, or an open or conflicted one whose lease expired, can be claimed; \
                  task {} is {}",
                 t.slug,
                 t.status.as_str()
@@ -1099,6 +1101,35 @@ impl IntentStore for PgStore {
                 WHERE status = 'open' AND ($1::text IS NULL OR repo = $1)
              ) t
              WHERE since < now()
+             ORDER BY since, id"
+        ))
+        .bind(repo)
+        .bind(lease_secs as f64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(serr)?;
+        rows.iter()
+            .map(|r| {
+                Ok(routing::Stale {
+                    task: task_from_row(r)?,
+                    since: r.try_get("since").map_err(serr)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn conflicted_tasks(
+        &self,
+        repo: Option<&str>,
+        lease_secs: u64,
+    ) -> Result<Vec<routing::Stale>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {TASK_COLS}, since FROM (
+                SELECT *, COALESCE(lease_expires,
+                                   created_at + make_interval(secs => $2)) AS since
+                FROM tasks
+                WHERE status = 'conflicted' AND ($1::text IS NULL OR repo = $1)
+             ) t
              ORDER BY since, id"
         ))
         .bind(repo)
