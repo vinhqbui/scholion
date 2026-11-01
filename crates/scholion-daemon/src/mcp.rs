@@ -1020,6 +1020,7 @@ async fn call_tool(
             "arguments are {size} bytes; at most {MAX_ARGUMENTS_BYTES}"
         )));
     }
+    // A shared name was refused at registration, so this search cannot hide a Community tool.
     if let Some(ext) = st.mcp_tools.iter().find(|t| t.name == name) {
         check_args(&ext.input_schema, &args)?;
         check_sizes(&args)?;

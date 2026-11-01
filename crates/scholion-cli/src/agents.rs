@@ -43,8 +43,9 @@ impl Agent {
     }
 
     /// The config file `av init` writes for this agent, under `home`.
-    pub fn config_path(self, home: &Path, codex_home: Option<PathBuf>) -> PathBuf {
-        match self {
+    /// [`Agent::McpJson`] has none: that file is `--path`.
+    pub fn config_path(self, home: &Path, codex_home: Option<PathBuf>) -> Option<PathBuf> {
+        let path = match self {
             Agent::Claude => home.join(".claude/settings.json"),
             Agent::Codex => codex_home
                 .unwrap_or_else(|| home.join(".codex"))
@@ -52,9 +53,9 @@ impl Agent {
             Agent::Grok => home.join(".grok/config.toml"),
             Agent::Gemini => home.join(".gemini/settings.json"),
             Agent::Cursor => home.join(".cursor/mcp.json"),
-            // Unused: `av init --for mcp-json` takes `--path` instead of a home config.
-            Agent::McpJson => home.join("mcp.json"),
-        }
+            Agent::McpJson => return None,
+        };
+        Some(path)
     }
 }
 
@@ -408,24 +409,25 @@ mod tests {
     fn config_paths() {
         let home = Path::new("/h");
         assert_eq!(
-            Agent::Codex.config_path(home, None),
-            Path::new("/h/.codex/config.toml")
+            Agent::Codex.config_path(home, None).as_deref(),
+            Some(Path::new("/h/.codex/config.toml"))
         );
         assert_eq!(
-            Agent::Codex.config_path(home, Some("/c".into())),
-            Path::new("/c/config.toml")
+            Agent::Codex.config_path(home, Some("/c".into())).as_deref(),
+            Some(Path::new("/c/config.toml"))
         );
         assert_eq!(
-            Agent::Gemini.config_path(home, None),
-            Path::new("/h/.gemini/settings.json")
+            Agent::Gemini.config_path(home, None).as_deref(),
+            Some(Path::new("/h/.gemini/settings.json"))
         );
         assert_eq!(
-            Agent::Grok.config_path(home, None),
-            Path::new("/h/.grok/config.toml")
+            Agent::Grok.config_path(home, None).as_deref(),
+            Some(Path::new("/h/.grok/config.toml"))
         );
         assert_eq!(
-            Agent::Cursor.config_path(home, None),
-            Path::new("/h/.cursor/mcp.json")
+            Agent::Cursor.config_path(home, None).as_deref(),
+            Some(Path::new("/h/.cursor/mcp.json"))
         );
+        assert_eq!(Agent::McpJson.config_path(home, None), None);
     }
 }

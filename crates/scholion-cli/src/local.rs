@@ -307,7 +307,9 @@ pub fn init(
             Agent::McpJson => mcp_json
                 .ok_or_else(|| local("--for mcp-json needs --path FILE"))?
                 .to_path_buf(),
-            other => other.config_path(&home(), codex_home.clone()),
+            other => other
+                .config_path(&home(), codex_home.clone())
+                .expect("every agent but mcp-json has a home config"),
         };
         match agent {
             Agent::Claude => {
