@@ -2120,6 +2120,35 @@ fn agent_set_and_list_show_the_profiles_cheapest_first() {
 }
 
 #[test]
+fn post_after_shows_waiting_on_in_the_backlog() {
+    let (d, scratch) = daemon_with_repo();
+    let post = |title: &str, extra: &[&str]| {
+        let mut args = vec![
+            "post", "--repo", "demo", "--title", title, "--goal", "A goal",
+        ];
+        args.extend_from_slice(extra);
+        av(&d, scratch.path(), &args)
+    };
+    ok(post("Stop hook", &[]));
+    let posted = ok(post("Keep agents busy", &["--after", "stop-hook"]));
+    assert!(posted.contains("waiting on Stop hook"), "{posted}");
+    let list = ok(av(&d, scratch.path(), &["backlog"]));
+    let line = list
+        .lines()
+        .find(|l| l.contains("Keep agents busy"))
+        .unwrap();
+    assert!(line.contains("waiting on Stop hook"), "{list}");
+    let line = list
+        .lines()
+        .find(|l| l.contains("Stop hook  ") || l.ends_with("Stop hook"))
+        .unwrap();
+    assert!(!line.contains("waiting on"), "{list}");
+    // an item that does not exist is refused
+    let refused = post("Third", &["--after", "no-such-item"]);
+    assert!(!refused.status.success(), "{}", out(&refused));
+}
+
+#[test]
 fn post_backlog_and_drop() {
     let (d, scratch) = daemon_with_repo();
     let posted = ok(av(

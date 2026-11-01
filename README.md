@@ -453,6 +453,7 @@ av agent set muse --can code,docs --cost 1
 av agent set grok --best image --can ui --cost 2 --alias grok-shell-av
 av agent set cursor --best code --can tests,ui,docs --cost 3 --max-open 2   # at most 2 open tasks
 av post --repo arxiv-rag --title "Redraw the logo" --goal "..." --needs image   # to the backlog
+av post --repo arxiv-rag --title "Use the new logo" --goal "..." --after redraw-the-logo   # not offered until that item merges; `av backlog` says "waiting on"
 av next                                    # as an agent: the next job that fits it, or none
 av next --wait 50                          # ... waiting up to 50 s for one
 av handoff --done … --remaining … --needs image   # hand off to an agent that has the tag

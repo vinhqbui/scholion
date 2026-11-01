@@ -331,6 +331,10 @@ enum Cmd {
         /// Seconds only the best-fitting agent may take it (default 600); then any agent that can.
         #[arg(long)]
         reserve: Option<i64>,
+        /// Start only after these backlog items have merged (comma separated; an item id or the
+        /// slug of its title). `av next` does not offer the item before.
+        #[arg(long, value_delimiter = ',')]
+        after: Vec<String>,
     },
     /// List the backlog, or drop an item.
     #[command(args_conflicts_with_subcommands = true)]
@@ -835,6 +839,19 @@ fn tags_suffix(needs: &Value) -> String {
         String::new()
     } else {
         format!(" · needs {}", tags.join(","))
+    }
+}
+
+/// ` · waiting on A, B` for the unmerged items a backlog item starts after; nothing when none.
+fn waiting_suffix(waiting_on: &Value) -> String {
+    let titles: Vec<&str> = waiting_on
+        .as_array()
+        .map(|v| v.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if titles.is_empty() {
+        String::new()
+    } else {
+        format!(" · waiting on {}", titles.join(", "))
     }
 }
 
@@ -1770,18 +1787,20 @@ fn run(cli: Cli) -> Result<()> {
             prefer,
             priority,
             reserve,
+            after,
         } => {
             let r = client.post(
                 "/v1/backlog",
                 &json!({"repo": repo, "title": title, "goal": goal, "needs": needs,
                         "prefer": prefer, "priority": priority, "reserve_secs": reserve,
-                        "posted_by": cli.agent}),
+                        "posted_by": cli.agent, "after": after}),
             )?;
             println!(
-                "posted {} · {}{}",
+                "posted {} · {}{}{}",
                 s(&r["id"]),
                 s(&r["title"]),
-                tags_suffix(&r["needs"])
+                tags_suffix(&r["needs"]),
+                waiting_suffix(&r["waiting_on"])
             );
         }
         Cmd::Backlog {
@@ -1813,14 +1832,21 @@ fn run(cli: Cli) -> Result<()> {
                     .as_str()
                     .map(|a| format!(" · taken by {a}"))
                     .unwrap_or_default();
+                // only a queued item waits: a taken one has started, a dropped one never will
+                let waiting = if i["state"] == "queued" {
+                    waiting_suffix(&i["waiting_on"])
+                } else {
+                    String::new()
+                };
                 println!(
-                    "{}  {}  {}  p{}  {}{}{}",
+                    "{}  {}  {}  p{}  {}{}{}{}",
                     s(&i["id"]),
                     s(&i["state"]),
                     s(&i["repo"]),
                     i["priority"],
                     s(&i["title"]),
                     tags_suffix(&i["needs"]),
+                    waiting,
                     taken
                 );
             }

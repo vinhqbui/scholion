@@ -127,6 +127,9 @@ struct PostBacklog {
     priority: i32,
     reserve_secs: Option<i64>,
     posted_by: Option<String>,
+    /// Items this one starts after: a backlog item id or the slug of its title.
+    #[serde(default)]
+    after: Vec<String>,
 }
 
 async fn post_backlog(
@@ -144,6 +147,7 @@ async fn post_backlog(
             priority: b.priority,
             reserve_secs: b.reserve_secs.unwrap_or(routing::DEFAULT_RESERVE_SECS),
             posted_by: b.posted_by.unwrap_or_else(|| "user".into()),
+            after: b.after,
         })
         .await?;
     Ok(Json(entry))
@@ -247,7 +251,12 @@ pub(crate) async fn choose(
     // window starts at the handoff; the agent that handed it off neither takes nor holds it),
     // and every open task whose owner went quiet (no window: it already waited a whole lease, so
     // whoever fits and asks first gets it, its restarted owner included).
-    let mut items: Vec<BacklogItem> = queued.iter().map(|e| e.item.clone()).collect();
+    // An item that starts after others is offered once every one of them has merged.
+    let mut items: Vec<BacklogItem> = queued
+        .iter()
+        .filter(|e| e.waiting_on.is_empty())
+        .map(|e| e.item.clone())
+        .collect();
     let mut kind: HashMap<Uuid, bool> = HashMap::new(); // task id -> abandoned?
     let mut excluded: HashMap<Uuid, String> = HashMap::new();
     for h in st.store.handed_off_tasks(repo).await? {
@@ -323,6 +332,7 @@ fn task_item(
         priority: 0,
         reserve_secs,
         created_at: since,
+        after: Vec::new(),
     }
 }
 

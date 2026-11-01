@@ -54,8 +54,15 @@ fn task_from_row(r: &PgRow) -> Result<Task> {
     })
 }
 
-const BACKLOG_COLS: &str = "id, repo, title, goal, needs, prefer, priority, reserve_secs, \
-                            created_at, state, task_id, taken_by, taken_at, posted_by";
+/// Columns of `backlog` aliased `b`. `waiting_on`: titles of the items in `after_ids` whose task
+/// is not merged (an item nobody took, or one dropped, has no task and so keeps it waiting).
+const BACKLOG_COLS: &str = "b.id, b.repo, b.title, b.goal, b.needs, b.prefer, b.priority, \
+    b.reserve_secs, b.created_at, b.state, b.task_id, b.taken_by, b.taken_at, b.posted_by, \
+    b.after_ids, \
+    COALESCE((SELECT array_agg(d.title ORDER BY d.created_at, d.id)
+              FROM backlog d LEFT JOIN tasks t ON t.id = d.task_id
+              WHERE d.id = ANY(b.after_ids) AND t.status IS DISTINCT FROM 'merged'),
+             '{}') AS waiting_on";
 
 fn backlog_from_row(r: &PgRow) -> Result<BacklogEntry> {
     let state: String = r.try_get("state").map_err(serr)?;
@@ -70,6 +77,7 @@ fn backlog_from_row(r: &PgRow) -> Result<BacklogEntry> {
             priority: r.try_get("priority").map_err(serr)?,
             reserve_secs: r.try_get("reserve_secs").map_err(serr)?,
             created_at: r.try_get("created_at").map_err(serr)?,
+            after: r.try_get("after_ids").map_err(serr)?,
         },
         state: state.parse()?,
         task_id: r
@@ -79,7 +87,57 @@ fn backlog_from_row(r: &PgRow) -> Result<BacklogEntry> {
         taken_by: r.try_get("taken_by").map_err(serr)?,
         taken_at: r.try_get("taken_at").map_err(serr)?,
         posted_by: r.try_get("posted_by").map_err(serr)?,
+        waiting_on: r.try_get("waiting_on").map_err(serr)?,
     })
+}
+
+/// The backlog item of `repo` that `reference` names: an id, or the slug of a title (also the
+/// slug of the task made from an item). Several items of one slug: the reference is refused.
+async fn resolve_after(pool: &PgPool, repo: &str, reference: &str) -> Result<Uuid> {
+    let reference = reference.trim();
+    if let Ok(id) = reference.parse::<Uuid>() {
+        return match sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM backlog WHERE id = $1 AND repo = $2",
+        )
+        .bind(id)
+        .bind(repo)
+        .fetch_optional(pool)
+        .await
+        .map_err(serr)?
+        {
+            Some(id) => Ok(id),
+            None => Err(AvError::Invalid(format!(
+                "after: no backlog item {id} in {repo}"
+            ))),
+        };
+    }
+    let rows = sqlx::query(
+        "SELECT b.id, b.title, t.slug FROM backlog b LEFT JOIN tasks t ON t.id = b.task_id
+         WHERE b.repo = $1 AND b.state <> 'dropped'
+         ORDER BY b.created_at, b.id",
+    )
+    .bind(repo)
+    .fetch_all(pool)
+    .await
+    .map_err(serr)?;
+    let mut found = Vec::new();
+    for r in &rows {
+        let title: String = r.try_get("title").map_err(serr)?;
+        let slug: Option<String> = r.try_get("slug").map_err(serr)?;
+        if slugify(&title) == reference || slug.as_deref() == Some(reference) {
+            found.push(r.try_get::<Uuid, _>("id").map_err(serr)?);
+        }
+    }
+    match found.as_slice() {
+        [id] => Ok(*id),
+        [] => Err(AvError::Invalid(format!(
+            "after: no backlog item {reference:?} in {repo} (an item id or the slug of its title)"
+        ))),
+        many => Err(AvError::Invalid(format!(
+            "after: {reference:?} names {} items in {repo}; use an item id",
+            many.len()
+        ))),
+    }
 }
 
 fn clean_tags(tags: &[String]) -> Result<Vec<String>> {
@@ -864,10 +922,17 @@ impl IntentStore for PgStore {
         if item.reserve_secs < 0 {
             return Err(AvError::Invalid("reserve_secs must not be negative".into()));
         }
+        let mut after = Vec::new();
+        for reference in &item.after {
+            let id = resolve_after(&self.pool, &repo, reference).await?;
+            if !after.contains(&id) {
+                after.push(id);
+            }
+        }
         let row = sqlx::query(&format!(
-            "INSERT INTO backlog (id, repo, title, goal, needs, prefer, priority, reserve_secs,
-                                  posted_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "INSERT INTO backlog AS b (id, repo, title, goal, needs, prefer, priority,
+                                       reserve_secs, posted_by, after_ids)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING {BACKLOG_COLS}"
         ))
         .bind(Uuid::new_v4())
@@ -879,6 +944,7 @@ impl IntentStore for PgStore {
         .bind(item.priority)
         .bind(item.reserve_secs)
         .bind(item.posted_by)
+        .bind(after)
         .fetch_one(&self.pool)
         .await
         .map_err(serr)?;
@@ -891,9 +957,9 @@ impl IntentStore for PgStore {
         state: Option<BacklogState>,
     ) -> Result<Vec<BacklogEntry>> {
         let rows = sqlx::query(&format!(
-            "SELECT {BACKLOG_COLS} FROM backlog
-             WHERE ($1::text IS NULL OR repo = $1) AND ($2::text IS NULL OR state = $2)
-             ORDER BY created_at, id"
+            "SELECT {BACKLOG_COLS} FROM backlog b
+             WHERE ($1::text IS NULL OR b.repo = $1) AND ($2::text IS NULL OR b.state = $2)
+             ORDER BY b.created_at, b.id"
         ))
         .bind(repo)
         .bind(state.map(BacklogState::as_str))

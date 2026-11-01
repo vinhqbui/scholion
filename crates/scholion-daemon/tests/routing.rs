@@ -828,3 +828,79 @@ async fn next_routes_twelve_agents_with_no_cap() {
     assert_eq!(body, json!({"task": null, "queued": 0}));
     assert!(body.get("at_capacity").is_none(), "{body}");
 }
+
+// ---- Backlog dependencies: an item can start after others merge ----
+
+async fn post_after(e: &Env, title: &str, after: &[&str]) -> (StatusCode, Value) {
+    call(
+        &e.app,
+        "POST",
+        "/v1/backlog",
+        Some(
+            json!({"repo": "demo", "title": title, "goal": "Make hello louder",
+                    "after": after, "reserve_secs": 0}),
+        ),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_item_is_not_offered_until_the_items_it_lists_have_merged() {
+    let e = env().await;
+    put_agent(&e, "claude", &["code"], &[], 1).await;
+    put_agent(&e, "grok", &["code"], &[], 2).await;
+    post_item(&e, "demo", "stop hook", &["code"], 0).await;
+    // by title slug; the dependent is posted before A is taken
+    let (status, b) = post_after(&e, "keep agents busy", &["stop-hook"]).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    assert_eq!(b["waiting_on"], json!(["stop hook"]), "{b}");
+
+    // A is queued: only A is offered, B waits
+    let (_, t) = next(&e, "grok").await;
+    assert_eq!(t["task"]["title"], "stop hook", "{t}");
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["task"], Value::Null, "B waits while A is open: {body}");
+    let items = backlog(&e, "?state=queued").await;
+    assert_eq!(items[0]["waiting_on"], json!(["stop hook"]));
+
+    // A in review: still not offered (a peek says the same)
+    edit_greeter(&e, &t);
+    record_decision(&e, &t).await;
+    let (status, b) = task_op(&e, &id(&t), "submit", json!({"agent": "grok"})).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(
+        body["task"],
+        Value::Null,
+        "B waits while A is in review: {body}"
+    );
+    let (_, body) = next(&e, "claude").await;
+    assert_eq!(
+        body["from"], "review",
+        "claude gets the review, not B: {body}"
+    );
+
+    // A merged: B is offered
+    approve(&e, &id(&t), "claude").await;
+    let (status, b) = task_op(&e, &id(&t), "merge", json!({"agent": "claude"})).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    assert_eq!(
+        backlog(&e, "?state=queued").await[0]["waiting_on"],
+        json!([])
+    );
+    let (_, body) = next(&e, "grok").await;
+    assert_eq!(body["from"], "backlog", "{body}");
+    assert_eq!(body["task"]["title"], "keep agents busy", "{body}");
+}
+
+#[tokio::test]
+async fn after_takes_an_item_id_and_refuses_an_unknown_item() {
+    let e = env().await;
+    let a = post_item(&e, "demo", "first", &[], 0).await;
+    let id = a["id"].as_str().unwrap();
+    let (status, b) = post_after(&e, "second", &[id]).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    assert_eq!(b["after"], json!([id]), "{b}");
+    let (status, b) = post_after(&e, "third", &["nothing-like-it"]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{b}");
+}
