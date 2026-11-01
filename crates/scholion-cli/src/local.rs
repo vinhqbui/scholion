@@ -381,6 +381,14 @@ fn hook(sub: &str) -> Value {
     json!({ "type": "command", "command": format!("command -v av >/dev/null 2>&1 && av hook {sub}; exit 0") })
 }
 
+/// The Stop hook waits for work (`AV_HOOK_WAIT_SECS`), so its timeout must exceed the wait: Claude
+/// Code discards the output of a hook it cancels, and its default timeout is 600 s.
+fn stop_hook() -> Value {
+    let mut h = hook("stop");
+    h["timeout"] = json!(crate::hook::stop_timeout_secs());
+    h
+}
+
 /// Merges the `SessionStart`, `PreToolUse`, `PostToolUse` and `Stop` hooks into Claude Code's settings,
 /// replacing earlier Scholion hooks; the previous file is kept as `settings.json.bak`.
 pub fn install_claude_hooks(path: &Path) -> Result<()> {
@@ -409,7 +417,7 @@ pub fn install_claude_hooks(path: &Path) -> Result<()> {
             "PreToolUse",
             json!({ "matcher": "Read|Edit|MultiEdit", "hooks": [hook("pre-read")] }),
         ),
-        ("Stop", json!({ "hooks": [hook("stop")] })),
+        ("Stop", json!({ "hooks": [stop_hook()] })),
     ];
     let hooks = settings
         .as_object_mut()
@@ -546,6 +554,12 @@ mod tests {
                 .unwrap()
                 .contains("av hook stop")
         );
+        // The Stop hook waits up to AV_HOOK_WAIT_SECS; its timeout must be above that, and av init
+        // must not drop the one install.sh set.
+        let timeout = stop[1]["hooks"][0]["timeout"].as_u64().unwrap();
+        assert_eq!(timeout, crate::hook::stop_timeout_secs());
+        assert_eq!(crate::hook::stop_timeout_for(600), 660);
+        assert!(timeout > 60);
         let pre = &v["hooks"]["PreToolUse"][0];
         assert_eq!(pre["matcher"], "Read|Edit|MultiEdit");
         assert_eq!(v["hooks"]["SessionStart"].as_array().unwrap().len(), 1);

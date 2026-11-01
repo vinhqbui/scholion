@@ -620,6 +620,31 @@ fn priced_runs_do_not_pass_claudes_own_budget_cap() {
     assert!(!a.contains("--max-budget-usd"), "{a}");
 }
 
+#[test]
+fn claude_runs_with_the_stop_hook_wait_off() {
+    let _g = serial();
+    let mut f = fixture("fix");
+    let seen = f.marker.with_extension("wait");
+    let claude = script(
+        f._tools.path(),
+        "claude-env",
+        &FAKE_CLAUDE.replace(
+            "echo \"$PWD\" >> \"$FAKE_MARKER\"\n",
+            &format!(
+                "echo \"$PWD\" >> \"$FAKE_MARKER\"\necho \"wait=$AV_HOOK_WAIT_SECS\" > {}\n",
+                seen.display()
+            ),
+        ),
+    );
+    f.cfg.claude_bin = claude.to_string_lossy().into();
+    // SAFETY: the runner tests hold SERIAL; the runner must set the value itself, not inherit it.
+    unsafe { std::env::set_var("AV_HOOK_WAIT_SECS", "600") };
+    let r = run_session(&f.spec, Arm::Baseline, 1, "r6", &f.cfg);
+    unsafe { std::env::remove_var("AV_HOOK_WAIT_SECS") };
+    r.unwrap();
+    assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), "wait=0");
+}
+
 /// `f` with its spec reloaded so it prepends `dirs` to the agent's PATH.
 fn with_path_prepend(mut f: Fixture, dirs: &[&Path]) -> Fixture {
     let dir = TempDir::new().unwrap();

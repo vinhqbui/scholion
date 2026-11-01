@@ -434,7 +434,9 @@ enum HookCmd {
     /// Print what other tasks recorded about the file being opened (Claude Code `PreToolUse` on
     /// reads and edits), each record once per session.
     PreRead,
-    /// Ask once per agent session to record the changes no record explains (Claude Code `Stop`).
+    /// Claude Code `Stop`: ask once per agent session to record the changes no record explains;
+    /// then, if av has work that fits this agent, keep it going (waits up to AV_HOOK_WAIT_SECS,
+    /// default 600, 0 = off; at most AV_HOOK_MAX_CONTINUES, default 20, continues per session).
     Stop,
 }
 
@@ -1032,6 +1034,8 @@ fn run(cli: Cli) -> Result<()> {
                 agent: Some(cli.agent.clone()),
                 last_checkpoint_ms: None,
                 nudged_session: None,
+                continue_session: None,
+                continues: 0,
             };
             write_taskfile(&workspace, &tf);
             println!("workspace: {}", workspace.display());
@@ -1726,6 +1730,8 @@ fn run(cli: Cli) -> Result<()> {
                     agent: Some(cli.agent.clone()),
                     last_checkpoint_ms: None,
                     nudged_session: None,
+                    continue_session: None,
+                    continues: 0,
                 },
             );
             println!("workspace: {}", workspace.display());
@@ -1932,6 +1938,8 @@ fn run(cli: Cli) -> Result<()> {
                     agent: Some(s(&task["owner_agent"]).to_owned()),
                     last_checkpoint_ms: None,
                     nudged_session: None,
+                    continue_session: None,
+                    continues: 0,
                 },
             );
             println!("workspace: {}", workspace.display());

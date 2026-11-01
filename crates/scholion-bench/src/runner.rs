@@ -736,6 +736,9 @@ pub fn run_session(
         .cwd(&workspace)
         .env("CLAUDE_CONFIG_DIR", &config_dir)
         .env("AV_AGENT", AGENT)
+        // The Stop hook (`--jit-hooks`) would wait up to 600 s for backlog work; a bench task's
+        // backlog is empty, so that wait would only eat the session timeout.
+        .env("AV_HOOK_WAIT_SECS", "0")
         .path_prepend(spec.path_prepend.clone())
         .timeout(Duration::from_secs(spec.session_timeout_secs))
         .events_path(&outcome.events_path)

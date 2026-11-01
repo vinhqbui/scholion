@@ -127,6 +127,8 @@ fn av_with(url: &str, cwd: &Path, args: &[&str]) -> Output {
         .env_remove("AV_SESSION")
         .env_remove("AV_AGENT")
         .env_remove("AV_TOKEN")
+        // the Stop hook's keep-busy wait is off unless a test turns it on
+        .env("AV_HOOK_WAIT_SECS", "0")
         .args(args)
         .output()
         .unwrap()
@@ -1234,6 +1236,41 @@ fn install_sh_merges_both_hooks_and_is_idempotent() {
 }
 
 #[test]
+fn install_sh_sets_the_stop_hook_timeout_above_the_keep_busy_wait() {
+    if Command::new("jq").arg("--version").output().is_err() {
+        eprintln!("jq not installed; skipping");
+        return;
+    }
+    let script = repo_root().join("integrations/claude-code/install.sh");
+    let timeout_after = |wait: Option<&str>| -> (serde_json::Value, bool) {
+        let home = TempDir::new().unwrap();
+        let mut cmd = Command::new("bash");
+        cmd.arg(&script)
+            .env("HOME", home.path())
+            .env_remove("AV_HOOK_WAIT_SECS");
+        if let Some(w) = wait {
+            cmd.env("AV_HOOK_WAIT_SECS", w);
+        }
+        let o = cmd.output().unwrap();
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap_or_default(),
+        )
+        .unwrap_or_default();
+        (
+            settings["hooks"]["Stop"][0]["hooks"][0]["timeout"].clone(),
+            o.status.success(),
+        )
+    };
+    // default wait 600 s: the hook may run 660 s
+    assert_eq!(timeout_after(None), (serde_json::json!(660), true));
+    assert_eq!(timeout_after(Some("30")), (serde_json::json!(90), true));
+    assert_eq!(timeout_after(Some("0")), (serde_json::json!(60), true));
+    // not a number: refused, and nothing is written
+    let (t, ok) = timeout_after(Some("soon"));
+    assert!(!ok && t.is_null(), "{t}");
+}
+
+#[test]
 fn every_integration_script_parses() {
     for script in [
         "integrations/claude-code/install.sh",
@@ -1328,14 +1365,25 @@ fn hook_session_start_after_compaction_starts_a_new_session() {
 }
 
 fn av_stdin(d: &Daemon, cwd: &Path, args: &[&str], stdin: &str) -> Output {
+    av_stdin_env(&d.url, cwd, &[], args, stdin)
+}
+
+/// `av_stdin` against `url` with extra environment on top of the defaults (keep-busy wait off).
+fn av_stdin_env(url: &str, cwd: &Path, env: &[(&str, &str)], args: &[&str], stdin: &str) -> Output {
     use std::io::Write as _;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_av"))
-        .current_dir(cwd)
-        .env("AV_URL", &d.url)
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_av"));
+    cmd.current_dir(cwd)
+        .env("AV_URL", url)
         .env_remove("AV_TASK")
         .env_remove("AV_SESSION")
         .env_remove("AV_AGENT")
         .env_remove("AV_TOKEN")
+        .env("AV_HOOK_WAIT_SECS", "0")
+        .env_remove("AV_HOOK_MAX_CONTINUES");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1527,6 +1575,188 @@ fn hook_stop_is_silent_outside_a_task_and_when_the_daemon_is_down() {
     let o = av_with("http://127.0.0.1:1", &ws, &["hook", "stop"]);
     assert!(o.status.success(), "{}", err(&o));
     assert_eq!(out(&o), "");
+}
+
+// ---- keep agents busy: the Stop hook continues when av has fitting work
+
+/// Puts one item with no tag requirements in the backlog, so any agent fits it.
+fn post_item(d: &Daemon, scratch: &Path, title: &str) {
+    ok(av(
+        d,
+        scratch,
+        &[
+            "post", "--repo", "demo", "--title", title, "--goal", "do it",
+        ],
+    ));
+}
+
+fn stop_with(d: &Daemon, ws: &Path, env: &[(&str, &str)], session: &str, active: bool) -> Output {
+    av_stdin_env(
+        &d.url,
+        ws,
+        env,
+        &["hook", "stop"],
+        &stop_input(ws, session, active),
+    )
+}
+
+#[test]
+fn hook_stop_blocks_when_work_is_queued_and_the_reason_names_it() {
+    let (d, ws, scratch) = started();
+    post_item(&d, scratch.path(), "Fix the README typos");
+    let o = stop_with(&d, &ws, &[("AV_HOOK_WAIT_SECS", "1")], "cc-1", false);
+    assert!(o.status.success(), "{}", err(&o));
+    let v: serde_json::Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["decision"], "block", "{}", out(&o));
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.starts_with("av: "), "{reason}");
+    assert!(reason.contains("Fix the README typos"), "{reason}");
+    assert!(
+        reason.ends_with("call start_task with no title"),
+        "{reason}"
+    );
+    // the hook only looked: the item is still queued
+    let backlog = ok(av(&d, &ws, &["backlog"]));
+    assert!(backlog.contains("Fix the README typos"), "{backlog}");
+    assert!(!backlog.contains("taken"), "{backlog}");
+}
+
+#[test]
+fn hook_stop_waits_out_an_empty_backlog_then_allows_the_stop() {
+    let (d, ws, _scratch) = started();
+    let t = std::time::Instant::now();
+    let o = stop_with(&d, &ws, &[("AV_HOOK_WAIT_SECS", "1")], "cc-1", false);
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!((out(&o).as_str(), err(&o).as_str()), ("", ""));
+    assert!(
+        t.elapsed() >= std::time::Duration::from_millis(900),
+        "returned after {:?}, before the wait",
+        t.elapsed()
+    );
+    // a Stop hook that is already continuing is let go too when nothing fits
+    let o = stop_with(&d, &ws, &[("AV_HOOK_WAIT_SECS", "1")], "cc-1", true);
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(out(&o), "");
+}
+
+#[test]
+fn hook_stop_picks_up_work_that_arrives_during_the_wait() {
+    let (d, ws, scratch) = started();
+    let url = d.url.clone();
+    let scratch_path = scratch.path().to_path_buf();
+    let poster = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        ok(av_with(
+            &url,
+            &scratch_path,
+            &[
+                "post", "--repo", "demo", "--title", "Late job", "--goal", "g",
+            ],
+        ));
+    });
+    let o = stop_with(&d, &ws, &[("AV_HOOK_WAIT_SECS", "20")], "cc-1", false);
+    poster.join().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["decision"], "block", "{}{}", out(&o), err(&o));
+    assert!(v["reason"].as_str().unwrap().contains("Late job"), "{v}");
+}
+
+#[test]
+fn hook_stop_wait_of_zero_turns_the_feature_off() {
+    let (d, ws, scratch) = started();
+    post_item(&d, scratch.path(), "Fix the README typos");
+    let o = stop_with(&d, &ws, &[("AV_HOOK_WAIT_SECS", "0")], "cc-1", false);
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(out(&o), "");
+}
+
+#[test]
+fn hook_stop_continues_at_most_max_continues_times_per_session() {
+    let (d, ws, scratch) = started();
+    post_item(&d, scratch.path(), "Fix the README typos");
+    let env = [("AV_HOOK_WAIT_SECS", "1"), ("AV_HOOK_MAX_CONTINUES", "2")];
+    let blocked = |session: &str, active: bool| {
+        let o = stop_with(&d, &ws, &env, session, active);
+        assert!(o.status.success(), "{}", err(&o));
+        out(&o).contains("\"block\"")
+    };
+    // Claude Code sets stop_hook_active once a Stop hook has continued the session
+    assert!(blocked("cc-cap", false), "first continue");
+    assert!(blocked("cc-cap", true), "second continue, still work");
+    assert!(
+        !blocked("cc-cap", true),
+        "the cap of 2 is reached: let it stop"
+    );
+    assert!(!blocked("cc-cap", true), "and it stays reached");
+    // the count is per session
+    assert!(blocked("cc-other", false), "a new session starts at zero");
+    // the count lives in the task file, not in the environment
+    let tf = std::fs::read_to_string(ws.join(".av-task")).unwrap();
+    assert!(tf.contains("continues"), "{tf}");
+}
+
+#[test]
+fn hook_stop_with_the_daemon_down_allows_the_stop_at_once() {
+    let (_d, ws, _scratch) = started();
+    let t = std::time::Instant::now();
+    let o = av_stdin_env(
+        "http://127.0.0.1:1",
+        &ws,
+        &[("AV_HOOK_WAIT_SECS", "30")],
+        &["hook", "stop"],
+        &stop_input(&ws, "cc-1", false),
+    );
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(out(&o), "");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "waited {:?} for a daemon that is down",
+        t.elapsed()
+    );
+}
+
+#[test]
+fn hook_stop_outside_a_task_stays_silent_even_with_work_queued() {
+    let (d, _ws, scratch) = started();
+    post_item(&d, scratch.path(), "Fix the README typos");
+    let bare = TempDir::new().unwrap();
+    let o = av_stdin_env(
+        &d.url,
+        bare.path(),
+        &[("AV_HOOK_WAIT_SECS", "1")],
+        &["hook", "stop"],
+        &stop_input(bare.path(), "s", false),
+    );
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!((out(&o).as_str(), err(&o).as_str()), ("", ""));
+}
+
+#[test]
+fn hook_stop_asks_for_records_before_it_keeps_the_agent_busy() {
+    let (d, ws, scratch) = started();
+    post_item(&d, scratch.path(), "Fix the README typos");
+    std::fs::write(
+        ws.join("app/greeter.py"),
+        "class Greeter:\n    def hello(self, name):\n        return name.upper()\n",
+    )
+    .unwrap();
+    let env = [("AV_HOOK_WAIT_SECS", "1")];
+    let first = stop_with(&d, &ws, &env, "cc-1", false);
+    let v: serde_json::Value = serde_json::from_str(&out(&first)).unwrap();
+    assert!(
+        v["reason"].as_str().unwrap().contains("no record explains"),
+        "{v}"
+    );
+    // a single block per stop: the next Stop is the one that sees the waiting work
+    let second = stop_with(&d, &ws, &env, "cc-1", true);
+    let v: serde_json::Value = serde_json::from_str(&out(&second)).unwrap();
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Fix the README typos"),
+        "{v}"
+    );
 }
 
 /// `av` with extra environment (HOME, PATH, AV_HOME, ...) on top of `av_with`'s.

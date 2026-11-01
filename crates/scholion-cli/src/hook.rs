@@ -4,7 +4,7 @@
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
@@ -146,14 +146,48 @@ pub fn post_edit(client: &Client, agent: &str) {
 /// Most symbol names the stop request lists.
 const NUDGE_SYMBOLS: usize = 8;
 
-/// Before the agent ends its turn (Claude Code `Stop`): if the task has changes that no record
-/// explains, block once per agent session and ask for the decisions and dead ends behind them.
-/// Records that are never written are the likelier way knowledge fails to reach the next agent.
+/// How long `stop` waits for work, in seconds (`AV_HOOK_WAIT_SECS`); 0 turns the wait off.
+const DEFAULT_WAIT_SECS: u64 = 600;
+/// Most times `stop` continues one agent session (`AV_HOOK_MAX_CONTINUES`).
+const DEFAULT_MAX_CONTINUES: u32 = 20;
+/// Seconds between two looks at the backlog while waiting, as in `av watch`'s default.
+const POLL: Duration = Duration::from_secs(15);
+
+/// A number from the environment; the default when it is unset or not a number.
+fn env_number<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
+}
+
+/// Seconds past the wait that the Stop hook may run before Claude Code cancels it (a canceled hook's
+/// output is discarded, so the timeout must exceed the wait).
+const STOP_TIMEOUT_MARGIN: u64 = 60;
+
+/// The Stop hook's command timeout for a wait of `wait` seconds.
+pub fn stop_timeout_for(wait: u64) -> u64 {
+    wait.saturating_add(STOP_TIMEOUT_MARGIN)
+}
+
+/// The Stop hook timeout `av init` writes: `AV_HOOK_WAIT_SECS` (default 600) plus a margin, as
+/// `integrations/claude-code/install.sh` sets it.
+pub fn stop_timeout_secs() -> u64 {
+    stop_timeout_for(env_number("AV_HOOK_WAIT_SECS", DEFAULT_WAIT_SECS))
+}
+
+/// Before the agent ends its turn (Claude Code `Stop`), two checks, at most one block per call:
+/// 1. if the task has changes that no record explains, block once per agent session and ask for
+///    the decisions and dead ends behind them (records that are never written are the likelier
+///    way knowledge fails to reach the next agent);
+/// 2. else, if av has work that fits this agent (a dry run of `next`, like `av watch`), block
+///    with a reason that tells it to call `start_task`, waiting up to `AV_HOOK_WAIT_SECS` for
+///    work to appear. The wait costs no model tokens. `AV_HOOK_MAX_CONTINUES` caps how often one
+///    session is continued, so the loop always ends.
+///
+/// Any failure allows the stop, and a directory without a task is silent.
 pub fn stop(client: &Client, agent: &str) {
     let input = hook_input();
-    if input["stop_hook_active"] == true {
-        return;
-    }
     let Some((dir, mut tf)) = start_dir(&input).and_then(|d| taskfile::find(&d)) else {
         return;
     };
@@ -161,23 +195,38 @@ pub fn stop(client: &Client, agent: &str) {
         .as_str()
         .unwrap_or(&tf.session)
         .to_owned();
-    if tf.nudged_session.as_deref() == Some(session.as_str()) {
+    if input["stop_hook_active"] != true && nudge_to_record(client, agent, &dir, &mut tf, &session)
+    {
         return;
+    }
+    keep_busy(client, agent, &dir, &mut tf, &session);
+}
+
+/// Check 1: prints the block and returns true when it asked the agent to record its changes.
+fn nudge_to_record(
+    client: &Client,
+    agent: &str,
+    dir: &std::path::Path,
+    tf: &mut TaskFile,
+    session: &str,
+) -> bool {
+    if tf.nudged_session.as_deref() == Some(session) {
+        return false;
     }
     // the last edits may be inside post-edit's debounce
     if let Err(e) = client.post_as(
         &format!("/v1/tasks/{}/checkpoint", tf.task),
         &json!({}),
-        generation(&tf, agent),
+        generation(tf, agent),
     ) {
         eprintln!("av: hook stop: checkpoint failed: {e}");
-        return;
+        return false;
     }
     let r = match client.get(&format!("/v1/tasks/{}/unrecorded", tf.task), &[]) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("av: hook stop: {e}");
-            return;
+            return false;
         }
     };
     let syms: Vec<&str> = r["unrecorded_symbols"]
@@ -185,10 +234,10 @@ pub fn stop(client: &Client, agent: &str) {
         .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
     if r["status"] != "open" || syms.is_empty() {
-        return;
+        return false;
     }
-    tf.nudged_session = Some(session);
-    if let Err(e) = taskfile::write(&dir, &tf) {
+    tf.nudged_session = Some(session.to_owned());
+    if let Err(e) = taskfile::write(dir, tf) {
         eprintln!("av: hook stop: cannot update {}: {e}", taskfile::NAME);
     }
     let mut names = syms[..syms.len().min(NUDGE_SYMBOLS)].join(", ");
@@ -202,6 +251,74 @@ pub fn stop(client: &Client, agent: &str) {
          Use kind attempt for anything you tried that failed. If nothing is worth recording, \
          say so and stop."
     );
+    println!("{}", json!({"decision": "block", "reason": reason}));
+    true
+}
+
+/// What a dry run of `next` says is waiting, as a phrase for the stop reason.
+fn waiting(would: &Value) -> String {
+    let what = match would["from"].as_str() {
+        Some("review") => "a review is waiting",
+        Some("handoff") => "a handed-off task is waiting",
+        Some("abandoned") => "an abandoned task of yours is waiting",
+        _ => "work is waiting",
+    };
+    let title = would["title"].as_str().unwrap_or("(untitled)");
+    match would["repo"].as_str() {
+        Some(repo) => format!("{what}: {title} ({repo})"),
+        None => format!("{what}: {title}"),
+    }
+}
+
+/// Check 2: prints the block and counts it when av has work for this agent, polling for up to
+/// `AV_HOOK_WAIT_SECS`. Returns without printing when nothing fits, the cap is reached, or the
+/// daemon cannot be asked.
+fn keep_busy(
+    client: &Client,
+    agent: &str,
+    dir: &std::path::Path,
+    tf: &mut TaskFile,
+    session: &str,
+) {
+    let wait = env_number("AV_HOOK_WAIT_SECS", DEFAULT_WAIT_SECS);
+    if wait == 0 {
+        return;
+    }
+    let max = env_number("AV_HOOK_MAX_CONTINUES", DEFAULT_MAX_CONTINUES);
+    let used = if tf.continue_session.as_deref() == Some(session) {
+        tf.continues
+    } else {
+        0
+    };
+    if used >= max {
+        return;
+    }
+    let deadline = Instant::now() + Duration::from_secs(wait);
+    let would = loop {
+        let r = client.post(
+            "/v1/backlog/next",
+            &json!({"agent": agent, "session": "av-hook", "dry_run": true}),
+        );
+        match r {
+            Ok(r) if !r["would"].is_null() => break r["would"].clone(),
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("av: hook stop: {e}");
+                return;
+            }
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(POLL));
+    };
+    tf.continue_session = Some(session.to_owned());
+    tf.continues = used + 1;
+    if let Err(e) = taskfile::write(dir, tf) {
+        eprintln!("av: hook stop: cannot update {}: {e}", taskfile::NAME);
+    }
+    let reason = format!("av: {} - call start_task with no title", waiting(&would));
     println!("{}", json!({"decision": "block", "reason": reason}));
 }
 

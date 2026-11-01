@@ -572,6 +572,15 @@ opens with a warning naming the culprit merge.
   `submit` would list, `GET /v1/tasks/{id}/unrecorded`), blocks the stop once per agent session and asks for the
   decisions and dead ends behind them. All four are silent outside a task and never fail the agent
   (`scholion hook session-start`, `scholion hook pre-read`, `scholion hook post-edit`, `scholion hook stop`).
+
+  **Keep agents busy.** After that check, `Stop` asks the daemon for this agent's next work (a dry run of
+  `POST /v1/backlog/next`, the call `av watch` polls). If something fits (queued work, a review, a handoff or an
+  abandoned task), it blocks the stop with `av: <what is waiting> - call start_task with no title`, so the agent
+  carries on instead of idling. If nothing fits yet it keeps looking every 15 s for up to `AV_HOOK_WAIT_SECS`
+  (default 600; `0` turns this off), which costs no model tokens, then lets the stop through. It continues one
+  agent session at most `AV_HOOK_MAX_CONTINUES` times (default 20, counted in `.av-task`), and a daemon that
+  does not answer allows the stop at once. `install.sh` sets the hook's timeout to `AV_HOOK_WAIT_SECS` + 60 s,
+  so run it again after changing the wait: `AV_HOOK_WAIT_SECS=120 integrations/claude-code/install.sh`.
 - **Any `mcpServers` JSON client** (Muse, Windsurf, Cline, …): `av --agent NAME init --for mcp-json --path FILE`
   merges `mcpServers.av` into that file (`type` `http`, the `/mcp` URL, `X-Av-Agent` set to `NAME`) and
   keeps the rest. With `AV_TOKEN` set, the header is `Bearer ${AV_TOKEN}`, which the client expands.
