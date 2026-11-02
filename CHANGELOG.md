@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A modern dashboard** (`/ui`): a light and dark theme on one set of tokens (following the
+  system, or switched in the header and remembered in the browser), a sticky header with the
+  daemon's status, a repo overview (main's commit, its health, semantic search on or off with the
+  embedding backlog from `GET /v1/repos/{name}/outbox`, a count per task status), the office, the
+  task board, then targets, backlog (with what each item waits on) and activity side by side.
+  Every panel has an empty and an error state, a daemon that is down or wants its token says so,
+  the drawers are modal dialogs (Esc closes them), and the page fits a phone. It shows everything
+  it did before, still reads only `/v1` and still loads nothing from outside.
 - **A `checkpoint` event**: a snapshot that moves a task's head (`POST /v1/tasks/{id}/checkpoint`,
   a submit, a sync) now lands in the event feed as kind `checkpoint` with the new head, the old one
   (`payload.from`) and how many paths the task changes (`payload.touched`), so `GET /v1/events`,

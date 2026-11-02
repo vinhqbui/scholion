@@ -512,7 +512,7 @@ the call until something fits; `dry_run` says what it would give without taking 
 id. A **target** (a release, a milestone) groups backlog items: an item counts toward at most one
 active target of its repo, and the target's progress is how many of its items merged (a dropped
 item stops counting). Targets are never deleted; they are done or dropped and can be reopened. They
-do not change routing. The dashboard lists the teams (skill, cost, and open tasks against the limit), the queue and who each item is reserved for. Design:
+do not change routing. The dashboard's office lists the agents (skill, cost, and open tasks against the limit), the queue and who each item is reserved for. Design:
 `docs/superpowers/specs/2026-10-31-agent-routing-design.md`; how to measure whether it pays:
 `docs/superpowers/plans/2026-10-31-plan-8-grok-evaluation.md` (not yet run: no claim is made).
 To try it with real agents, run `examples/routing-smoke/setup.sh`. It sets up a small sample
@@ -523,8 +523,11 @@ Flash through the same loop on its own daemon (the run checked for 0.0.2).
 
 ### Dashboard
 
-Open `http://localhost:7420/ui` to watch agents work: tasks by status, a Teams panel that works as an
-office (one desk per agent: its skills and cost, how many open tasks it holds against its limit, what
+Open `http://localhost:7420/ui` to watch agents work. A sticky header holds the repo picker, the
+daemon's status (live, reconnecting, offline, token needed) and a light/dark/system theme switch
+(kept in the browser); under it, the repo's main commit, its post-merge health, whether semantic
+search is on (and how many rows wait to be embedded), and a count of tasks per status. Then come
+the tasks by status, an office (one desk per agent: its skills and cost, how many open tasks it holds against its limit, what
 it is on now, what it did last, and whether it is working, reviewing, idle or *quiet*: holding open
 tasks it has not written to for a whole lease, so `next` offers them to others), the repo's targets
 with their progress (overdue ones in red), the backlog, a live
@@ -532,7 +535,9 @@ activity feed (the `/v1/events` long-poll), and for each task its records, chang
 review state. Click a desk (or a task's owner) for that agent's timeline: the records it wrote, the
 tasks it started and claimed, its review verdicts, its submits and its merges, newest first. It is
 built from what Scholion already keeps; nothing extra is recorded, and no cost is tracked. "Build
-context pack" shows exactly what the next agent would receive at a given budget.
+context pack" shows exactly what the next agent would receive at a given budget. The page is one
+self-contained file (nothing loaded from outside, so it works offline), it only reads `/v1`, and it
+works from phone width up and from the keyboard (Esc closes the drawer).
 The page is read-only and built into the daemon (no Node, no build step); with `AV_TOKEN` set it asks
 for the token once per browser tab. It reads `GET /v1/tasks` (`?repo=`, `?status=`, `?limit=`),
 `GET /v1/tasks/{id}/records`, `GET /v1/agents`, `GET /v1/backlog`, `GET /v1/targets` (`?repo=`,
