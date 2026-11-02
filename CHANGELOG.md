@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Office and timelines on the dashboard** (Plan 10 A3): each Teams desk now says what the agent is
+  on, what it did last, and whether it is working, reviewing, idle or quiet (open tasks with no write
+  for a whole lease). Clicking a desk, or a task's owner, opens the agent's timeline: its records,
+  starts, claims, review verdicts, submits and merges. New read-only routes `GET /v1/office` and
+  `GET /v1/agents/{name}/timeline`, built from data Scholion already keeps (no migration).
+
 ## 0.0.2 (2026-11-01)
 
 Several coding agents (Claude Code, Codex, Cursor, Grok Build, Gemini CLI) now share one backlog:
