@@ -14,7 +14,6 @@
   --intent: #c4b5fd; --review: #5ecf9a; --ok: #5ecf9a; --bad: #ff8a9a; --warn: #ffd56a;
   --wash-a: #1a4638; --wash-b: #3a2433;
   --code-bg: #0f1a16; --radius: 18px;
-  --ink: #16332c;
   --sans: ui-rounded, "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --display: "Iowan Old Style", Palatino, Georgia, serif;
   --mono: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
@@ -151,14 +150,10 @@ dialog input { width: 100%; margin: 10px 0; }
   display: block; overflow: visible; flex: none; transform-origin: 50% 100%;
   image-rendering: pixelated; shape-rendering: crispEdges;
 }
-.slime-work {
-  @media (prefers-reduced-motion: no-preference) { animation: slime-bob 0.9s steps(2, end) infinite; }
-}
-.slime-idle {
-  @media (prefers-reduced-motion: no-preference) { animation: slime-doze 2.4s steps(2, end) infinite; }
-}
-.slime-full {
-  @media (prefers-reduced-motion: no-preference) { animation: slime-puff 1.1s steps(2, end) infinite; }
+@media (prefers-reduced-motion: no-preference) {
+  .slime-work { animation: slime-bob 0.9s steps(2, end) infinite; }
+  .slime-idle { animation: slime-doze 2.4s steps(2, end) infinite; }
+  .slime-full { animation: slime-puff 1.1s steps(2, end) infinite; }
 }
 @keyframes slime-bob {
   0%, 100% { translate: 0 0; }
@@ -178,7 +173,7 @@ dialog input { width: 100%; margin: 10px 0; }
 <div class="frame">
 <header>
   <span class="brand">
-    <svg id="brandSlime" class="slime slime-work" width="40" height="40" viewBox="0 0 16 16" aria-hidden="true"></svg>
+    <svg id="brandSlime" class="slime" width="28" height="28" viewBox="0 0 16 16" aria-hidden="true"></svg>
     <span class="word">Scholion</span>
     <span class="faint" style="font-weight:400">dashboard</span>
   </span>
@@ -321,10 +316,10 @@ const SLIME_SPRITES = {
   ],
 };
 function jellyColor(name) {
-  let h = 0;
+  let hash = 0;
   const s = String(name || "");
-  for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) % 10007;
-  return JELLIES[h % JELLIES.length];
+  for (let i = 0; i < s.length; i++) hash = (hash * 33 + s.charCodeAt(i)) % 10007;
+  return JELLIES[hash % JELLIES.length];
 }
 function shade(hex, amt) {
   const n = parseInt(hex.slice(1), 16);
@@ -483,12 +478,13 @@ async function loadBacklog() {
   const rows = [
     ...queued.items.map(i => h("div", { class: "bl" },
       h("div", {}, i.title),
+      // each part its own span: adjacent text nodes would merge into one flex item, losing the gap
       h("div", { class: "w row" },
-        i.needs.length ? "needs " + i.needs.join(",") : "any agent",
+        h("span", {}, i.needs.length ? "needs " + i.needs.join(",") : "any agent"),
         i.best_agent
           ? h("span", { class: "owner" }, "→", slime(i.best_agent, "idle", 16), i.best_agent)
-          : "no agent can do it",
-        ago(i.created_at)))),
+          : h("span", {}, "no agent can do it"),
+        h("span", {}, ago(i.created_at))))),
     ...taken.items.slice(-5).reverse().map(i => h("button", {
       class: "ev", type: "button", onclick: () => i.task_id && openTask(i.task_id) },
       h("span", { class: "k k-claim" }, "taken"),
