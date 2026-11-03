@@ -127,6 +127,27 @@ pub trait Vcs: Send + Sync {
     ) -> Result<()> {
         Err(AvError::Vcs("undo is not supported by this Vcs".into()))
     }
+    /// Forgets the task workspace `slug` in the repo and deletes its directory. `Ok(false)` when
+    /// neither existed. The repo's own `main` workspace is refused (`Invalid`). The workspace's
+    /// commits stay in the store, so `restore_workspace` can bring it back.
+    async fn remove_workspace(&self, _repo: &str, _slug: &str) -> Result<bool> {
+        Err(AvError::Vcs(
+            "remove_workspace is not supported by this Vcs".into(),
+        ))
+    }
+    /// Re-creates the removed workspace `slug` with `head` as its working-copy commit, so its
+    /// files are `head`'s and a snapshot without edits returns `head`. `Invalid` when the
+    /// directory exists.
+    async fn restore_workspace(
+        &self,
+        _repo: &str,
+        _slug: &str,
+        _head: &ChangeId,
+    ) -> Result<WorkspaceInfo> {
+        Err(AvError::Vcs(
+            "restore_workspace is not supported by this Vcs".into(),
+        ))
+    }
 }
 
 /// `path` at `change`, or `None` when the change is absent or has no such file.
