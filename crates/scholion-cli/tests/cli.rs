@@ -129,6 +129,9 @@ fn av_with(url: &str, cwd: &Path, args: &[&str]) -> Output {
         .env_remove("AV_TOKEN")
         // the Stop hook's keep-busy wait is off unless a test turns it on
         .env("AV_HOOK_WAIT_SECS", "0")
+        // so is the footprint (it scans $HOME), and no hook writes the real session's env file
+        .env("AV_FOOTPRINT", "off")
+        .env_remove("CLAUDE_ENV_FILE")
         // This process may be a Grok session. Those variables would make `av hook` act as grok.
         .env_remove("GROK_HOOK_EVENT")
         .env_remove("GROK_SESSION_ID")
@@ -1391,7 +1394,11 @@ fn av_stdin_env(url: &str, cwd: &Path, env: &[(&str, &str)], args: &[&str], stdi
         .env_remove("GROK_HOOK_EVENT")
         .env_remove("GROK_SESSION_ID")
         .env("AV_HOOK_WAIT_SECS", "0")
-        .env_remove("AV_HOOK_MAX_CONTINUES");
+        .env_remove("AV_HOOK_MAX_CONTINUES")
+        .env("AV_FOOTPRINT", "off")
+        .env_remove("CLAUDE_ENV_FILE")
+        .env_remove("AV_FOOTPRINT_ROOTS")
+        .env_remove("AV_WS_ROOT");
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -1569,6 +1576,181 @@ fn hook_stop_asks_once_per_session_to_record_unexplained_changes() {
         )),
         ""
     );
+}
+
+// ---- Plan 11: a scratch dir per task, and the footprint of what a session adds
+
+/// A temp `HOME`, `TMPDIR` and `AV_HOME` for footprint tests, and the env file.
+struct Footprint {
+    home: TempDir,
+    tmp: TempDir,
+    av_home: TempDir,
+    env_file: PathBuf,
+}
+
+impl Footprint {
+    fn new() -> Self {
+        let home = TempDir::new().unwrap();
+        let env_file = home.path().join("claude-env");
+        Footprint {
+            home,
+            tmp: TempDir::new().unwrap(),
+            av_home: TempDir::new().unwrap(),
+            env_file,
+        }
+    }
+
+    fn env<'a>(&'a self, on: &'a str) -> Vec<(&'a str, &'a str)> {
+        vec![
+            ("HOME", self.home.path().to_str().unwrap()),
+            ("TMPDIR", self.tmp.path().to_str().unwrap()),
+            ("AV_HOME", self.av_home.path().to_str().unwrap()),
+            ("CLAUDE_ENV_FILE", self.env_file.to_str().unwrap()),
+            ("AV_FOOTPRINT", on),
+            ("AV_FOOTPRINT_WARN_MB", "1"),
+        ]
+    }
+
+    fn snapshot(&self, session: &str) -> PathBuf {
+        self.av_home
+            .path()
+            .join("footprint")
+            .join(format!("{session}.json"))
+    }
+}
+
+fn hook_input(ws: &Path, event: &str, session: &str) -> String {
+    serde_json::json!({"hook_event_name": event, "session_id": session, "cwd": ws,
+                       "source": "startup", "stop_hook_active": false})
+    .to_string()
+}
+
+#[test]
+fn hook_session_start_gives_the_task_a_scratch_dir_and_snapshots_the_footprint() {
+    let (d, ws, _scratch) = started();
+    let fp = Footprint::new();
+    std::fs::create_dir_all(fp.home.path().join("old/target")).unwrap();
+    std::fs::write(fp.home.path().join("old/target/a"), vec![0u8; 4096]).unwrap();
+    let o = av_stdin_env(
+        &d.url,
+        &ws,
+        &fp.env("on"),
+        &["hook", "session-start"],
+        &hook_input(&ws, "SessionStart", "cc-fp"),
+    );
+    let printed = ok(o);
+    assert!(printed.contains("## Task"), "{printed}");
+    assert!(
+        printed
+            .trim_end()
+            .ends_with("Temporary files: $AV_SCRATCH (removed with the task)."),
+        "{printed}"
+    );
+    let scratch = d.ws.join("demo/.scratch/improve-greeting");
+    assert!(scratch.is_dir());
+    assert_eq!(
+        std::fs::read_to_string(&fp.env_file).unwrap(),
+        format!("export AV_SCRATCH='{}'\n", scratch.display())
+    );
+    let snap: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fp.snapshot("cc-fp")).unwrap()).unwrap();
+    assert_eq!(snap["partial"], false, "{snap}");
+    assert_eq!(
+        snap["dirs"],
+        serde_json::json!([{"path": fp.home.path().join("old/target"), "bytes": 4096}]),
+        "{snap}"
+    );
+}
+
+#[test]
+fn hook_stop_blocks_once_when_a_session_left_a_big_build_outside_the_workspace() {
+    let (d, ws, _scratch) = started();
+    let fp = Footprint::new();
+    ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &fp.env("on"),
+        &["hook", "session-start"],
+        &hook_input(&ws, "SessionStart", "cc-big"),
+    ));
+    let junk = fp.home.path().join("junk/target");
+    std::fs::create_dir_all(&junk).unwrap();
+    std::fs::write(junk.join("big"), vec![0u8; 2 * 1024 * 1024]).unwrap();
+    let o = ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &fp.env("on"),
+        &["hook", "stop"],
+        &hook_input(&ws, "Stop", "cc-big"),
+    ));
+    let v: serde_json::Value = serde_json::from_str(&o).unwrap_or_else(|_| panic!("{o}"));
+    assert_eq!(v["decision"], "block", "{o}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("av: this session added 2 MB outside any task workspace: "),
+        "{reason}"
+    );
+    assert!(
+        reason.contains(&format!("{} (2 MB)", junk.display())),
+        "{reason}"
+    );
+    assert!(
+        reason.contains(&d.ws.join("demo/.cache").display().to_string())
+            && reason.contains("$AV_SCRATCH"),
+        "{reason}"
+    );
+    // once per session
+    let o = ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &fp.env("on"),
+        &["hook", "stop"],
+        &hook_input(&ws, "Stop", "cc-big"),
+    ));
+    assert_eq!(o, "");
+    // and the daemon was told
+    let disk: serde_json::Value = ureq::get(&format!("{}/v1/disk", d.url))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let outside = &disk["outside"][0];
+    assert_eq!(outside["session"], "cc-big", "{disk}");
+    assert_eq!(
+        outside["added"][0]["path"],
+        junk.to_str().unwrap(),
+        "{disk}"
+    );
+    assert!(
+        junk.exists(),
+        "the daemon never deletes outside its workspaces"
+    );
+}
+
+#[test]
+fn hook_footprint_off_writes_and_says_nothing() {
+    let (d, ws, _scratch) = started();
+    let fp = Footprint::new();
+    ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &fp.env("off"),
+        &["hook", "session-start"],
+        &hook_input(&ws, "SessionStart", "cc-off"),
+    ));
+    assert!(!fp.av_home.path().join("footprint").exists());
+    let junk = fp.home.path().join("junk/target");
+    std::fs::create_dir_all(&junk).unwrap();
+    std::fs::write(junk.join("big"), vec![0u8; 2 * 1024 * 1024]).unwrap();
+    let o = av_stdin_env(
+        &d.url,
+        &ws,
+        &fp.env("off"),
+        &["hook", "stop"],
+        &hook_input(&ws, "Stop", "cc-off"),
+    );
+    assert!(o.status.success());
+    assert_eq!((out(&o).as_str(), err(&o).as_str()), ("", ""));
 }
 
 #[test]

@@ -3,8 +3,9 @@
 //! the merge or abandon itself when that is 0), and comes back when an undo or revert returns the
 //! task to work. `GET /v1/disk` shows what is where. The daemon deletes only under `ws_root`.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::State;
@@ -30,6 +31,54 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/disk", get(disk))
         .route("/v1/gc", post(gc))
+        .route("/v1/footprint", post(post_footprint))
+}
+
+/// Most footprint reports kept.
+const FOOTPRINTS: usize = 200;
+
+pub(crate) type Footprints = Arc<Mutex<VecDeque<Footprint>>>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Added {
+    path: String,
+    bytes: u64,
+}
+
+/// What one session added outside any task workspace (the Stop hook's diff against its start).
+/// The daemon only shows it: the paths are the agent's or the human's to remove.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Footprint {
+    session: String,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    task: Option<String>,
+    #[serde(default)]
+    added: Vec<Added>,
+    #[serde(default)]
+    partial: bool,
+    #[serde(default)]
+    total_bytes: u64,
+    #[serde(default = "Utc::now")]
+    at: chrono::DateTime<Utc>,
+}
+
+/// Keeps a session's report (replacing its earlier one), newest first, at most `FOOTPRINTS`.
+async fn post_footprint(
+    State(st): State<AppState>,
+    Json(mut f): Json<Footprint>,
+) -> ApiResult<Value> {
+    if f.session.trim().is_empty() {
+        return Err(AvError::Invalid("session must not be blank".into()).into());
+    }
+    f.total_bytes = f.added.iter().map(|a| a.bytes).sum();
+    f.at = Utc::now();
+    let mut kept = st.footprints.lock().unwrap_or_else(|e| e.into_inner());
+    kept.retain(|old| old.session != f.session);
+    kept.push_front(f);
+    kept.truncate(FOOTPRINTS);
+    Ok(Json(json!({"kept": kept.len()})))
 }
 
 /// What a reclaim removed (or, in a dry run, would remove) and what it kept.
@@ -421,12 +470,20 @@ async fn disk(State(st): State<AppState>) -> ApiResult<Value> {
             "workspaces": workspaces,
         }));
     }
+    let outside: Vec<Footprint> = st
+        .footprints
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .cloned()
+        .collect();
     Ok(Json(json!({
         "ws_root": st.ws_host_root,
         "store_root": st.store_root,
         "pg_dir": st.pg_dir,
         "retain_secs": st.ws_retain,
         "repos": repos,
+        "outside": outside,
         "totals": {
             "workspaces_bytes": ws_total,
             "store_bytes": store_total,

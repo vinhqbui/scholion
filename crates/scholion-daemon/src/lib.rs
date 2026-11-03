@@ -78,6 +78,9 @@ pub struct AppState {
     pub(crate) pg_dir: Option<PathBuf>,
     /// `AV_BUILD_CACHE`: one cargo target per repo, shared by its task workspaces.
     pub(crate) build_cache: bool,
+    /// What sessions reported adding outside any task workspace (`POST /v1/footprint`), newest
+    /// first, one per session, in memory only.
+    pub(crate) footprints: disk::Footprints,
     /// Open MCP sessions (`/mcp`), by `Mcp-Session-Id`.
     pub(crate) mcp: mcp::Sessions,
     task_locks: Arc<Mutex<HashMap<TaskId, Arc<tokio::sync::Mutex<()>>>>>,
@@ -136,6 +139,7 @@ impl AppState {
             store_root: None,
             pg_dir: None,
             build_cache: true,
+            footprints: Arc::default(),
             mcp: Arc::default(),
             task_locks: Arc::default(),
             guard: Arc::new(AllowAll),

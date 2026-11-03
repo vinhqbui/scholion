@@ -453,6 +453,46 @@ async fn start_up_gives_repos_imported_earlier_their_build_cache() {
     );
 }
 
+// ---- Task 4: what sessions added outside any workspace ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reported_footprint_shows_under_outside_newest_first() {
+    let e = env().await;
+    let mb = 1024 * 1024;
+    let report = |session: &str, path: &str, bytes: u64| {
+        json!({"session": session, "agent": "claude", "task": null,
+               "added": [{"path": path, "bytes": bytes}], "partial": false})
+    };
+    for body in [
+        report("cc-1", "/home/u/junk/target", 3 * mb),
+        report("cc-2", "/tmp/x/node_modules", 2 * mb),
+        // a later stop of the same session replaces its report
+        report("cc-1", "/home/u/junk/target", 5 * mb),
+    ] {
+        let (status, out) = call(&e.app, "POST", "/v1/footprint", Some(body)).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+    }
+    let (status, disk) = call(&e.app, "GET", "/v1/disk", None).await;
+    assert_eq!(status, StatusCode::OK, "{disk}");
+    let outside = disk["outside"].as_array().unwrap();
+    assert_eq!(outside.len(), 2, "{disk}");
+    assert_eq!(outside[0]["session"], "cc-1");
+    assert_eq!(outside[0]["total_bytes"], 5 * mb);
+    assert_eq!(outside[0]["agent"], "claude");
+    assert!(outside[0]["at"].is_string(), "{disk}");
+    assert_eq!(outside[1]["session"], "cc-2");
+    assert_eq!(outside[1]["added"][0]["path"], "/tmp/x/node_modules");
+
+    let (status, _) = call(
+        &e.app,
+        "POST",
+        "/v1/footprint",
+        Some(json!({"session": "", "added": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 // ---- the sweep, through the daemon's own start-up (`serve_with`) ----
 
 fn config(db: &TestDb, dir: &Path, retain: Option<u64>) -> Config {

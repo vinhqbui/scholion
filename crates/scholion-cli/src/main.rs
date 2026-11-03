@@ -1,5 +1,6 @@
 mod agents;
 mod client;
+mod footprint;
 mod hook;
 mod local;
 mod runner;
