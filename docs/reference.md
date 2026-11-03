@@ -461,8 +461,11 @@ av --agent muse watch -- muse
 
 `--agent NAME` (or `AV_AGENT`) is that CLI's name when it calls `next`. `av agent set NAME
 --best …` is how `next` routes by strength: an item goes first to the agent whose `best`
-tags cover what it needs. `av watch`, once per agent, starts that CLI only when something
-fits it and sets `AV_AGENT` for the command.
+tags cover what it needs. `av agent rm NAME` removes a profile (`DELETE /v1/agents/{name}`).
+An unknown name is an error. So is removing an agent that still owns an open, handed-off,
+in-review or conflicted task, unless `av agent rm NAME --force` (the tasks stay). A profile an extension
+manages cannot be removed here, the same as `av agent set`. `av watch`, once per agent,
+starts that CLI only when something fits it and sets `AV_AGENT` for the command.
 
 The dedicated writers put a fixed `X-Av-Agent` header (`grok`, `gemini`, `cursor`).
 `--for mcp-json` writes the `--agent` name into that header, so a client without its own

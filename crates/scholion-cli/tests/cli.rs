@@ -2811,6 +2811,52 @@ fn agent_set_and_list_show_the_profiles_cheapest_first() {
 }
 
 #[test]
+fn agent_rm_removes_a_profile_and_force_clears_one_that_owns_work() {
+    let (d, scratch) = daemon_with_repo();
+    ok(av(
+        &d,
+        scratch.path(),
+        &["agent", "set", "muse", "--can", "docs", "--cost", "1"],
+    ));
+    ok(av(
+        &d,
+        scratch.path(),
+        &["agent", "set", "agent", "--can", "code", "--cost", "3"],
+    ));
+    // the default agent owns this task, so its profile stays until --force
+    ok(av(
+        &d,
+        scratch.path(),
+        &[
+            "task",
+            "start",
+            "--repo",
+            "demo",
+            "--title",
+            "Still open",
+            "--goal",
+            "g",
+        ],
+    ));
+    let blocked = av(&d, scratch.path(), &["agent", "rm", "agent"]);
+    assert!(!blocked.status.success(), "{}", out(&blocked));
+    let msg = err(&blocked);
+    assert!(msg.contains("HTTP 409"), "{msg}");
+    assert!(msg.contains("force=true"), "{msg}");
+    let forced = ok(av(&d, scratch.path(), &["agent", "rm", "agent", "--force"]));
+    assert!(forced.contains("removed agent"), "{forced}");
+    let rm = ok(av(&d, scratch.path(), &["agent", "rm", "muse"]));
+    assert!(rm.contains("removed muse"), "{rm}");
+    let missing = av(&d, scratch.path(), &["agent", "rm", "muse"]);
+    assert!(!missing.status.success());
+    let msg = err(&missing);
+    assert!(msg.contains("not found: agent muse"), "{msg}");
+    assert!(msg.contains("HTTP 404"), "{msg}");
+    let list = ok(av(&d, scratch.path(), &["agent", "list"]));
+    assert!(list.contains("no profiles"), "{list}");
+}
+
+#[test]
 fn post_after_shows_waiting_on_in_the_backlog() {
     let (d, scratch) = daemon_with_repo();
     let post = |title: &str, extra: &[&str]| {
