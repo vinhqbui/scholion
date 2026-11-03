@@ -39,9 +39,9 @@
   paths it touched, claims, submits, verdicts, merges, conflicts); each review round (the verdict
   with the reviewer's findings at that head); a validation record as passed or failed, with its
   command and output; and, after "Build context pack", the pack's receipt: every item with its
-  tier, why it is there, where it comes from and its tokens. The page reads the repo's whole event
-  history (`GET /v1/events` from the first id, in pages of 500) and derives these from it; the
-  daemon records nothing new.
+  tier, why it is there, where it comes from and its tokens. The page reads the repo's event
+  history (`GET /v1/events` in pages of 500, the newest 10 000 ids of a long one) and derives
+  these from it; the daemon records nothing new.
 - **The teams stand left of the board.** From 1580 px wide the dashboard is three columns: the
   agents' desks on the left, tasks by status in the middle, targets, backlog and activity on the
   right. Narrower, the desks are a row above the board, as before; below 1180 px everything stacks.

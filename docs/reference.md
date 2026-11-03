@@ -539,9 +539,9 @@ request, one file at a time), its claim and review state and every review round 
 the reviewer's findings at that head), a validation record as passed or failed with its command and
 output, its own timeline (starts, checkpoints with how many paths they touched, claims, submits,
 verdicts, merges, conflicts) and, after "Build context pack", the pack's receipt (each item's tier,
-reason, source and tokens). The page reads the repo's whole event history (`GET /v1/events` from
-the first id, in pages of 500, then followed live) and derives time in status, timelines and
-review rounds from it; nothing new is recorded. Click a desk (or a task's owner) for that agent's
+reason, source and tokens). The page reads the repo's event history (`GET /v1/events` in pages of
+500, the newest 10 000 ids of a long one, then followed live) and derives timelines and review
+rounds from it; nothing new is recorded. Click a desk (or a task's owner) for that agent's
 timeline: the records it wrote, the tasks it started and claimed, its review verdicts, its submits
 and its merges, newest first. It is built from what Scholion already keeps; nothing extra is
 recorded, and no cost is tracked. "Build context pack" shows exactly what the next agent would

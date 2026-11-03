@@ -657,7 +657,7 @@ function short(id) { return id ? String(id).slice(0, 8) : "—"; }
 // timeline and review rounds. The daemon serves the feed from any id, so the page reads it from
 // the first event, in pages, and then follows it live.
 
-const HIST_PAGE = 500, HIST_PAGES = 20;
+const HIST_PAGE = 500, HIST_PAGES = 20, HIST_WINDOW = HIST_PAGE * HIST_PAGES;
 function who(ev) { const p = ev.payload || {}; return p.agent || p.reviewer || p.by || ""; }
 function taskEvents(id) { return S.byTask.get(id) || []; }
 function remember(evs) {
@@ -667,6 +667,8 @@ function remember(evs) {
     const l = S.byTask.get(ev.task_id);
     if (l) l.push(ev); else S.byTask.set(ev.task_id, [ev]);
   }
+  // the live feed keeps the window's size: the oldest go (each task's own list stays whole)
+  if (S.hist.length > HIST_WINDOW) { S.hist.splice(0, S.hist.length - HIST_WINDOW); S.histCapped = true; }
 }
 // When the task entered its status: its newest transition into it (`payload.to`, or a
 // `status:<status>` event), else its creation. The daemon reckons "since" the same way.
@@ -689,19 +691,21 @@ function evTitle(ev) {
   if (ev.kind === "workspace:reclaimed") return "workspace reclaimed";
   return word(ev.kind);
 }
-// Returns the id to follow the feed from, or null when the repo changed meanwhile. Past
-// HIST_PAGES pages the history is capped: the oldest events are kept and the feed is followed
-// from its head, so the newest are never missed.
+// Returns the id to follow the feed from, or null when the repo changed meanwhile. The head is
+// read first; a long history is capped to the newest HIST_WINDOW ids (the oldest events are the
+// ones left out, never the newest), then read in pages up to the head.
 async function loadHistory(gen) {
   const q = `repo=${encodeURIComponent(S.repo)}`;
   S.hist = []; S.byTask = new Map(); S.histCapped = false;
-  let since = 0;
-  for (let i = 0; ; i++) {
+  const head = (await api(`/v1/events?${q}&limit=1`)).next; // no `since`: nothing old, just the head
+  if (gen !== feedGen) return null;
+  let since = Math.max(0, head - HIST_WINDOW);
+  S.histCapped = since > 0;
+  for (;;) {
     const r = await api(`/v1/events?${q}&since=${since}&limit=${HIST_PAGE}`);
     if (gen !== feedGen) return null;
     remember(r.events); since = r.next;
     if (r.events.length < HIST_PAGE) return since;
-    if (i + 1 >= HIST_PAGES) { S.histCapped = true; return (await api(`/v1/events?${q}`)).next; }
   }
 }
 function banner(msg) {
@@ -1094,10 +1098,12 @@ function renderTask(d, records, unrec) {
   const leaseLeft = t.status === "open" && t.lease_expires ? new Date(t.lease_expires) - new Date() : null;
   const verdict = d.verdict ? `${d.verdict.verdict} by ${d.verdict.reviewer}` : null;
   const conflicts = d.merge && d.merge.conflicts && d.merge.conflicts.length ? d.merge.conflicts : null;
-  // keep the pack's budget choice and scroll position when a live refresh redraws the drawer
+  // keep the pack's budget choice, which details are open and the scroll position when a live
+  // refresh redraws the drawer
   const sheet = document.getElementById("sheet");
   const scroll = sheet.scrollTop;
   const prevBudget = sheet.querySelector("select")?.value;
+  const wasOpen = new Map([...sheet.querySelectorAll("details[data-key]")].map(el => [el.dataset.key, el.open]));
   showSheet(
     sheetHead(statusBadge(t.status), h("span", { class: "mono", title: `${t.repo} / ${t.slug}` }, `${t.repo} / ${t.slug}`)),
     h("div", { class: "sheet-body" },
@@ -1117,7 +1123,7 @@ function renderTask(d, records, unrec) {
       section("Changed files", d.changed.length,
         d.changed.length ? h("ul", { class: "files" }, d.changed.map(p => h("li", {}, p))) : empty("No changes yet."),
         d.changed.length > 0 && diffBlock(t)),
-      roundsEl(t, records),
+      roundsEl(t, records, d.verdict),
       t.status === "open" && unrec && unrec.unrecorded_symbols.length > 0 && section(
         "Changes no record explains", unrec.unrecorded_symbols.length,
         h("p", { class: "note" },
@@ -1130,21 +1136,22 @@ function renderTask(d, records, unrec) {
         h("div", { id: "packOut" }, S.pack ? packEl(S.pack) : null)),
       h("p", { class: "foot-note" }, "Workspace: ", h("span", { class: "mono" }, t.workspace_path || "—"))));
   if (prevBudget) { const sel = sheet.querySelector("select"); if (sel) sel.value = prevBudget; }
+  for (const el of sheet.querySelectorAll("details[data-key]")) if (wasOpen.has(el.dataset.key)) el.open = wasOpen.get(el.dataset.key);
   sheet.scrollTop = scroll;
 }
 
-// The task's diff, base to head: fetched when asked for, kept while the head stays.
+// The task's diff, base to head: fetched when asked for; the rendered files are kept, and moved
+// back into each redraw, while the head stays.
 function diffBlock(t) {
   const box = h("div", { class: "diff-box" });
-  const cached = S.diff && S.diff.task === t.id && S.diff.head === t.head_change ? S.diff.files : null;
-  if (cached) { fill(box, diffEl(cached)); return box; }
+  if (S.diff && S.diff.task === t.id && S.diff.head === t.head_change) { fill(box, S.diff.el); return box; }
   const btn = h("button", { class: "btn", type: "button" }, "Show diff");
   btn.onclick = async () => {
     btn.disabled = true;
     try {
       const r = await api(`/v1/repos/${encodeURIComponent(t.repo)}/diff?from=${t.base_change}&to=${t.head_change}`);
-      S.diff = { task: t.id, head: t.head_change, files: r.files || [] };
-      fill(box, diffEl(S.diff.files));
+      S.diff = { task: t.id, head: t.head_change, el: diffEl(r.files || []) };
+      fill(box, S.diff.el);
     } catch (e) { fill(box, h("p", { class: "err" }, e.message)); btn.disabled = false; }
   };
   fill(box, h("div", { class: "toolbar" }, btn));
@@ -1153,15 +1160,20 @@ function diffBlock(t) {
 function diffEl(files) {
   if (!files.length) return empty("Base and head hold the same files.");
   return files.map(f => {
-    let add = 0, del = 0;
-    const rows = f.binary ? [] : String(f.diff || "").split("\n").map(l => {
-      const cls = l.startsWith("+++") || l.startsWith("---") ? "meta" : l.startsWith("@@") ? "hunk"
+    let add = 0, del = 0, inHunk = false;
+    const lines = f.binary ? [] : String(f.diff || "").split("\n");
+    if (lines.length && lines[lines.length - 1] === "") lines.pop(); // the diff ends with a newline
+    const rows = lines.map(l => {
+      // only the `---`/`+++` lines before the first hunk are headers: a removed `-- comment`
+      // or an added `++i` is a change like any other
+      if (l.startsWith("@@")) inHunk = true;
+      const cls = !inHunk ? "meta" : l.startsWith("@@") ? "hunk"
         : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : "ctx";
       if (cls === "add") add++; else if (cls === "del") del++;
       return h("span", { class: cls }, l + "\n");
     });
     const tone = f.status === "added" ? "green" : f.status === "deleted" ? "red" : "blue";
-    return h("details", { class: "diff-file", open: files.length <= 3 },
+    return h("details", { class: "diff-file", open: files.length <= 3, "data-key": "diff:" + f.path },
       h("summary", {},
         badge(f.status, tone), h("span", { class: "mono path" }, f.path),
         f.binary ? h("span", { class: "faint" }, "binary") : h("span", { class: "mono counts" },
@@ -1170,13 +1182,15 @@ function diffEl(files) {
   });
 }
 
-// Each verdict with the review records written at that head: one round of review.
-function roundsEl(t, records) {
+// Each verdict with the review records written at that head: one round of review. A verdict
+// event names no reviewer; the round at the current head takes it from the latest verdict, the
+// others from their findings.
+function roundsEl(t, records, latest) {
   const verdicts = taskEvents(t.id).filter(ev => ev.kind === "approve" || ev.kind === "request_changes");
   if (!verdicts.length) return null;
   return section("Review rounds", verdicts.length, h("div", { class: "list" }, verdicts.map((ev, i) => {
     const notes = records.filter(r => r.kind === "review" && r.change_id === ev.change);
-    const by = who(ev) || (notes[0] && notes[0].author_agent) || "";
+    const by = who(ev) || (latest && ev.change === t.head_change && latest.reviewer) || (notes[0] && notes[0].author_agent) || "";
     return evRow({ kind: ev.kind, label: ev.kind === "approve" ? "approved" : "changes requested",
       title: `Round ${i + 1}` + (notes.length ? ": " + notes.map(r => r.summary).join(" · ") : ""),
       meta: [by, ev.change && "@" + short(ev.change), ago(ev.at)].filter(Boolean).join(" · ") });
@@ -1185,32 +1199,39 @@ function roundsEl(t, records) {
 
 // What happened to the task, newest first: starts, checkpoints (with how many paths they touch),
 // claims, submits, verdicts, merges, conflicts.
+const TIMELINE_ROWS = 200;
 function timelineEl(t) {
   const evs = taskEvents(t.id);
+  const shown = evs.slice(-TIMELINE_ROWS).reverse();
   return section("Timeline", evs.length, evs.length
-    ? h("ul", { class: "tl" }, evs.slice().reverse().map(ev => h("li", {}, evRow({ kind: ev.kind, title: evTitle(ev),
-        meta: [who(ev), ev.change && "@" + short(ev.change), ago(ev.at)].filter(Boolean).join(" · ") }))))
-    : empty(S.histCapped ? "Older history is not loaded." : "No events yet."));
+    ? [h("ul", { class: "tl" }, shown.map(ev => h("li", {}, evRow({ kind: ev.kind, title: evTitle(ev),
+        meta: [who(ev), ev.change && "@" + short(ev.change), ago(ev.at)].filter(Boolean).join(" · ") })))),
+      evs.length > shown.length && h("p", { class: "note" }, `The newest ${shown.length} of ${evs.length}.`)]
+    : empty(t.repo !== S.repo ? "Only the selected repo's events are loaded." : S.histCapped ? "Only the newest events are loaded." : "No events yet."));
 }
 
 // A validation record's body: {command, exit_code, output_tail, checks}. Pass or fail, the
-// command, each convention's check, and the output on request.
-function validationEl(body) {
+// command, each convention's check (with its own output on request), and the output on request.
+function validationEl(body, key) {
   let b = null;
   try { b = JSON.parse(body); } catch (_) { return null; }
   if (!b || typeof b !== "object" || b.exit_code == null) return null;
-  const ok = b.exit_code === 0;
+  const exit = Number(b.exit_code), ok = exit === 0;
+  const checks = Array.isArray(b.checks) ? b.checks.filter(c => c && typeof c === "object") : [];
+  const outEl = (text, k, label) => h("details", { "data-key": k }, h("summary", {}, label), h("pre", { class: "out" }, text));
   return h("div", { class: "rec-body val" },
     h("div", { class: "toolbar" },
       badge(ok ? "passed" : `failed: exit ${b.exit_code}`, ok ? "green" : "red"),
-      b.command && h("code", {}, b.command)),
-    (b.checks || []).map(c => h("div", { class: "faint" }, `convention ${short(c.convention_id)}: exit ${c.exit_code}`)),
-    b.output_tail && h("details", {}, h("summary", {}, "output"), h("pre", { class: "out" }, b.output_tail)));
+      b.command && h("code", {}, String(b.command))),
+    checks.map((c, i) => h("div", { class: "faint" },
+      `convention ${short(String(c.convention_id ?? "?"))}: exit ${c.exit_code ?? "?"}`,
+      c.output_tail && outEl(String(c.output_tail), `${key}:${i}`, "output"))),
+    b.output_tail && outEl(String(b.output_tail), key, "output"));
 }
 
 function recordEl(r) {
   const tone = KIND_TONE[r.kind] || "gray";
-  const val = r.kind === "validation" && r.body ? validationEl(r.body) : null;
+  const val = r.kind === "validation" && r.body ? validationEl(r.body, "out:" + r.id) : null;
   return h("div", { class: `rec tone-${tone}` + (r.superseded_by ? " superseded" : "") },
     h("div", { class: "rec-h" },
       badge(r.kind, tone),
@@ -1288,7 +1309,7 @@ function receiptEl(rc) {
   const items = rc.items || [];
   const tiers = { full: 0, summary: 0, handle: 0 };
   for (const it of items) tiers[it.tier] = (tiers[it.tier] || 0) + (it.tokens || 0);
-  return h("details", { class: "rcpt" },
+  return h("details", { class: "rcpt", "data-key": "rcpt:" + (rc.id || "") },
     h("summary", {}, `${items.length} items in this pack: `,
       Object.entries(tiers).map(([k, v]) => `${k} ${v}`).join(" · ") + " tokens"),
     h("div", { class: "list" }, items.map(it => h("div", { class: "rcpt-row" },
