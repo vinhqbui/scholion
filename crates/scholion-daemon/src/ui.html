@@ -337,6 +337,7 @@ pre.pack {
 }
 /* needs attention and flow */
 .attention .list { background: var(--surface); box-shadow: var(--shadow-sm); }
+.attention .list .note { margin: 0; padding: 8px 14px; border-top: 1px solid var(--border); }
 .attention[hidden] { display: none; }
 .card.stale { border-left: 3px solid var(--amber); }
 .ctl.sm { height: 26px; font-size: 12px; padding: 0 26px 0 8px; margin-left: auto; }
@@ -707,9 +708,9 @@ function remember(evs) {
   if (S.hist.length > HIST_WINDOW) { S.hist.splice(0, S.hist.length - HIST_WINDOW); S.histCapped = true; }
 }
 // When the task entered its status: its newest transition into it (`payload.to`, or a
-// `status:<status>` event), else its creation. The daemon reckons "since" the same way.
-// An approve keeps the task in review (`from === to`) and does not restart the clock; a claim
-// brings a handed-off task back to open, so it counts as entering `open`.
+// `status:<status>` event), else its creation. An approve keeps the task in review (`from ===
+// to`) and does not restart the clock; a claim brings a handed-off task back to open, so it
+// counts as entering `open`. (The daemon's own "since" counts approvals and not claims.)
 function statusSince(t) {
   const evs = taskEvents(t.id);
   for (let i = evs.length - 1; i >= 0; i--) {
@@ -719,13 +720,13 @@ function statusSince(t) {
   }
   return t.created_at;
 }
-// When an in-review task was approved at its current head (an approve after its newest submit),
-// else null: approved and not merged is a different wait from a review nobody gave.
+// When an in-review task was approved at its current head (an approve after its newest submit
+// or undo), else null: approved and not merged is a different wait from a review nobody gave.
 function approvedAt(t) {
   const evs = taskEvents(t.id);
   for (let i = evs.length - 1; i >= 0; i--) {
     if (evs[i].kind === "approve") return evs[i].at;
-    if (evs[i].kind === "submit") return null;
+    if (evs[i].kind === "submit" || evs[i].kind === "undo") return null;
   }
   return null;
 }
@@ -898,7 +899,7 @@ function agentCard(a) {
   const since = waiting && inStatus(waiting); // empty for another repo's task
   const now = a.open[0] ? a.open[0].title
     : a.reviewing[0] ? "reviewing " + a.reviewing[0].title
-    : a.in_review[0] ? "waiting for review: " + a.in_review[0].title + (since ? ` (${since})` : "")
+    : a.in_review[0] ? (waiting && approvedAt(waiting) ? "waiting to merge: " : "waiting for review: ") + a.in_review[0].title + (since ? ` (${since})` : "")
     : null;
   const last = a.last ? `${a.last.kind}${a.last.text ? ": " + a.last.text : " " + a.last.slug}` : null;
   const tags = [...((p && p.best) || []).map(s => h("span", { class: "tag best", title: "best at" }, s)),
@@ -1125,7 +1126,7 @@ function renderAttention() {
   }
   const owner = t => t.owner_agent || "";
   for (const t of S.tasks.filter(t => t.status === "conflicted").sort(bySince)) {
-    row("conflicted", "conflicted", t.title, `${inStatus(t)} · ${owner(t)} must sync, resolve and resubmit`, () => openTask(t.id));
+    row("conflicted", "conflicted", t.title, [inStatus(t), `${owner(t)} must sync, resolve and resubmit`].filter(Boolean).join(" · "), () => openTask(t.id));
   }
   for (const t of S.tasks.filter(t => t.status === "in_review" && staleness(t)).sort(bySince)) {
     if (approvedAt(t)) row("stale", "approved, not merged", t.title, `${inStatus(t)} · ${owner(t)} can merge it`, () => openTask(t.id));
@@ -1178,9 +1179,13 @@ function period(days) {
   for (let i = 0; i < days; i++) { keys.push(localDay(d)); d.setDate(d.getDate() + 1); }
   return { cutoff, keys };
 }
-// A verdict within this of its submit is the daemon carrying an approval over a resubmit, not a
-// reviewer's wait.
-const CARRIED_MS = 2000;
+// The daemon carries an approval over a resubmit, a validation or a merge of the same task: an
+// approve whose previous verdict was an approve at another head, with no changes requested
+// between. That is no reviewer's wait.
+function carried(ev) {
+  const prev = taskEvents(ev.task_id).filter(e => (e.kind === "approve" || e.kind === "request_changes") && e.id < ev.id).pop();
+  return ev.kind === "approve" && prev && prev.kind === "approve" && prev.change !== ev.change;
+}
 function flowStats(days) {
   const { cutoff, keys } = period(days);
   const daily = new Map(keys.map(k => [k, { started: 0, merged: 0, conflicted: 0, abandon: 0, request_changes: 0 }]));
@@ -1197,8 +1202,7 @@ function flowStats(days) {
       if (t) cycles.push((at - new Date(t.created_at).getTime()) / 1000);
     } else if (ev.kind === "approve" || ev.kind === "request_changes") {
       const sub = taskEvents(ev.task_id).filter(e => e.kind === "submit" && e.id < ev.id).pop();
-      const wait = sub && at - new Date(sub.at).getTime();
-      if (sub && wait >= CARRIED_MS) waits.push(wait / 1000);
+      if (sub && !carried(ev)) waits.push((at - new Date(sub.at).getTime()) / 1000);
     }
   }
   const rows = [...daily.values()];
