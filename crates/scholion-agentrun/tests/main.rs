@@ -5,3 +5,4 @@
 mod command;
 mod events;
 mod process;
+mod slots;
