@@ -204,8 +204,8 @@ select.ctl {
 .meter { flex: 1; min-width: 60px; height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
 .meter > i { display: block; height: 100%; border-radius: inherit; background: var(--tone, var(--accent)); transition: width .3s; }
 
-/* board + sidebar */
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
+/* teams column + board + sidebar */
+.layout { display: grid; grid-template-columns: 264px minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
 @media (max-width: 1180px) { .layout { grid-template-columns: minmax(0, 1fr); } }
 .board {
   display: grid; grid-auto-flow: column; grid-auto-columns: minmax(184px, 1fr); gap: 10px;
@@ -232,6 +232,15 @@ select.ctl {
 
 .side { display: grid; gap: 16px; position: sticky; top: 76px; max-height: calc(100dvh - 92px); overflow-y: auto; overscroll-behavior: contain; }
 @media (max-width: 1180px) { .side { position: static; max-height: none; } }
+/* the teams column: desks stacked; below 1180px it goes back above the board as a row of desks */
+.side-left { gap: 0; }
+.side-left .sec-h { flex-wrap: wrap; }
+.side-left .sec-h .hint { flex-basis: 100%; }
+.side-left .agents { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 1180px) {
+  .side-left { order: -1; }
+  .side-left .agents { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+}
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm); }
 .panel-h { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
 .panel-h h2 { margin: 0; font-size: 13px; font-weight: 650; }
@@ -379,13 +388,12 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
 
   <section id="summary" class="summary" aria-label="Summary"></section>
 
-  <section aria-labelledby="teamsH">
-    <div class="sec-h"><h2 id="teamsH">Teams</h2><span id="teamsCount" class="count">0</span>
-      <span class="hint">One desk per agent. Select one for its timeline.</span></div>
-    <div id="teams" class="agents"><div class="empty">No teams yet.</div></div>
-  </section>
-
   <div class="layout">
+    <aside class="side side-left" aria-labelledby="teamsH">
+      <div class="sec-h"><h2 id="teamsH">Teams</h2><span id="teamsCount" class="count">0</span>
+        <span class="hint">One desk per agent. Select one for its timeline.</span></div>
+      <div id="teams" class="agents"><div class="empty">No teams yet.</div></div>
+    </aside>
     <section aria-labelledby="boardH">
       <div class="sec-h"><h2 id="boardH">Tasks</h2><span id="tasksCount" class="count">0</span></div>
       <div class="board" id="board" aria-label="Tasks by status"></div>

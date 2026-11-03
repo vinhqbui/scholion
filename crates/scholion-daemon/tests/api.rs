@@ -2985,6 +2985,10 @@ async fn ui_page_reads_the_team_profiles() {
         html.contains("max_open"),
         "the page shows a team's open-task limit"
     );
+    assert!(
+        html.contains("class=\"side side-left\""),
+        "the teams are a column left of the board"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
