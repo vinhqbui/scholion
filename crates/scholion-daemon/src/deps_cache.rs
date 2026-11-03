@@ -324,6 +324,13 @@ fn place_units(src: &Path, dst: &Path, units: &Units, strict: bool) -> io::Resul
         if linked {
             match std::fs::hard_link(&from, &to) {
                 Ok(()) => {
+                    if !strict {
+                        // the cache keeps whole seconds (see `copy_file`); unrounded, the
+                        // units above this one would rebuild, nothing worse
+                        if let Err(e) = to_whole_second(&to) {
+                            tracing::debug!(file = %to.display(), error = %e, "time not rounded");
+                        }
+                    }
                     placed.linked += 1;
                     placed.bytes += len(&to);
                 }
@@ -373,7 +380,7 @@ fn copy_new(from: &Path, to: &Path) -> io::Result<bool> {
         return Ok(false);
     }
     let tmp = temp_beside(to);
-    std::fs::copy(from, &tmp)?;
+    copy_file(from, &tmp)?;
     if std::fs::symlink_metadata(to).is_ok() {
         std::fs::remove_file(&tmp)?;
         return Ok(false);
@@ -417,11 +424,41 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<Placed> {
         if kind.is_dir() {
             placed.add(copy_tree(&entry.path(), &dst)?);
         } else if kind.is_file() {
-            placed.bytes += std::fs::copy(entry.path(), &dst)?;
+            placed.bytes += copy_file(&entry.path(), &dst)?;
             placed.copied += 1;
         }
     }
     Ok(placed)
+}
+
+/// `std::fs::copy` keeping the times, rounded down to the second: cargo judges a unit stale when
+/// a dependency's output is newer than its own, so a copy stamped "now" (a build script's
+/// `output`, say) would make everything above it rebuild. Rounded because some filesystems
+/// (Docker Desktop's mount of a Windows drive) drop the fraction of a time that is set but keep
+/// that of a file they create: a copy could then predate the library it was built after. Rounding
+/// every file of the cache the same way keeps their order, and cargo takes equal times as fresh.
+fn copy_file(from: &Path, to: &Path) -> io::Result<u64> {
+    let bytes = std::fs::copy(from, to)?;
+    let meta = std::fs::metadata(from)?;
+    filetime::set_file_times(
+        to,
+        whole_second(filetime::FileTime::from_last_access_time(&meta)),
+        whole_second(filetime::FileTime::from_last_modification_time(&meta)),
+    )?;
+    Ok(bytes)
+}
+
+fn whole_second(t: filetime::FileTime) -> filetime::FileTime {
+    filetime::FileTime::from_unix_time(t.unix_seconds(), 0)
+}
+
+/// Rounds a file's modification time down to the second, as `copy_file` does.
+fn to_whole_second(p: &Path) -> io::Result<()> {
+    let meta = std::fs::metadata(p)?;
+    filetime::set_file_mtime(
+        p,
+        whole_second(filetime::FileTime::from_last_modification_time(&meta)),
+    )
 }
 
 #[cfg(test)]
@@ -429,6 +466,78 @@ mod tests {
     use super::*;
 
     const REG: &str = "/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+
+    /// Cargo compares a unit's outputs' mtimes with its dependencies': a copy stamped "now"
+    /// makes everything that depends on it stale (a live run rebuilt 252 of 263 crates so).
+    #[test]
+    fn copies_keep_the_modification_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = filetime::FileTime::from_unix_time(1_700_000_000, 0);
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("out")).unwrap();
+        for f in ["output", "out/gen.rs"] {
+            std::fs::write(src.join(f), b"x").unwrap();
+            filetime::set_file_times(src.join(f), old, old).unwrap();
+        }
+        let mtime = |p: &Path| {
+            filetime::FileTime::from_last_modification_time(&std::fs::metadata(p).unwrap())
+        };
+        assert!(copy_new(&src.join("output"), &dir.path().join("one")).unwrap());
+        assert_eq!(mtime(&dir.path().join("one")), old);
+        copy_dir_new(&src, &dir.path().join("tree")).unwrap();
+        assert_eq!(mtime(&dir.path().join("tree/output")), old);
+        assert_eq!(mtime(&dir.path().join("tree/out/gen.rs")), old);
+    }
+
+    #[test]
+    fn the_cache_keeps_whole_seconds_so_copies_never_predate_links() {
+        // Some filesystems (Docker Desktop's mount of a Windows drive) keep a new file's
+        // sub-second time but drop it when a time is set: a copy then lands up to a second
+        // before the library it was built after, and cargo rebuilds everything above it.
+        let dir = tempfile::tempdir().unwrap();
+        let prof = dir.path().join("target/debug");
+        let hash = "a266d54d01e4376a";
+        let fp = prof.join(format!(".fingerprint/serde-{hash}"));
+        std::fs::create_dir_all(&fp).unwrap();
+        std::fs::create_dir_all(prof.join("deps")).unwrap();
+        let rlib = prof.join(format!("deps/libserde-{hash}.rlib"));
+        let dinfo = prof.join(format!("deps/serde-{hash}.d"));
+        std::fs::write(&rlib, b"rlib").unwrap();
+        std::fs::write(
+            &dinfo,
+            format!(
+                "{}: {REG}/serde-1.0/src/lib.rs\n\n{REG}/serde-1.0/src/lib.rs:\n",
+                rlib.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(fp.join("lib-serde"), b"fp").unwrap();
+        std::fs::write(fp.join("lib-serde.json"), b"{}").unwrap();
+        let at = |s, ns| filetime::FileTime::from_unix_time(s, ns);
+        filetime::set_file_mtime(&rlib, at(1_700_000_000, 242_000_000)).unwrap();
+        for f in [
+            dinfo.clone(),
+            fp.join("lib-serde"),
+            fp.join("lib-serde.json"),
+        ] {
+            filetime::set_file_mtime(f, at(1_700_000_000, 900_000_000)).unwrap();
+        }
+        let cache = dir.path().join("cache");
+        let placed = harvest(&dir.path().join("target"), &cache).unwrap();
+        assert_eq!((placed.linked, placed.copied), (1, 3), "{placed:?}");
+        let mtime = |p: PathBuf| {
+            filetime::FileTime::from_last_modification_time(&std::fs::metadata(p).unwrap())
+        };
+        let c = cache.join("debug");
+        for f in [
+            c.join(format!("deps/libserde-{hash}.rlib")),
+            c.join(format!("deps/serde-{hash}.d")),
+            c.join(format!(".fingerprint/serde-{hash}/lib-serde")),
+            c.join(format!(".fingerprint/serde-{hash}/lib-serde.json")),
+        ] {
+            assert_eq!(mtime(f.clone()), at(1_700_000_000, 0), "{}", f.display());
+        }
+    }
 
     #[test]
     fn a_registry_crate_is_external() {

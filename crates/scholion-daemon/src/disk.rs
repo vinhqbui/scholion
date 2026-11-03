@@ -244,61 +244,172 @@ fn deps_cache_dir(st: &AppState, repo: &str) -> Result<PathBuf> {
     under_ws_root(st, &[repo, BUILD_CACHE, crate::deps_cache::DIR])
 }
 
-/// Puts the dependencies `task`'s build output holds into its repo's deps cache before the
-/// output is removed; the bytes placed. A failure is logged: the build output still goes.
-async fn keep_dependencies(st: &AppState, task: &Task) -> u64 {
-    if !st.build_cache {
-        return 0;
-    }
-    let (Ok(target), Ok(cache)) = (
-        under_ws_root(st, &[&task.repo, &task.slug, BUILD_DIR]),
-        deps_cache_dir(st, &task.repo),
-    ) else {
-        return 0;
-    };
-    if !exists(&target) {
-        return 0;
-    }
-    match tokio::task::spawn_blocking(move || crate::deps_cache::harvest(&target, &cache)).await {
-        Ok(Ok(placed)) => placed.bytes,
-        Ok(Err(e)) => {
-            tracing::warn!(task = %task.slug, error = %e, "keeping the dependencies failed");
-            0
-        }
-        Err(e) => {
-            tracing::warn!(task = %task.slug, error = %e, "keeping the dependencies failed");
-            0
+/// Under `<repo>/.cache/`: build output on its way out of a workspace, and a seed being built.
+const RECLAIM: &str = "reclaim";
+const SEED: &str = "seed";
+
+/// A fresh staging dir `<repo>/.cache/<kind>/<slug>-<ms>-<n>`: on the workspaces' filesystem, so
+/// a `target/` moves there or back with one rename (instant on any mount, where copying the
+/// thousands of files a Rust build holds takes a minute on Docker Desktop's).
+fn staging(st: &AppState, repo: &str, kind: &str, slug: &str) -> Result<PathBuf> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = format!("{slug}-{}-{n}", Utc::now().timestamp_millis());
+    under_ws_root(st, &[repo, BUILD_CACHE, kind, &name])
+}
+
+/// Removes the staging dirs a daemon that stopped mid-job left (start-up: no job runs then).
+pub(crate) async fn clear_staging(st: &AppState, repo: &str) {
+    for kind in [RECLAIM, SEED] {
+        let Ok(dir) = under_ws_root(st, &[repo, BUILD_CACHE, kind]) else {
+            continue;
+        };
+        if exists(&dir)
+            && let Err(e) = remove_tree(dir).await
+        {
+            tracing::warn!(%repo, error = %e, "removing leftover build output failed");
         }
     }
 }
 
-/// Gives `task`'s new or restored workspace the repo's built dependencies (its `target/`
-/// starts with them). A failure is logged: cargo builds what is missing.
-pub(crate) async fn seed_dependencies(st: &AppState, task: &Task) {
+/// Takes `task`'s `target/` out of its workspace; says whether it had one. With the build cache
+/// on, the dir is moved aside (one rename) and a background job keeps its dependencies in the
+/// repo's deps cache, removes it and adds `build:reclaimed`; with it off, or if the move fails,
+/// it is removed here and the event added at once.
+async fn retire_build(st: &AppState, task: &Task) -> Result<bool> {
+    let target = under_ws_root(st, &[&task.repo, &task.slug, BUILD_DIR])?;
+    if !exists(&target) {
+        return Ok(false);
+    }
+    if st.build_cache {
+        let aside = staging(st, &task.repo, RECLAIM, &task.slug)?;
+        let moved = aside
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::rename(&target, &aside));
+        match moved {
+            Ok(()) => {
+                let (st, task) = (st.clone(), task.clone());
+                tokio::spawn(async move { finish_retire(&st, &task, aside).await });
+                return Ok(true);
+            }
+            Err(e) => {
+                tracing::warn!(task = %task.slug, error = %e, "moving the build output aside failed")
+            }
+        }
+    }
+    let bytes = measure(target.clone()).await;
+    remove_tree(target).await?;
+    st.store
+        .add_event(
+            &task.repo,
+            "build:reclaimed",
+            Some(task.id),
+            json!({"slug": task.slug, "bytes": bytes, "cached_bytes": 0}),
+        )
+        .await?;
+    Ok(true)
+}
+
+/// The background half of `retire_build`.
+async fn finish_retire(st: &AppState, task: &Task, aside: PathBuf) {
+    let bytes = measure(aside.clone()).await;
+    let cached_bytes = match deps_cache_dir(st, &task.repo) {
+        Ok(cache) => {
+            let from = aside.clone();
+            match tokio::task::spawn_blocking(move || crate::deps_cache::harvest(&from, &cache))
+                .await
+            {
+                Ok(Ok(placed)) => placed.bytes,
+                Ok(Err(e)) => {
+                    tracing::warn!(task = %task.slug, error = %e, "keeping the dependencies failed");
+                    0
+                }
+                Err(e) => {
+                    tracing::warn!(task = %task.slug, error = %e, "keeping the dependencies failed");
+                    0
+                }
+            }
+        }
+        Err(_) => 0,
+    };
+    if let Err(e) = remove_tree(aside).await {
+        tracing::warn!(task = %task.slug, error = %e, "removing the build output failed");
+    }
+    let payload = json!({"slug": task.slug, "bytes": bytes, "cached_bytes": cached_bytes});
+    if let Err(e) = st
+        .store
+        .add_event(&task.repo, "build:reclaimed", Some(task.id), payload)
+        .await
+    {
+        tracing::warn!(task = %task.slug, error = %e, "recording build:reclaimed failed");
+    }
+}
+
+/// Gives `task`'s new or restored workspace the repo's built dependencies, in the background:
+/// the seed is built in a staging dir and moved in whole as the workspace's `target/`, unless by
+/// then the workspace is gone or has a `target/` of its own (the agent started building), so
+/// cargo never sees half a seed. The feed gets `build:seeded`.
+pub(crate) fn seed_dependencies(st: &AppState, task: &Task) {
     if !st.build_cache {
         return;
     }
-    let (Ok(cache), Ok(target)) = (
-        deps_cache_dir(st, &task.repo),
-        under_ws_root(st, &[&task.repo, &task.slug, BUILD_DIR]),
-    ) else {
+    let Ok(cache) = deps_cache_dir(st, &task.repo) else {
         return;
     };
     if !exists(&cache) {
         return;
     }
-    match tokio::task::spawn_blocking(move || crate::deps_cache::seed(&cache, &target)).await {
-        Ok(Ok(placed)) => tracing::info!(
-            task = %task.slug,
-            linked = placed.linked,
-            copied = placed.copied,
-            "seeded the build output with the repo's dependencies"
-        ),
-        Ok(Err(e)) => {
-            tracing::warn!(task = %task.slug, error = %e, "seeding the dependencies stopped")
+    let (st, task) = (st.clone(), task.clone());
+    tokio::spawn(async move {
+        if let Err(e) = seed_job(&st, &task, cache).await {
+            tracing::warn!(task = %task.slug, error = %e, "seeding the dependencies failed");
         }
-        Err(e) => tracing::warn!(task = %task.slug, error = %e, "seeding the dependencies failed"),
+    });
+}
+
+async fn seed_job(st: &AppState, task: &Task, cache: PathBuf) -> Result<()> {
+    let ws = under_ws_root(st, &[&task.repo, &task.slug])?;
+    let staged = staging(st, &task.repo, SEED, &task.slug)?;
+    let into = staged.clone();
+    let built = tokio::task::spawn_blocking(move || crate::deps_cache::seed(&cache, &into))
+        .await
+        .map_err(|e| AvError::Vcs(e.to_string()))?;
+    let (placed, skipped) = match built {
+        Ok(placed) => {
+            let _held = st.lock_task(task.id).await;
+            let target = ws.join(BUILD_DIR);
+            if !exists(&ws) {
+                (placed, Some("the workspace is gone"))
+            } else if exists(&target) {
+                (placed, Some("the workspace has a target/ already"))
+            } else {
+                match std::fs::rename(&staged, &target) {
+                    Ok(()) => (placed, None),
+                    Err(e) => {
+                        tracing::warn!(task = %task.slug, error = %e, "moving the seed in failed");
+                        (placed, Some("moving it in failed"))
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(task = %task.slug, error = %e, "building the seed stopped");
+            (Default::default(), Some("building it failed"))
+        }
+    };
+    if exists(&staged) {
+        remove_tree(staged).await?;
     }
+    let payload = match skipped {
+        None => json!({"slug": task.slug, "linked": placed.linked, "copied": placed.copied,
+                       "bytes": placed.bytes}),
+        Some(why) => json!({"slug": task.slug, "skipped": why}),
+    };
+    st.store
+        .add_event(&task.repo, "build:seeded", Some(task.id), payload)
+        .await?;
+    Ok(())
 }
 
 async fn remove_tree(p: PathBuf) -> Result<()> {
@@ -340,9 +451,11 @@ async fn reclaim_locked(st: &AppState, task: &Task, dry_run: bool) -> Result<Opt
     let build_bytes = measure(dir.join(BUILD_DIR)).await;
     let bytes = measure(dir.clone()).await + measure(scratch.clone()).await;
     if !dry_run {
-        let mut cached_bytes = 0;
         if has_dir {
-            cached_bytes = keep_dependencies(st, task).await;
+            // its target/ first, so the dependencies are kept and the slow part runs apart
+            if let Err(e) = retire_build(st, task).await {
+                tracing::warn!(task = %task.slug, error = %e, "taking the build output out failed");
+            }
             st.vcs.remove_workspace(&task.repo, &task.slug).await?;
         }
         if has_scratch {
@@ -353,8 +466,7 @@ async fn reclaim_locked(st: &AppState, task: &Task, dry_run: bool) -> Result<Opt
                 &task.repo,
                 "workspace:reclaimed",
                 Some(task.id),
-                json!({"slug": task.slug, "bytes": bytes, "build_bytes": build_bytes,
-                       "cached_bytes": cached_bytes}),
+                json!({"slug": task.slug, "bytes": bytes, "build_bytes": build_bytes}),
             )
             .await?;
     }
@@ -484,36 +596,15 @@ pub(crate) async fn reclaim_task(st: &AppState, task: &Task) -> (&'static str, &
             }
         },
         None => ("kept", "kept"),
-        Some(_) => match reclaim_build(st, task).await {
-            Ok(Some(_)) => ("kept", "removed"),
-            Ok(None) => ("kept", "none"),
+        Some(_) => match retire_build(st, task).await {
+            Ok(true) => ("kept", "removed"),
+            Ok(false) => ("kept", "none"),
             Err(e) => {
                 tracing::warn!(task = %task.slug, error = %e, "removing the build output failed");
                 ("kept", "kept")
             }
         },
     }
-}
-
-/// Removes the build output of `task`'s workspace and says how many bytes went; `None` when it
-/// had none. The feed gets `build:reclaimed`.
-async fn reclaim_build(st: &AppState, task: &Task) -> Result<Option<u64>> {
-    let dir = under_ws_root(st, &[&task.repo, &task.slug, BUILD_DIR])?;
-    if !exists(&dir) {
-        return Ok(None);
-    }
-    let bytes = measure(dir.clone()).await;
-    let cached_bytes = keep_dependencies(st, task).await;
-    remove_tree(dir).await?;
-    st.store
-        .add_event(
-            &task.repo,
-            "build:reclaimed",
-            Some(task.id),
-            json!({"slug": task.slug, "bytes": bytes, "cached_bytes": cached_bytes}),
-        )
-        .await?;
-    Ok(Some(bytes))
 }
 
 /// Re-creates the workspace of `task` at its head when it was reclaimed (an undo or revert
@@ -530,7 +621,7 @@ pub(crate) async fn ensure_workspace(st: &AppState, task: &Task) -> Result<&'sta
     st.vcs
         .restore_workspace(&task.repo, &task.slug, &task.head_change)
         .await?;
-    seed_dependencies(st, task).await;
+    seed_dependencies(st, task);
     Ok("restored")
 }
 

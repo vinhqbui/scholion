@@ -678,8 +678,13 @@ rewritten in place. A unit goes into the cache only when its dep-info lists sour
 registry or git checkouts; the repo's own crates never do (their artifacts would be taken as
 fresh in another workspace). An entry already in the cache is kept; the cache only grows until
 `av gc --build-cache` removes `<repo>/.cache`, and workspaces keep their links. `av disk` counts a
-linked file once, under the repo's build cache; the feed's `build:reclaimed` and
-`workspace:reclaimed` say how much went into the cache (`cached_bytes`). Hard links need the
+linked file once, under the repo's build cache. Both steps run in the background, so a merge or a
+new task answers at once: the merge moves `target/` aside into `<repo>/.cache/reclaim/` and the
+feed's `build:reclaimed` says, when the harvest is done, how much went into the cache
+(`cached_bytes`); a new task's `target/` is built in `<repo>/.cache/seed/` and moved into the
+workspace in one rename (`build:seeded`), unless the agent's first build made a `target/` first.
+While they run, `av disk` shows those dirs under the build cache; a daemon that stops in between
+removes them when it starts. Hard links need the
 workspaces and the cache on one filesystem (they are: both under `ws_root`); where linking fails,
 a workspace simply starts without them. `AV_BUILD_CACHE=off` keeps and seeds nothing.
 

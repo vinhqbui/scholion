@@ -318,20 +318,9 @@ async fn a_merge_removes_the_build_output_and_keeps_the_workspace() {
     assert_eq!(merge["build"], "removed", "{merge}");
     assert!(!target.exists());
     assert!(ws_dir(&e, &t).join("app/greeter.py").exists());
-    let (_, events) = call(
-        &e.app,
-        "GET",
-        "/v1/events?repo=demo&since=0&limit=500",
-        None,
-    )
-    .await;
-    let ev = events["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|ev| ev["kind"] == "build:reclaimed")
-        .unwrap_or_else(|| panic!("{events}"));
-    assert_eq!(ev["payload"]["bytes"], 8192, "{events}");
+    // measured and removed in the background, after the answer
+    let ev = feed_event(&e, "build:reclaimed").await;
+    assert_eq!(ev["payload"]["bytes"], 8192, "{ev}");
     // the workspace still follows the retention
     let (_, disk) = call(&e.app, "GET", "/v1/disk", None).await;
     let w = listed(&disk["repos"][0]["workspaces"], &t).unwrap_or_else(|| panic!("{disk}"));
@@ -967,21 +956,33 @@ fn own_entries() -> Vec<String> {
     ]
 }
 
+/// The first `kind` event of repo `demo`, waiting up to 20 s for it: moving build output out and
+/// seeding it in run in the background (on a slow mount they take a minute), after the answer.
 async fn feed_event(e: &Env, kind: &str) -> Value {
-    let (_, events) = call(
-        &e.app,
-        "GET",
-        "/v1/events?repo=demo&since=0&limit=500",
-        None,
-    )
-    .await;
-    events["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|ev| ev["kind"] == kind)
-        .cloned()
-        .unwrap_or_else(|| panic!("no {kind} in {events}"))
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, events) = call(
+            &e.app,
+            "GET",
+            "/v1/events?repo=demo&since=0&limit=500",
+            None,
+        )
+        .await;
+        let found = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ev| ev["kind"] == kind)
+            .cloned();
+        if let Some(ev) = found {
+            return ev;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no {kind} in {events}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -993,6 +994,8 @@ async fn a_merge_keeps_the_dependencies_in_the_repos_deps_cache_and_never_the_re
     assert_eq!(status, StatusCode::OK, "{merge}");
     assert_eq!(merge["build"], "removed", "{merge}");
     assert!(!target.exists());
+    // kept and removed in the background, after the answer
+    let ev = feed_event(&e, "build:reclaimed").await;
     let cache = deps_cache(&e);
     for entry in shared_entries() {
         assert!(
@@ -1006,7 +1009,9 @@ async fn a_merge_keeps_the_dependencies_in_the_repos_deps_cache_and_never_the_re
             "{entry} must stay out of the deps cache"
         );
     }
-    let ev = feed_event(&e, "build:reclaimed").await;
+    // nothing is left on its way out
+    let aside = e.ws.path().join("demo/.cache/reclaim");
+    assert_eq!(std::fs::read_dir(&aside).map(|d| d.count()).unwrap_or(0), 0);
     assert!(
         ev["payload"]["cached_bytes"].as_u64().unwrap() >= 4096 + 1024 + 512 + 256,
         "{ev}"
@@ -1020,7 +1025,12 @@ async fn a_new_task_starts_with_the_dependencies_linked_and_their_mutable_files_
     cargo_build_in(&e, &t);
     let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
     assert_eq!(status, StatusCode::OK, "{merge}");
+    feed_event(&e, "build:reclaimed").await;
     let t2 = start_task(&e, "Wave goodbye").await;
+    // built aside and moved in whole, after start_task answered
+    let ev = feed_event(&e, "build:seeded").await;
+    assert_eq!(ev["payload"]["slug"], slug(&t2), "{ev}");
+    assert!(ev["payload"]["linked"].as_u64().unwrap() >= 2, "{ev}");
     let seeded = ws_dir(&e, &t2).join("target/debug");
     for entry in shared_entries() {
         assert!(seeded.join(&entry).exists(), "{entry} should be seeded");
@@ -1088,6 +1098,7 @@ async fn an_entry_already_in_the_deps_cache_is_never_replaced() {
     cargo_build_in(&e, &t);
     let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
     assert_eq!(status, StatusCode::OK, "{merge}");
+    feed_event(&e, "build:reclaimed").await;
     assert_eq!(std::fs::read(&rlib).unwrap(), b"first");
     assert_eq!(std::fs::read(&fingerprint).unwrap(), b"first");
     // and what was missing is still added
@@ -1106,6 +1117,7 @@ async fn retain_zero_keeps_the_dependencies_too() {
     let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
     assert_eq!(status, StatusCode::OK, "{merge}");
     assert_eq!(merge["workspace"], "removed", "{merge}");
+    feed_event(&e, "build:reclaimed").await;
     assert!(
         deps_cache(&e)
             .join(format!("deps/libserde-{SERDE_LIB}.rlib"))
@@ -1126,4 +1138,33 @@ async fn build_cache_off_neither_keeps_nor_links_dependencies() {
     std::fs::write(&rlib, b"by hand").unwrap();
     let t2 = start_task(&e, "Wave goodbye").await;
     assert!(!ws_dir(&e, &t2).join("target").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn start_up_removes_build_output_a_stopped_daemon_left_on_its_way_in_or_out() {
+    let slot: Arc<std::sync::Mutex<Option<AppState>>> = Arc::default();
+    let keep = slot.clone();
+    let e = env_with(move |s| {
+        *keep.lock().unwrap() = Some(s.clone());
+        s
+    })
+    .await;
+    let t = start_task(&e, "Wave hello").await;
+    let _ = t;
+    let cache = e.ws.path().join("demo/.cache");
+    for left in [
+        "reclaim/wave-hello-1-0/debug/deps",
+        "seed/wave-hello-2-1/debug/deps",
+    ] {
+        std::fs::create_dir_all(cache.join(left)).unwrap();
+        std::fs::write(cache.join(left).join("libx-a266d54d01e4376a.rlib"), [0; 64]).unwrap();
+    }
+    let kept = cache.join("deps-target/debug/deps/libserde-a266d54d01e4376a.rlib");
+    std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+    std::fs::write(&kept, b"cached").unwrap();
+    let state = slot.lock().unwrap().clone().unwrap();
+    scholion_daemon::sync_repos(&state).await.unwrap();
+    assert!(!cache.join("reclaim").exists());
+    assert!(!cache.join("seed").exists());
+    assert_eq!(std::fs::read(&kept).unwrap(), b"cached");
 }

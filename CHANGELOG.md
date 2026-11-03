@@ -34,7 +34,7 @@
     output copied (those are rewritten in place). Measured on this repo: a seeded full `cargo
     test` build adds 1.2 GB instead of 2.4 GB and takes 15 s instead of 38 s, no dependency
     recompiled. The repo's own crates never enter the cache. `av disk` counts a linked file
-    once; `build:reclaimed` and `workspace:reclaimed` carry `cached_bytes`; `av gc
+    once; both steps run in the background (`build:reclaimed` with `cached_bytes`, `build:seeded`); `av gc
     --build-cache` empties the cache; `AV_BUILD_CACHE=off` keeps and seeds nothing.
   - **`av convention add` warns when a required check is scoped to every path** (`**`): such a
     check runs for every task, so a docs-only change pays the full build (the run's docs-only task

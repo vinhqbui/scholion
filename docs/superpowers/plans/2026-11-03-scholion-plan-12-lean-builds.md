@@ -131,18 +131,52 @@ What the design rests on, each checked:
 
 - `deps_cache.rs`: `harvest(target, cache)` and `seed(cache, target)`, file operations only (the
   daemon still never runs cargo), with unit tests for the dep-info rule and the names.
-- `disk.rs`: `reclaim_build` and `reclaim_locked` harvest before they remove (`cached_bytes` in
-  `build:reclaimed` / `workspace:reclaimed`); `prepare_workspace` (`api.rs`) and
-  `ensure_workspace` seed; `GET /v1/disk` counts a file with several links once, measuring each
-  repo's build cache before its workspaces. All behind `AV_BUILD_CACHE` (on by default).
+- `disk.rs`: both run in the background, because on `D:\ws` (9p) each took 53–73 s of small-file
+  work and the merge or `start_task` waited for it. `retire_build` renames a task's `target/` into
+  `<repo>/.cache/reclaim/<slug>-…` (one rename; the merge answers at once), then harvests from
+  there and removes it; `build:reclaimed` carries `cached_bytes` when that is done.
+  `seed_dependencies` (from `prepare_workspace` in `api.rs` and `ensure_workspace`) builds the new
+  `target/` in `<repo>/.cache/seed/<slug>-…` and, under `lock_task`, renames it into the workspace
+  only if the workspace still exists and has no `target/` (an agent that builds first keeps its
+  own); `build:seeded` says `linked`/`copied` or `skipped`. `sync_repos` removes both staging dirs
+  at start-up. `GET /v1/disk` counts a file with several links once, measuring each repo's build
+  cache (staging included) before its workspaces. All behind `AV_BUILD_CACHE` (on by default).
+- **File times.** `std::fs::copy` stamps a copy "now", and cargo takes a unit as stale when a
+  dependency's output is newer than its own, so copies keep the source's times (`filetime`). On
+  `D:\ws` that was still not enough: the mount keeps the fraction of a second of a file it
+  creates but drops it from a time that is set, so a copied build script landed up to a second
+  before the linked library it was built after, and 18 dependencies above `generic-array`
+  rebuilt (cargo's fingerprint log: `StaleDependency`, dep `…177.242` vs `…177.000`). Every file
+  the harvest places in the cache, linked or copied, is now rounded down to the whole second:
+  rounding keeps every order (`a ≤ b` stays `a ≤ b`) and cargo takes equal times as fresh.
 - Tests in `tests/disk.rs`: a cargo-like fixture `target/` (a registry crate with its build script
   and run, the repo's own crate with its test binary and build script): the merge keeps the
   former and never the latter; a new task gets libraries linked (same inode) and `.d`,
   fingerprints and `build/` copied; an entry already in the cache is never replaced; retention 0
-  harvests too; `AV_BUILD_CACHE=off` keeps and seeds nothing; `av disk` counts the links once.
+  harvests too; `AV_BUILD_CACHE=off` keeps and seeds nothing; `av disk` counts the links once;
+  start-up removes what a stopped daemon left in `reclaim/` and `seed/`. Unit tests: copies keep
+  their times, and the cache holds whole seconds.
 
-Expected for this repo: a task's build output 1.2 GB while open (from 2.4 GB) and a 15 s full
-build instead of 38 s; the cache about 1.4 GB per repo, once. Run 1's 20 GB per task is now 1.2 GB.
+### Live check (2026-11-03, daemon from this branch, ws root on the `D:\ws` 9p mount)
+
+Two tasks on a copy of this repo, the bar `cargo test --workspace --no-run`, 6 build jobs:
+
+| | before the background jobs and the rounding | now |
+|---|---|---|
+| task A, full build from nothing | 91 s, 416 crates, 2.4 GB | same |
+| A's merge answers | 73 s | 1–5 s; the harvest finishes 72–80 s later in the background |
+| task B's `start_task` answers | 68 s | 6–7 s; the seed finishes 60–67 s later |
+| B's full build, seeded | 49 s, 29 crates (18 of them dependencies) | 42 s, 11 crates: the repo's own, no dependency |
+| D: used by B's `target/` | 1.33 GB | 1.21 GB (2.4 GB apparent) |
+| cache | 1.3 GB, 3881 files, no own crate | same |
+| cache files changed by B's build | 0 | 0 |
+
+So run 1's 20 GB per task is 1.2 GB while a task is open and 0 B once it is merged, plus one
+1.3 GB cache per repo.
+
+Left open: a seed takes about a minute on `D:\ws`; an agent that runs cargo before it lands
+builds its own `target/` from nothing (the seed is then skipped, never mixed in). Workspace slots
+(Task 4) would keep a warm `target/` instead and need no seed.
 
 ## Task 6: scholion's own test binaries
 
