@@ -199,6 +199,10 @@ process RSS sampled every 0.25 s with the container's cgroup `memory.stat` besid
 | largest single process | 1.2 GB (rustc) | 1.1 GB (rustc) |
 | file cache charged to the container at peak | 2.8 GB | 5.4 GB (started with the first run's cache) |
 
+Running the tests afterwards (`cargo test --workspace` on that warm target, against the test
+Postgres container): 97 s, 266 MB of process memory at peak, the test Postgres about 0.2 GB. So
+the build, not the test run, is what a full-bar check costs in memory.
+
 The rest of the stack, idle: daemon 15 MB, its Postgres 37 MB, Qdrant 103 MB, TEI 1.2 GB (one
 each per host, not per agent). One Claude Code CLI on Windows: 0.5 GB working set, 0.8 GB private.
 
