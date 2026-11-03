@@ -41,9 +41,10 @@
   running. A Disk panel (`GET /v1/disk`, read at start, on its button and every five minutes)
   shows what workspaces, build caches, the store and scratch dirs take, the repo's workspaces
   largest first with the ones a sweep would reclaim, and what sessions left outside any
-  workspace; a session that left 512 MiB or more gets a "Needs attention" row. The page never
-  deletes. When the daemon goes away, the page asks `/healthz` every five seconds and starts over
-  once it answers.
+  workspace; a session of this repo that left 512 MiB or more (the hooks' default) in the last
+  day gets a "Needs attention" row. The page never deletes. When the page cannot load (the daemon
+  is away at start, or the history cannot be read) it asks `/healthz` every five seconds and
+  starts over once it answers; a feed that drops mid-session keeps reconnecting as before.
 - **What needs attention, and how the work flows.** Every task card says how long it has been in
   its status ("in review 3h", "approved 20m" once its review is given), and a card goes amber once
   it is stuck (a submit with no verdict for 2 h, an approval not merged for an hour, a handoff
