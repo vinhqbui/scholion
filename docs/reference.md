@@ -533,14 +533,16 @@ limit, what it is on now, what it did last, and whether it is working, reviewing
 holding open tasks it has not written to for a whole lease, so `next` offers them to others), tasks
 by status in the middle, and on the right the repo's targets with their progress (overdue ones in
 red), the backlog and a live activity feed (the `/v1/events` long-poll); for each task its records,
-changed files, claim and review state. On a narrow window the three columns stack: teams, tasks,
-then the side panels. Click a desk (or a task's owner) for that agent's timeline: the records it wrote, the
+changed files, claim and review state. The three columns need a window 1560 px wide; narrower, the
+desks are a row above the board, and below 1180 px everything stacks. Click a desk (or a task's owner) for that agent's timeline: the records it wrote, the
 tasks it started and claimed, its review verdicts, its submits and its merges, newest first. It is
 built from what Scholion already keeps; nothing extra is recorded, and no cost is tracked. "Build
 context pack" shows exactly what the next agent would receive at a given budget.
 The page is read-only and built into the daemon (no Node, no build step); with `AV_TOKEN` set it asks
-for the token once per browser tab. It reads `GET /v1/tasks` (`?repo=`, `?status=`, `?limit=`),
-`GET /v1/tasks/{id}/records`, `GET /v1/backlog`, `GET /v1/targets` (`?repo=`,
+for the token once per browser tab. It reads `GET /v1/repos`, `GET /v1/repos/{name}/health`,
+`GET /v1/tasks` (`?repo=`, `?status=`, `?limit=`), `GET /v1/tasks/{id}`,
+`GET /v1/tasks/{id}/records`, `GET /v1/tasks/{id}/unrecorded`, `GET /v1/tasks/{id}/context`,
+`GET /v1/tasks/{id}/bundle`, `GET /v1/events`, `GET /v1/backlog`, `GET /v1/targets` (`?repo=`,
 `?status=active|done|dropped`), `GET /v1/office` (every agent's desk; `?repo=` limits it to one
 repo's tasks) and `GET /v1/agents/{name}/timeline` (`?repo=`, `?limit=` up to 500, default 100).
 Targets are written with `POST /v1/targets`, `PUT /v1/targets/{id or slug}` (`{status, repo}`) and
