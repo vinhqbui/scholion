@@ -332,6 +332,30 @@ pub trait IntentStore: Send + Sync {
         repo: Option<&str>,
         lease_secs: u64,
     ) -> Result<Vec<crate::routing::Stale>>;
+    /// Merged and abandoned tasks that entered that status at least `older_than_secs` ago, oldest
+    /// first: their workspaces may be reclaimed (Plan 11). Empty unless the store keeps events.
+    async fn reclaimable_tasks(&self, _older_than_secs: u64) -> Result<Vec<Task>> {
+        Ok(vec![])
+    }
+    /// Every task (of `repo`, or all) with when it entered its current status: its newest event
+    /// into that status, or its creation when there is none. Empty unless the store keeps events.
+    async fn tasks_with_status_since(
+        &self,
+        _repo: Option<&str>,
+    ) -> Result<Vec<(Task, chrono::DateTime<chrono::Utc>)>> {
+        Ok(vec![])
+    }
+    /// Appends a feed event (`GET /v1/events`) that is not a status change, such as
+    /// `workspace:reclaimed`. Does nothing unless the store keeps events.
+    async fn add_event(
+        &self,
+        _repo: &str,
+        _kind: &str,
+        _task: Option<TaskId>,
+        _payload: serde_json::Value,
+    ) -> Result<()> {
+        Ok(())
+    }
     async fn set_workspace(&self, id: TaskId, path: &Path, base: &ChangeId) -> Result<()>;
     async fn set_pack_mode(&self, id: TaskId, mode: PackMode) -> Result<()>;
     async fn set_head(&self, id: TaskId, head: &ChangeId, touched: &[String]) -> Result<()>;
