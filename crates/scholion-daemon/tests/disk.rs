@@ -493,6 +493,23 @@ async fn a_reported_footprint_shows_under_outside_newest_first() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_footprint_names_its_tasks_slug() {
+    let e = env().await;
+    let t = start_task(&e, "Make it loud").await;
+    let body = json!({"session": "cc-3", "agent": "claude", "task": t["task"]["id"],
+                      "added": [{"path": "/home/u/junk/target", "bytes": 4096}]});
+    let (status, out) = call(&e.app, "POST", "/v1/footprint", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    // a task the daemon does not know keeps no slug
+    let body = json!({"session": "cc-4", "task": "not-a-task", "added": []});
+    let (status, out) = call(&e.app, "POST", "/v1/footprint", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let (_, disk) = call(&e.app, "GET", "/v1/disk", None).await;
+    assert_eq!(disk["outside"][1]["slug"], "make-it-loud", "{disk}");
+    assert!(disk["outside"][0]["slug"].is_null(), "{disk}");
+}
+
 // ---- the sweep, through the daemon's own start-up (`serve_with`) ----
 
 fn config(db: &TestDb, dir: &Path, retain: Option<u64>) -> Config {

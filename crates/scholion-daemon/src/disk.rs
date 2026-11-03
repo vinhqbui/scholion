@@ -12,7 +12,7 @@ use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use scholion_core::{AvError, Result, Task, TaskStatus};
+use scholion_core::{AvError, Result, Task, TaskId, TaskStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -54,6 +54,9 @@ pub(crate) struct Footprint {
     agent: Option<String>,
     #[serde(default)]
     task: Option<String>,
+    /// The task's slug, looked up by the daemon when `task` names one it knows.
+    #[serde(default)]
+    slug: Option<String>,
     #[serde(default)]
     added: Vec<Added>,
     #[serde(default)]
@@ -74,6 +77,15 @@ async fn post_footprint(
     }
     f.total_bytes = f.added.iter().map(|a| a.bytes).sum();
     f.at = Utc::now();
+    f.slug = None;
+    if let Some(id) = f
+        .task
+        .as_deref()
+        .and_then(|t| uuid::Uuid::parse_str(t).ok())
+        && let Ok(task) = st.store.get_task(TaskId(id)).await
+    {
+        f.slug = Some(task.slug);
+    }
     let mut kept = st.footprints.lock().unwrap_or_else(|e| e.into_inner());
     kept.retain(|old| old.session != f.session);
     kept.push_front(f);

@@ -3294,3 +3294,145 @@ fn targets_are_added_listed_closed_and_counted_in_the_backlog() {
         ],
     ));
 }
+
+// ---- Plan 11: av disk and av gc ----
+
+/// A stand-in daemon that answers every request with `body` (200, JSON) and keeps each request
+/// it got as "METHOD PATH BODY".
+struct Canned {
+    url: String,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+fn canned(body: &'static str) -> Canned {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            let mut len = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = line.split_once(':')
+                    && k.eq_ignore_ascii_case("content-length")
+                {
+                    len = v.trim().parse().unwrap();
+                }
+            }
+            let mut sent = vec![0; len];
+            reader.read_exact(&mut sent).unwrap();
+            let parts: Vec<&str> = first.split_whitespace().take(2).collect();
+            log.lock().unwrap().push(format!(
+                "{} {}",
+                parts.join(" "),
+                String::from_utf8_lossy(&sent)
+            ));
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(reply.as_bytes());
+        }
+    });
+    Canned { url, seen }
+}
+
+const DISK: &str = r#"{"ws_root": "/home/u/ws", "store_root": "/home/u/.scholion/store",
+ "pg_dir": "/home/u/.scholion/pg", "retain_secs": 3600,
+ "repos": [{"name": "demo", "store_bytes": 31457280,
+   "build_cache": {"enabled": true, "config": "/home/u/ws/demo/.cargo/config.toml"},
+   "build_cache_bytes": 1288490188, "scratch_bytes": 40960,
+   "workspaces": [
+     {"slug": "improve-greeting", "status": "merged", "bytes": 12582912, "age_secs": 7200, "reclaimable": true},
+     {"slug": "fix-thing", "status": "open", "bytes": 3145728, "age_secs": 300, "reclaimable": false}]}],
+ "outside": [{"session": "s1", "agent": "claude", "task": "0b6a", "slug": "fix-thing",
+   "added": [{"path": "/home/u/.cache/huge", "bytes": 943718400},
+             {"path": "/tmp/x/target", "bytes": 209715200}],
+   "partial": false, "total_bytes": 1153433600, "at": "2026-11-02T10:15:00Z"}],
+ "totals": {"workspaces_bytes": 15728640, "store_bytes": 31457280,
+   "build_cache_bytes": 1288490188, "scratch_bytes": 40960}}"#;
+
+#[test]
+fn disk_shows_workspaces_caches_and_what_sessions_left_outside() {
+    let c = canned(DISK);
+    let dir = TempDir::new().unwrap();
+    let o = ok(av_with(&c.url, dir.path(), &["disk"]));
+    for want in [
+        "demo",
+        "improve-greeting",
+        "merged",
+        "12 MB",
+        "reclaimable",
+        "fix-thing",
+        "1.2 GB",
+        "/home/u/ws/demo/.cargo/config.toml",
+        "claude",
+        "/home/u/.cache/huge",
+        "900 MB",
+        "/home/u/.scholion/pg",
+    ] {
+        assert!(o.contains(want), "missing {want:?} in\n{o}");
+    }
+    assert!(
+        !o.lines()
+            .any(|l| l.contains("fix-thing") && l.contains("reclaimable")),
+        "{o}"
+    );
+    assert_eq!(c.seen.lock().unwrap()[0].trim(), "GET /v1/disk");
+
+    let o = ok(av_with(&c.url, dir.path(), &["disk", "--json"]));
+    let v: serde_json::Value = serde_json::from_str(&o).unwrap();
+    assert_eq!(v, serde_json::from_str::<serde_json::Value>(DISK).unwrap());
+}
+
+const GC: &str = r#"{"reclaimed": [{"repo": "demo", "slug": "improve-greeting", "status": "merged",
+   "path": "/home/u/ws/demo/improve-greeting", "bytes": 12582912}],
+ "freed_bytes": 1301073100,
+ "kept": [{"repo": "demo", "slug": "just-merged", "status": "merged",
+   "path": "/home/u/ws/demo/just-merged", "bytes": 1024, "age_secs": 60}],
+ "build_cache_bytes": 1288490188, "dry_run": true}"#;
+
+#[test]
+fn gc_dry_run_says_what_it_would_remove() {
+    let c = canned(GC);
+    let dir = TempDir::new().unwrap();
+    let o = ok(av_with(
+        &c.url,
+        dir.path(),
+        &["gc", "--dry-run", "--retain", "0", "--build-cache"],
+    ));
+    for want in [
+        "would remove",
+        "demo/improve-greeting",
+        "12 MB",
+        "build cache",
+        "1.2 GB",
+        "kept 1 (younger than retention)",
+    ] {
+        assert!(o.contains(want), "missing {want:?} in\n{o}");
+    }
+    let sent = c.seen.lock().unwrap()[0].clone();
+    assert!(sent.starts_with("POST /v1/gc "), "{sent}");
+    let body: serde_json::Value =
+        serde_json::from_str(sent.split_once(' ').unwrap().1.split_once(' ').unwrap().1).unwrap();
+    assert_eq!(body["dry_run"], true, "{body}");
+    assert_eq!(body["retain_secs"], 0, "{body}");
+    assert_eq!(body["build_cache"], true, "{body}");
+
+    let o = ok(av_with(&c.url, dir.path(), &["gc", "--json"]));
+    let v: serde_json::Value = serde_json::from_str(&o).unwrap();
+    assert_eq!(v["freed_bytes"], 1301073100u64);
+    let sent = c.seen.lock().unwrap()[1].clone();
+    assert!(sent.contains("\"dry_run\":false"), "{sent}");
+    assert!(!sent.contains("retain_secs"), "{sent}");
+}
