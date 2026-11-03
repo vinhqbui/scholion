@@ -112,3 +112,21 @@ Run the same five backlog items again on this daemon and compare, per merged tas
 target dirs (`av disk` now reports it), minutes per validation, validations failed for reasons
 outside the code (0 expected from the shared-target class), review rounds. `scholion-bench`'s
 plain-git arm gives the baseline without av.
+
+## Live check of Task 1 (2026-11-03, daemon from this branch, build container)
+
+Imported this repo (205 files, 7 s), started two tasks, built in both at once: `cargo test
+--workspace --no-run` in one, `cargo test -p scholion-core --no-run` in the other, with the
+daemon's config in force and no `CARGO_TARGET_DIR`.
+
+- `cargo metadata` in each workspace resolved `<ws_root>/scholion/<slug>/target`: two different
+  dirs, both inside their workspace.
+- `av disk` while both were open: `build-the-whole-workspace` 4.6 GB (build 4.5 GB),
+  `build-one-crate` 95 MB (build 90 MB); store 5 MB.
+- `cargo test -p scholion-core --offline` in the first workspace ran its own warm binaries: 23
+  passed.
+- `POST /abandon` on both with `AV_WS_RETAIN_SECS=0` answered `workspace: removed`; `av disk`
+  afterwards: workspaces 0 B, build output 0 B.
+
+So with this branch a Rust task's disk is its own `target/` (4.5 GB for this repo's full bar,
+2.4 GB once #72 lands), it is counted, and it is gone with the task.
