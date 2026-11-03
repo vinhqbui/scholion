@@ -10,9 +10,14 @@
 //! every process that starts them, so `av watch`, `av validate` and any other runner on the
 //! machine share one budget.
 
+// Starting and killing process groups is Unix-only; `events` and `slots` build everywhere (the
+// CLI, which also builds on Windows, uses `slots`).
+#[cfg(unix)]
 pub mod command;
 pub mod events;
+#[cfg(unix)]
 pub mod process;
 pub mod slots;
 
+#[cfg(unix)]
 pub use command::{AgentCommand, RunResult};
