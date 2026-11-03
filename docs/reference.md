@@ -617,8 +617,8 @@ of the session has it. The pack ends with `Temporary files: $AV_SCRATCH (removed
 It is removed with the workspace.
 
 **What av does not touch.** Claude Code's own data (`~/.claude`) is swept by Claude Code itself
-(`cleanupPeriodDays`, default 30 days). Bench clones are kept (see
-[bench/README.md](../bench/README.md)). The jj store and
+(`cleanupPeriodDays`, default 30 days). `scholion-bench run` removes each session's copy after verify unless
+`--keep-work` is given (see [bench/README.md](../bench/README.md)). The jj store and
 Postgres are not garbage-collected. `av up` moves a `daemon.log` over 50 MB to `daemon.log.1`.
 
 ## Test

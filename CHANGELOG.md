@@ -25,6 +25,9 @@
   - `Vcs::remove_workspace` and `Vcs::restore_workspace` (jj: forget the workspace, re-create it
     at a commit).
   - `av up` moves a `daemon.log` over 50 MB to `daemon.log.1`.
+  - **`scholion-bench run` removes each session's copy after verify**: the git arms' clone, and
+    the av arms' import copy (their bench task is abandoned, so the bench daemon reclaims the
+    workspace). Invalid sessions keep everything; `--keep-work` keeps every copy.
 - **A redesigned dashboard** (`/ui`): a neutral, professional look in place of the pixel-slime
   theme. It adds a row of summary figures (in progress, in review, conflicted, merged, backlog,
   agents busy), agent cards with initials avatars, a state badge, skill tags and a load bar against
