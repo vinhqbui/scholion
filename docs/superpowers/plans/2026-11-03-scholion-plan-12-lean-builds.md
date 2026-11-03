@@ -90,15 +90,94 @@ tasks, and every build is incremental-warm (the run saw a warm review build in 4
       open task at a time (`lock_task` is per task, so a slot lock is new).
 - [ ] Measure before deciding: with Task 1, is the cold build (and its 6.7 GB) still the long pole?
 
-## Task 5: share dependencies
+## Task 5: share dependencies (design, 2026-11-03; measured, not yet built)
 
-The 1.4 GB of dependency rlibs per task is the only part that is the same in every task's target
-dir. Options, in order of simplicity: hard-link the `deps/*.rlib`/`*.rmeta` of a per-repo "deps at
-main" build into a new task's `target/` (same filesystem; cargo's fingerprints are by content
-hash and path, so links are valid as long as the path-relative names match, which they do for
-registry crates), or `sccache` with a local disk backend. Measure the saving against Task 1 first:
-it is at most 1.4 of 6.7 GB.
+### What was measured (build container, main 5bea076, lean config, `cargo test --workspace --no-run`)
 
+| | size | time (16 cores, warm registry) |
+|---|---|---|
+| full bar, fresh `target/` | 2.4 GB | 38 s on the container fs, 76 s on the `D:\ws` 9p bind mount |
+| of which the repo's own crates (libs, bins, test binaries) | 1.1 GB | |
+| of which dependencies (`deps/` rlibs, `build/` outputs, their fingerprints) | 1.3 GB | |
+| the same bar in a fresh `target/` **seeded with hard links to the dependency artifacts** | 1.2 GB on disk (both trees together 3.6 GB, not 4.8) | 15 s; cargo compiled the 11 own crates and 0 dependencies; `cargo test -p scholion-core` ran its own binaries |
+
+Facts the design rests on, each checked on this build:
+- Hard links work on `D:\ws` from the agents' container (9p/drvfs: same inode, link count 2).
+- A fingerprint dir `.fingerprint/<pkg>-<hash>` and the artifacts `deps/*-<hash>.*` share the
+  hash (176/200 sampled; the other 24 are build-script units, whose output is `build/<pkg>-<hash>/`).
+- Six build scripts (`ring`, `psm`, `tree-sitter` and its three grammars) write
+  `rustc-link-search=<absolute target>/build/<pkg>-<hash>/out` into `build/<pkg>-<hash>/output`.
+  A seeded workspace links against the **template's** path, so the template must keep its path
+  and its entries for as long as any workspace links to it (add-only, see below).
+- `sccache` saves compile time only: every task's `target/` still holds its own copy of each
+  rlib. For disk it is no answer; it is also not installed.
+- Cargo 1.97 records registry crates with `CheckDepInfo` like path crates (13 units of 559 are
+  `Precalculated`), so "is this artifact shareable" cannot be read from the fingerprint. It comes
+  from workspace membership instead: a unit of a package that is not a member of the repo's Cargo
+  workspace is shareable. Path packages' fingerprints hash their path **relative to the workspace
+  root**, which is why run 1's shared target dir ran another task's test binary and why own crates
+  must never enter the template.
+
+### The mechanism
+
+One **template** per repo, `<ws_root>/<repo>/.cache/deps-target/` (Plan 11's `.cache` dir, so
+`av disk` already lists it as `build cache` and `av gc --build-cache` already removes it), holding
+only dependency artifacts, laid out like a `target/` (`debug/deps`, `debug/.fingerprint`,
+`debug/build`). The daemon writes it with file operations only; it still never runs cargo.
+
+- **Seed** (in `prepare_workspace`, after `create_workspace`, when the repo has a root `Cargo.toml`
+  and a template exists): hard-link every template entry into the new `<ws>/target/`, directories
+  re-created, files linked. If `link` fails (another filesystem, no support) the workspace starts
+  empty; never copy, that would cost the 1.3 GB the task is meant to save. `AV_BUILD_CACHE=off`
+  skips it.
+- **Harvest** (in `reclaim_build`, before `<ws>/target` is removed at merge/abandon): for each unit
+  dir `<ws>/target/debug/.fingerprint/<pkg>-<hash>/` that is **(a)** of a package outside the
+  workspace's member set and **(b)** a `lib-*`, `build-script-*` or `run-build-script-*` unit (never
+  `bin-`, `test-`, `integration-test-`, `example-`, `bench-`: those are executed), link its
+  fingerprint dir, its `deps/*-<hash>.*` files and its `build/<pkg>-<hash>/` dir into the template
+  **if absent**. Add-only: nothing in the template is replaced or removed except by
+  `av gc --build-cache` (the whole dir), which is refused while any workspace of the repo has a
+  `target/` (its binaries link against the template's `out` dirs).
+- **Member set**: the trunk's root `Cargo.toml` `[workspace].members`/`exclude` globs resolved
+  against the trunk tree (the daemon has it in jj), each member's `[package].name`; a root
+  `[package]` counts too. Names compare with `-` and `_` folded. Parsed with the `toml` crate.
+- **Why hard links are safe here**: cargo never rewrites an artifact it judges fresh, and a
+  dependency's unit is fresh in every workspace with the same rustc, profile, features and
+  RUSTFLAGS, because all of those are in the hash; a change to any of them gives a new hash and a
+  new file beside the old one. The one way a shared inode could be overwritten is a build script
+  re-run by `rerun-if-env-changed` in one workspace (e.g. `CC` set there), so `build/` is
+  **copied**, not linked, at seed time: it is small (the six `out` dirs are grammars and `ring`'s
+  objects) and its `output` files still name the template's `out` paths. `deps/` and
+  `.fingerprint/` are linked.
+- **Reporting**: the template shows under the repo's `build cache` line in `av disk` (exists); a
+  workspace's `BUILD` column stays its `target/` size counted alone, which is what the task would
+  cost by itself. The totals line gains `(N shared)` once the sweep sums inodes once (`st_nlink`).
+
+Expected per task for this repo: 1.2 GB while open (from 2.4), a 15 s instead of 38 s full build
+on a warm template; the template 1.3 GB per repo, once. Run 1's 20 GB per task becomes 1.2 GB
+plus 1.3 GB per repo.
+
+### Steps (TDD, one PR each)
+
+- [ ] `build_cache::members(st, repo) -> Option<BTreeSet<String>>`: parse the trunk's workspace.
+      Tests: this repo's eleven `scholion-*` names; a repo with a root `[package]` only; a repo
+      without `Cargo.toml` is `None`.
+- [ ] `build_cache::harvest(ws_target, template, members) -> Harvested {units, bytes}`: pure file
+      operations on a fixture `target/` built by the test (fake `.fingerprint` dirs and `deps`
+      files, no cargo). Tests: a `lib-serde` unit is linked; `test-lib-scholion_core`, `bin-av` and
+      a member's lib are not; an entry already in the template is left as is; `build/<pkg>-<hash>/`
+      is linked whole.
+- [ ] `reclaim_build` harvests before it removes; the event `build:reclaimed` gains `shared_bytes`.
+      Test in `tests/disk.rs`: after a merge the template holds the fixture's dependency entries
+      and the workspace's `target/` is gone.
+- [ ] `prepare_workspace` seeds; `AV_BUILD_CACHE=off` skips. Tests: a new workspace of a repo with
+      a template has the linked entries with link count 2 (`MetadataExt::nlink`) and a copied
+      `build/`; a repo without a template starts empty.
+- [ ] `av gc --build-cache` refuses while a workspace of the repo has a `target/`, and says which.
+- [ ] Live check in the build container like Task 1's: two tasks, the first builds the bar and
+      merges, the second starts after the harvest and builds the bar in ~15 s with 1.2 GB.
+- [ ] Measure link creation on the 9p mount (1354 + 556 links) before calling it done there; if
+      it is slow, seed only `deps/` (the rlibs) and let the fingerprints be rebuilt.
 ## Task 6: scholion's own test binaries
 
 63 integration-test binaries, each linking everything. Merging each crate's `tests/*.rs` into one
@@ -160,7 +239,7 @@ abandoned; the 5 MB workspace waits for the retention.
   target dir to the lean per-task config, and the sweep reclaimed run 1's five merged workspaces.
   The old image is kept as `scholion-daemon:pre-plan12` for rollback. In bash, pass the ids
   through `env UID=… GID=… docker compose …`: `UID` is read-only in the shell.
-- **Before the next run, two things the daemon cannot do:**
+- **Two things the daemon cannot do, both done by hand on 2026-11-03 ~15:40 UTC (`sch-ws` recreated as below; the bar is now `conv:7` with the scope below, `conv:1` removed):**
   1. The agents' container `sch-ws` exports `CARGO_TARGET_DIR=/target`. The environment beats
      every cargo config, so agents there would still share one target dir. Recreate it without
      that variable (builds then land in `/ws/scholion/<slug>/target`, reclaimed with the task), or
@@ -184,6 +263,8 @@ abandoned; the 5 MB workspace waits for the retention.
        'The bar: fmt, clippy -D warnings and cargo test --workspace all green. Build in the workspace itself (its own target/); never point CARGO_TARGET_DIR at a dir another task uses.'
      av convention rm 1 --repo scholion
      ```
+  Builds on the `D:\ws` bind mount (9p) take 2× the container-fs time (76 s vs 38 s for the full
+  bar), measured in the build container; tolerable, so Task 3 stays after Task 5.
 - The live repo's trunk is run 1's import (before #72), so a task's full bar there costs about
   4.3 GB until the repo is re-imported from current `main`; after that, 2.4 GB.
 - Docker's `D:\DockerData\DockerDesktopWSL\disk\docker_data.vhdx` is 175 GB for about 15 GB of
