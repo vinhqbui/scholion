@@ -795,9 +795,27 @@ fn unreachable_server_exits_nonzero_with_clear_message() {
 fn repo_add_reports_a_failed_import() {
     let d = start_daemon();
     let scratch = TempDir::new().unwrap();
-    let o = av(&d, scratch.path(), &["repo", "add", "x", "/nowhere"]);
+    // passes the daemon's quick look (it has a .git), then git cannot clone it
+    std::fs::create_dir(scratch.path().join(".git")).unwrap();
+    let src = scratch.path().to_str().unwrap();
+    let o = av(&d, scratch.path(), &["repo", "add", "x", src]);
     assert!(!o.status.success());
     assert!(err(&o).contains("import of x failed"), "{}", err(&o));
+}
+
+#[test]
+fn repo_add_of_a_path_the_daemon_cannot_see_says_where_it_looks() {
+    let d = start_daemon();
+    let scratch = TempDir::new().unwrap();
+    let o = av(&d, scratch.path(), &["repo", "add", "x", "/nowhere"]);
+    assert!(!o.status.success());
+    let e = err(&o);
+    assert!(
+        e.contains("/nowhere does not exist")
+            && e.contains("daemon's side")
+            && e.contains("/import"),
+        "{e}"
+    );
 }
 
 #[test]

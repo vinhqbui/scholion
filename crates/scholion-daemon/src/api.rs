@@ -264,6 +264,8 @@ async fn add_repo(
     State(st): State<AppState>,
     Json(req): Json<AddRepo>,
 ) -> std::result::Result<(axum::http::StatusCode, Json<ImportJob>), crate::error::ApiError> {
+    // before any job, so `wait: false` (what `av repo add` sends) gets the hint as its answer
+    visible_source(&req.git_source)?;
     let job = ImportJob {
         name: req.name.clone(),
         state: "running",
@@ -318,6 +320,31 @@ async fn add_repo(
         Ok(Err(e)) => Err(e.into()),
         Err(e) => Err(AvError::Index(format!("import of {} stopped: {e}", req.name)).into()),
     }
+}
+
+/// Refuses a `git_source` the daemon cannot see: missing, not a directory, or a directory that
+/// is neither a git work tree (`.git`) nor a bare repo (`HEAD` and `objects/`). The path is read
+/// where the daemon runs, which in Docker is not where the client runs, so the message says so.
+/// Only a quick look at the directory: git itself still decides whether it can be cloned.
+fn visible_source(src: &std::path::Path) -> Result<()> {
+    let why = match src.canonicalize() {
+        Ok(p)
+            if p.join(".git").exists()
+                || (p.join("HEAD").is_file() && p.join("objects").is_dir()) =>
+        {
+            return Ok(());
+        }
+        Ok(p) if p.is_dir() => "is not a git repository (no .git, and not a bare repo)",
+        Ok(_) => "is not a directory",
+        Err(_) => "does not exist (or cannot be read)",
+    };
+    Err(AvError::Invalid(format!(
+        "git_source {} {why} on the daemon's side: the daemon reads the path where it runs, not \
+         where `av repo add` runs. With the Docker stack (deploy/docker-compose.yml) it sees only \
+         the /import mount (the host's AV_IMPORT_ROOT, default ~/projects, read-only): put the \
+         repo there and pass /import/<dir>",
+        src.display()
+    )))
 }
 
 async fn import(st: &AppState, name: &str, src: &std::path::Path) -> Result<(ChangeId, usize)> {

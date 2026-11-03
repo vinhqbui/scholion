@@ -3775,11 +3775,14 @@ async fn an_import_without_wait_answers_at_once_and_is_polled() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_import_is_reported_and_the_name_is_free_again() {
     let e = env().await;
+    // looks like a git repo to the up-front check, but git cannot clone it
+    let fake = TempDir::new().unwrap();
+    std::fs::create_dir(fake.path().join(".git")).unwrap();
     let (status, body) = call(
         &e.app,
         "POST",
         "/v1/repos",
-        Some(json!({"name": "broken", "git_source": "/nonexistent/repo", "wait": false})),
+        Some(json!({"name": "broken", "git_source": fake.path(), "wait": false})),
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
@@ -3795,6 +3798,45 @@ async fn a_failed_import_is_reported_and_the_name_is_free_again() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "done");
+}
+
+/// A `git_source` the daemon cannot see is refused at once (also without `wait`), and the
+/// message says the path is read on the daemon's side, under `/import` in Docker.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_from_a_path_the_daemon_cannot_see_is_refused_with_a_hint() {
+    let e = env().await;
+    let plain = TempDir::new().unwrap();
+    std::fs::write(plain.path().join("README"), "no repo here").unwrap();
+    let missing = json!("/nonexistent/repo");
+    let not_git = json!(plain.path());
+    for (source, why) in [
+        (&missing, "does not exist"),
+        (&not_git, "is not a git repository"),
+    ] {
+        for wait in [true, false] {
+            let (status, body) = call(
+                &e.app,
+                "POST",
+                "/v1/repos",
+                Some(json!({"name": "unseen", "git_source": source, "wait": wait})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{source} {wait}: {body}");
+            let msg = body["error"].as_str().unwrap_or_default();
+            for part in [
+                why,
+                source.as_str().unwrap(),
+                "on the daemon's side",
+                "/import",
+                "deploy/docker-compose.yml",
+            ] {
+                assert!(msg.contains(part), "{part:?} missing from {msg:?}");
+            }
+        }
+    }
+    // nothing was started, so there is no job and the name is free
+    let (status, body) = call(&e.app, "GET", "/v1/repos/unseen/import", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
