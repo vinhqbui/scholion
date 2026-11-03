@@ -813,3 +813,317 @@ async fn the_sweep_removes_a_merged_workspace_without_a_gc_call() {
     .expect("daemon stops on the shutdown future");
     served.unwrap();
 }
+
+// ---- Plan 12 Task 5: dependencies are built once per repo ----
+
+const SERDE_LIB: &str = "a266d54d01e4376a";
+const SERDE_SCRIPT: &str = "1f0e2d3c4b5a6978";
+const SERDE_RUN: &str = "77a0bc3e1d2f4a55";
+const OWN_LIB: &str = "0b1c2d3e4f5a6b7c";
+const OWN_TEST: &str = "9a8b7c6d5e4f3a2b";
+const OWN_SCRIPT: &str = "5e6f7a8b9c0d1e2f";
+const OWN_RUN: &str = "3c4d5e6f7a8b9c0d";
+
+/// A cargo-like `target/debug` in the task's workspace, laid out as cargo 1.97 writes it: a
+/// registry dependency (`serde`: its lib, its build script and that script's run) and the repo's
+/// own crate (`demo-core`: lib, test binary, build script and its run), each with its dep-info.
+fn cargo_build_in(e: &Env, t: &Value) -> PathBuf {
+    let ws = ws_dir(e, t);
+    let d = ws.join("target/debug");
+    let td = d.display().to_string();
+    let reg = "/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229";
+    let own = ws.join("crates/core").display().to_string();
+    // as rustc does: a new file renamed over the old one, never a write into a seeded link
+    let w = |rel: &str, bytes: &[u8]| {
+        let p = d.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let tmp = p.with_extension("tmp-build");
+        std::fs::write(&tmp, bytes).unwrap();
+        std::fs::rename(&tmp, &p).unwrap();
+    };
+    let fp = |unit: &str, kinds: &[&str]| {
+        for k in kinds {
+            w(&format!(".fingerprint/{unit}/{k}"), b"0123456789abcdef");
+            w(&format!(".fingerprint/{unit}/{k}.json"), b"{}");
+        }
+        w(&format!(".fingerprint/{unit}/invoked.timestamp"), b"");
+    };
+    // serde, from the registry
+    w(&format!("deps/libserde-{SERDE_LIB}.rlib"), &[1; 4096]);
+    w(&format!("deps/libserde-{SERDE_LIB}.rmeta"), &[2; 1024]);
+    let out = format!("{td}/build/serde-{SERDE_RUN}/out");
+    let lib_d = format!(
+        "{td}/deps/libserde-{SERDE_LIB}.rlib {td}/deps/libserde-{SERDE_LIB}.rmeta: \
+         {reg}/src/lib.rs {out}/private.rs\n\n{reg}/src/lib.rs:\n{out}/private.rs:\n\n\
+         # env-dep:OUT_DIR={out}\n"
+    );
+    w(&format!("deps/serde-{SERDE_LIB}.d"), lib_d.as_bytes());
+    fp(
+        &format!("serde-{SERDE_LIB}"),
+        &["lib-serde", "dep-lib-serde"],
+    );
+    let script_d = format!(
+        "{td}/build/serde-{SERDE_SCRIPT}/build_script_build-{SERDE_SCRIPT}: {reg}/build.rs\n\n\
+         {reg}/build.rs:\n"
+    );
+    w(
+        &format!("build/serde-{SERDE_SCRIPT}/build_script_build-{SERDE_SCRIPT}.d"),
+        script_d.as_bytes(),
+    );
+    w(
+        &format!("build/serde-{SERDE_SCRIPT}/build-script-build"),
+        &[3; 512],
+    );
+    fp(
+        &format!("serde-{SERDE_SCRIPT}"),
+        &["build-script-build-script-build"],
+    );
+    w(
+        &format!("build/serde-{SERDE_RUN}/output"),
+        b"cargo:rustc-cfg=std\n",
+    );
+    w(
+        &format!("build/serde-{SERDE_RUN}/root-output"),
+        out.as_bytes(),
+    );
+    w(
+        &format!("build/serde-{SERDE_RUN}/out/private.rs"),
+        &[4; 256],
+    );
+    fp(
+        &format!("serde-{SERDE_RUN}"),
+        &["run-build-script-build-script-build"],
+    );
+    // the repo's own crate
+    w(&format!("deps/libdemo_core-{OWN_LIB}.rlib"), &[5; 2048]);
+    let own_d =
+        format!("{td}/deps/libdemo_core-{OWN_LIB}.rlib: {own}/src/lib.rs\n\n{own}/src/lib.rs:\n");
+    w(&format!("deps/demo_core-{OWN_LIB}.d"), own_d.as_bytes());
+    fp(&format!("demo-core-{OWN_LIB}"), &["lib-demo_core"]);
+    w(&format!("deps/demo_core-{OWN_TEST}"), &[6; 8192]);
+    let test_d = format!("{td}/deps/demo_core-{OWN_TEST}: {own}/src/lib.rs\n\n{own}/src/lib.rs:\n");
+    w(&format!("deps/demo_core-{OWN_TEST}.d"), test_d.as_bytes());
+    fp(&format!("demo-core-{OWN_TEST}"), &["test-lib-demo_core"]);
+    let own_script_d = format!(
+        "{td}/build/demo-core-{OWN_SCRIPT}/build_script_build-{OWN_SCRIPT}: {own}/build.rs\n\n\
+         {own}/build.rs:\n"
+    );
+    w(
+        &format!("build/demo-core-{OWN_SCRIPT}/build_script_build-{OWN_SCRIPT}.d"),
+        own_script_d.as_bytes(),
+    );
+    w(
+        &format!("build/demo-core-{OWN_SCRIPT}/build-script-build"),
+        &[7; 512],
+    );
+    fp(
+        &format!("demo-core-{OWN_SCRIPT}"),
+        &["build-script-build-script-build"],
+    );
+    w(
+        &format!("build/demo-core-{OWN_RUN}/output"),
+        b"cargo:rerun-if-changed=build.rs\n",
+    );
+    fp(
+        &format!("demo-core-{OWN_RUN}"),
+        &["run-build-script-build-script-build"],
+    );
+    ws.join("target")
+}
+
+fn deps_cache(e: &Env) -> PathBuf {
+    e.ws.path().join("demo/.cache/deps-target/debug")
+}
+
+/// What a dependency leaves in the cache.
+fn shared_entries() -> Vec<String> {
+    vec![
+        format!("deps/libserde-{SERDE_LIB}.rlib"),
+        format!("deps/libserde-{SERDE_LIB}.rmeta"),
+        format!("deps/serde-{SERDE_LIB}.d"),
+        format!(".fingerprint/serde-{SERDE_LIB}/lib-serde"),
+        format!(".fingerprint/serde-{SERDE_SCRIPT}/build-script-build-script-build"),
+        format!(".fingerprint/serde-{SERDE_RUN}/run-build-script-build-script-build"),
+        format!("build/serde-{SERDE_SCRIPT}/build-script-build"),
+        format!("build/serde-{SERDE_RUN}/root-output"),
+        format!("build/serde-{SERDE_RUN}/out/private.rs"),
+    ]
+}
+
+/// What the repo's own crates leave, which never enters the cache: their fingerprints hash
+/// their path relative to the workspace root, so another workspace would take them as fresh.
+fn own_entries() -> Vec<String> {
+    vec![
+        format!("deps/libdemo_core-{OWN_LIB}.rlib"),
+        format!("deps/demo_core-{OWN_LIB}.d"),
+        format!("deps/demo_core-{OWN_TEST}"),
+        format!("deps/demo_core-{OWN_TEST}.d"),
+        format!(".fingerprint/demo-core-{OWN_LIB}"),
+        format!(".fingerprint/demo-core-{OWN_TEST}"),
+        format!(".fingerprint/demo-core-{OWN_SCRIPT}"),
+        format!(".fingerprint/demo-core-{OWN_RUN}"),
+        format!("build/demo-core-{OWN_SCRIPT}"),
+        format!("build/demo-core-{OWN_RUN}"),
+    ]
+}
+
+async fn feed_event(e: &Env, kind: &str) -> Value {
+    let (_, events) = call(
+        &e.app,
+        "GET",
+        "/v1/events?repo=demo&since=0&limit=500",
+        None,
+    )
+    .await;
+    events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ev| ev["kind"] == kind)
+        .cloned()
+        .unwrap_or_else(|| panic!("no {kind} in {events}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merge_keeps_the_dependencies_in_the_repos_deps_cache_and_never_the_repos_own_crates() {
+    let e = env().await;
+    let t = approved(&e, "Wave hello").await;
+    let target = cargo_build_in(&e, &t);
+    let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{merge}");
+    assert_eq!(merge["build"], "removed", "{merge}");
+    assert!(!target.exists());
+    let cache = deps_cache(&e);
+    for entry in shared_entries() {
+        assert!(
+            cache.join(&entry).exists(),
+            "{entry} should be in the deps cache"
+        );
+    }
+    for entry in own_entries() {
+        assert!(
+            !cache.join(&entry).exists(),
+            "{entry} must stay out of the deps cache"
+        );
+    }
+    let ev = feed_event(&e, "build:reclaimed").await;
+    assert!(
+        ev["payload"]["cached_bytes"].as_u64().unwrap() >= 4096 + 1024 + 512 + 256,
+        "{ev}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_task_starts_with_the_dependencies_linked_and_their_mutable_files_copied() {
+    let e = env().await;
+    let t = approved(&e, "Wave hello").await;
+    cargo_build_in(&e, &t);
+    let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{merge}");
+    let t2 = start_task(&e, "Wave goodbye").await;
+    let seeded = ws_dir(&e, &t2).join("target/debug");
+    for entry in shared_entries() {
+        assert!(seeded.join(&entry).exists(), "{entry} should be seeded");
+    }
+    for entry in own_entries() {
+        assert!(!seeded.join(&entry).exists(), "{entry} must not be seeded");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let cache = deps_cache(&e);
+        let same = |rel: &str| {
+            std::fs::metadata(seeded.join(rel)).unwrap().ino()
+                == std::fs::metadata(cache.join(rel)).unwrap().ino()
+        };
+        // rustc replaces these (a new file renamed over), so one copy on disk serves every task
+        assert!(same(&format!("deps/libserde-{SERDE_LIB}.rlib")));
+        assert!(same(&format!("deps/libserde-{SERDE_LIB}.rmeta")));
+        // rustc rewrites dep-info and cargo its fingerprints in place, and a build script may
+        // write into its out dir: each task gets its own copy, or one task's rebuild would
+        // change the cache under every other
+        assert!(!same(&format!("deps/serde-{SERDE_LIB}.d")));
+        assert!(!same(&format!(".fingerprint/serde-{SERDE_LIB}/lib-serde")));
+        assert!(!same(&format!("build/serde-{SERDE_RUN}/out/private.rs")));
+        // GET /v1/disk counts the linked bytes once, under the repo's build cache
+        let (_, disk) = call(&e.app, "GET", "/v1/disk", None).await;
+        let w = listed(&disk["repos"][0]["workspaces"], &t2).unwrap_or_else(|| panic!("{disk}"));
+        let apparent = walk_bytes(&ws_dir(&e, &t2).join("target"));
+        assert_eq!(
+            w["build_bytes"].as_u64().unwrap() + 4096 + 1024,
+            apparent,
+            "{disk}"
+        );
+        assert!(
+            disk["repos"][0]["build_cache_bytes"].as_u64().unwrap() >= 4096 + 1024,
+            "{disk}"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn walk_bytes(p: &Path) -> u64 {
+    let meta = std::fs::symlink_metadata(p).unwrap();
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    std::fs::read_dir(p)
+        .unwrap()
+        .flatten()
+        .map(|e| walk_bytes(&e.path()))
+        .sum()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entry_already_in_the_deps_cache_is_never_replaced() {
+    let e = env().await;
+    let cache = deps_cache(&e);
+    let rlib = cache.join(format!("deps/libserde-{SERDE_LIB}.rlib"));
+    let fingerprint = cache.join(format!(".fingerprint/serde-{SERDE_LIB}/lib-serde"));
+    for p in [&rlib, &fingerprint] {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"first").unwrap();
+    }
+    let t = approved(&e, "Wave hello").await;
+    cargo_build_in(&e, &t);
+    let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{merge}");
+    assert_eq!(std::fs::read(&rlib).unwrap(), b"first");
+    assert_eq!(std::fs::read(&fingerprint).unwrap(), b"first");
+    // and what was missing is still added
+    assert!(
+        cache
+            .join(format!("deps/libserde-{SERDE_LIB}.rmeta"))
+            .exists()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retain_zero_keeps_the_dependencies_too() {
+    let e = env_with(|s| s.with_ws_retain(Some(0))).await;
+    let t = approved(&e, "Wave hello").await;
+    cargo_build_in(&e, &t);
+    let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{merge}");
+    assert_eq!(merge["workspace"], "removed", "{merge}");
+    assert!(
+        deps_cache(&e)
+            .join(format!("deps/libserde-{SERDE_LIB}.rlib"))
+            .exists()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn build_cache_off_neither_keeps_nor_links_dependencies() {
+    let e = env_with(|s| s.with_build_cache(false)).await;
+    let t = approved(&e, "Wave hello").await;
+    cargo_build_in(&e, &t);
+    let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{merge}");
+    assert!(!e.ws.path().join("demo/.cache").exists());
+    let rlib = deps_cache(&e).join(format!("deps/libserde-{SERDE_LIB}.rlib"));
+    std::fs::create_dir_all(rlib.parent().unwrap()).unwrap();
+    std::fs::write(&rlib, b"by hand").unwrap();
+    let t2 = start_task(&e, "Wave goodbye").await;
+    assert!(!ws_dir(&e, &t2).join("target").exists());
+}

@@ -192,6 +192,115 @@ async fn measure(p: PathBuf) -> u64 {
         .unwrap_or(0)
 }
 
+/// Files with more than one link already counted in one `GET /v1/disk` (device, inode).
+type Seen = Arc<Mutex<HashSet<(u64, u64)>>>;
+
+/// `(device, inode)` of a file other paths link to too; `None` for a file with one link.
+#[cfg(unix)]
+fn shared_inode(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    (meta.nlink() > 1).then(|| (meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn shared_inode(_: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// `bytes_of`, but a file hard-linked elsewhere counts only the first time `seen` meets it (the
+/// deps cache links one copy into every task's `target/`), and `skip` is left out.
+fn bytes_once(p: &Path, skip: Option<&Path>, seen: &Mutex<HashSet<(u64, u64)>>) -> u64 {
+    if skip == Some(p) {
+        return 0;
+    }
+    let Ok(meta) = std::fs::symlink_metadata(p) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return match shared_inode(&meta) {
+            Some(id) if !seen.lock().unwrap_or_else(|e| e.into_inner()).insert(id) => 0,
+            _ => meta.len(),
+        };
+    }
+    std::fs::read_dir(p)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| bytes_once(&e.path(), skip, seen))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+async fn measure_once(p: PathBuf, skip: Option<PathBuf>, seen: &Seen) -> u64 {
+    let seen = seen.clone();
+    tokio::task::spawn_blocking(move || bytes_once(&p, skip.as_deref(), &seen))
+        .await
+        .unwrap_or(0)
+}
+
+/// `<ws_root>/<repo>/.cache/deps-target` (Plan 12 Task 5, `deps_cache.rs`).
+fn deps_cache_dir(st: &AppState, repo: &str) -> Result<PathBuf> {
+    under_ws_root(st, &[repo, BUILD_CACHE, crate::deps_cache::DIR])
+}
+
+/// Puts the dependencies `task`'s build output holds into its repo's deps cache before the
+/// output is removed; the bytes placed. A failure is logged: the build output still goes.
+async fn keep_dependencies(st: &AppState, task: &Task) -> u64 {
+    if !st.build_cache {
+        return 0;
+    }
+    let (Ok(target), Ok(cache)) = (
+        under_ws_root(st, &[&task.repo, &task.slug, BUILD_DIR]),
+        deps_cache_dir(st, &task.repo),
+    ) else {
+        return 0;
+    };
+    if !exists(&target) {
+        return 0;
+    }
+    match tokio::task::spawn_blocking(move || crate::deps_cache::harvest(&target, &cache)).await {
+        Ok(Ok(placed)) => placed.bytes,
+        Ok(Err(e)) => {
+            tracing::warn!(task = %task.slug, error = %e, "keeping the dependencies failed");
+            0
+        }
+        Err(e) => {
+            tracing::warn!(task = %task.slug, error = %e, "keeping the dependencies failed");
+            0
+        }
+    }
+}
+
+/// Gives `task`'s new or restored workspace the repo's built dependencies (its `target/`
+/// starts with them). A failure is logged: cargo builds what is missing.
+pub(crate) async fn seed_dependencies(st: &AppState, task: &Task) {
+    if !st.build_cache {
+        return;
+    }
+    let (Ok(cache), Ok(target)) = (
+        deps_cache_dir(st, &task.repo),
+        under_ws_root(st, &[&task.repo, &task.slug, BUILD_DIR]),
+    ) else {
+        return;
+    };
+    if !exists(&cache) {
+        return;
+    }
+    match tokio::task::spawn_blocking(move || crate::deps_cache::seed(&cache, &target)).await {
+        Ok(Ok(placed)) => tracing::info!(
+            task = %task.slug,
+            linked = placed.linked,
+            copied = placed.copied,
+            "seeded the build output with the repo's dependencies"
+        ),
+        Ok(Err(e)) => {
+            tracing::warn!(task = %task.slug, error = %e, "seeding the dependencies stopped")
+        }
+        Err(e) => tracing::warn!(task = %task.slug, error = %e, "seeding the dependencies failed"),
+    }
+}
+
 async fn remove_tree(p: PathBuf) -> Result<()> {
     tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&p) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -231,7 +340,9 @@ async fn reclaim_locked(st: &AppState, task: &Task, dry_run: bool) -> Result<Opt
     let build_bytes = measure(dir.join(BUILD_DIR)).await;
     let bytes = measure(dir.clone()).await + measure(scratch.clone()).await;
     if !dry_run {
+        let mut cached_bytes = 0;
         if has_dir {
+            cached_bytes = keep_dependencies(st, task).await;
             st.vcs.remove_workspace(&task.repo, &task.slug).await?;
         }
         if has_scratch {
@@ -242,7 +353,8 @@ async fn reclaim_locked(st: &AppState, task: &Task, dry_run: bool) -> Result<Opt
                 &task.repo,
                 "workspace:reclaimed",
                 Some(task.id),
-                json!({"slug": task.slug, "bytes": bytes, "build_bytes": build_bytes}),
+                json!({"slug": task.slug, "bytes": bytes, "build_bytes": build_bytes,
+                       "cached_bytes": cached_bytes}),
             )
             .await?;
     }
@@ -391,13 +503,14 @@ async fn reclaim_build(st: &AppState, task: &Task) -> Result<Option<u64>> {
         return Ok(None);
     }
     let bytes = measure(dir.clone()).await;
+    let cached_bytes = keep_dependencies(st, task).await;
     remove_tree(dir).await?;
     st.store
         .add_event(
             &task.repo,
             "build:reclaimed",
             Some(task.id),
-            json!({"slug": task.slug, "bytes": bytes}),
+            json!({"slug": task.slug, "bytes": bytes, "cached_bytes": cached_bytes}),
         )
         .await?;
     Ok(Some(bytes))
@@ -417,6 +530,7 @@ pub(crate) async fn ensure_workspace(st: &AppState, task: &Task) -> Result<&'sta
     st.vcs
         .restore_workspace(&task.repo, &task.slug, &task.head_change)
         .await?;
+    seed_dependencies(st, task).await;
     Ok("restored")
 }
 
@@ -483,6 +597,9 @@ async fn disk(State(st): State<AppState>) -> ApiResult<Value> {
     names.extend(plain_dirs(&st.ws_root));
     let (mut ws_total, mut store_total, mut cache_total, mut scratch_total) = (0, 0, 0, 0);
     let mut build_total = 0;
+    // each repo's build cache is measured before its workspaces, so a dependency the deps cache
+    // links into every task's target/ counts once, under the cache
+    let seen: Seen = Arc::default();
     let mut repos = Vec::new();
     for name in names {
         let Ok(repo_dir) = under_ws_root(&st, &[&name]) else {
@@ -492,12 +609,13 @@ async fn disk(State(st): State<AppState>) -> ApiResult<Value> {
             Some(root) => measure(root.join(&name)).await,
             None => 0,
         };
-        let build_cache_bytes = measure(repo_dir.join(BUILD_CACHE)).await;
+        let build_cache_bytes = measure_once(repo_dir.join(BUILD_CACHE), None, &seen).await;
         let scratch_bytes = measure(repo_dir.join(SCRATCH)).await;
         let mut workspaces = Vec::new();
         for slug in plain_dirs(&repo_dir) {
-            let build_bytes = measure(repo_dir.join(&slug).join(BUILD_DIR)).await;
-            let bytes = measure(repo_dir.join(&slug)).await;
+            let (ws, target) = (repo_dir.join(&slug), repo_dir.join(&slug).join(BUILD_DIR));
+            let build_bytes = measure_once(target.clone(), None, &seen).await;
+            let bytes = build_bytes + measure_once(ws, Some(target), &seen).await;
             ws_total += bytes;
             build_total += build_bytes;
             let entry = tasks.get(&(name.clone(), slug.clone()));

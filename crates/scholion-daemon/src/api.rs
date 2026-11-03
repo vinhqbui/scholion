@@ -533,6 +533,8 @@ async fn prepare_workspace(st: &AppState, task: &Task) -> Result<()> {
     st.store
         .set_workspace(task.id, &st.to_host_path(&info.path), &info.base_change)
         .await?;
+    // Plan 12 Task 5: the repo's built dependencies, so cargo compiles only its own crates
+    crate::disk::seed_dependencies(st, task).await;
     // Overlay on main: O empty when B = T; reconcile fills changed(B, T) when main moved.
     init_task_overlay(st, &task.repo, &task.slug, &info.base_change).await?;
     Ok(())
