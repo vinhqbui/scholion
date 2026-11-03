@@ -5,10 +5,10 @@
 - **Lean builds, one target dir per task** (Plan 12). Build output was 99.99% of the disk the
   first dogfood run took: about 20 GB per Rust task (14 GB of test binaries that were 73% debug
   info, 4 GB of incremental cache) against 3 MB of Scholion's own state.
-  - The per-repo cargo config the daemon writes now sets `incremental = false` and
-    `debug = "line-tables-only"` and **no `target-dir`**: every task workspace builds into its own
-    `target/`, removed with the workspace. Measured on this repo, a full `cargo test` build is
-    6.7 GB instead of 21 GB.
+  - The per-repo cargo config the daemon writes now sets `incremental = false`,
+    `debug = "line-tables-only"` (no debug info at all for dependencies) and **no `target-dir`**:
+    every task workspace builds into its own `target/`, removed with the workspace. Measured on
+    this repo, a full `cargo test` build is 4.3 GB instead of 21 GB.
   - **Fixes Plan 11's shared build cache**, which pointed every workspace of a repo at one target
     dir: cargo names a path package's artifacts by its path relative to the workspace root, so
     `cargo test` in one workspace ran another task's test binary (a false green or red

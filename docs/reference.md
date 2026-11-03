@@ -636,13 +636,18 @@ start-up), the daemon writes `<ws_root>/<repo>/.cargo/config.toml`:
 incremental = false
 [profile.dev]
 debug = "line-tables-only"
+# Dependencies carry no debug info at all; the repo's own crates keep file:line.
+[profile.dev.package."*"]
+debug = false
 ```
 
 Cargo reads `.cargo/config.toml` in the current directory and every parent, so this one file
 covers every task workspace of the repo without touching the repo or any snapshot. Measured on
-scholion's own workspace, a full `cargo test` build is 6.7 GB with it against 21 GB without:
-line tables keep file:line in panics and backtraces at a fraction of full debug info, and the
-incremental cache only pays off for an editor's rebuild loop, not for validations. A deeper
+scholion's own workspace, a full `cargo test` build is 4.3 GB with it against 21 GB without
+(6.7 GB with line tables for dependencies too): line tables keep file:line in panics and
+backtraces of the repo's own code at a fraction of full debug info, a panic inside a dependency
+still names the dependency's frames, and the incremental cache only pays off for an editor's
+rebuild loop, not for validations. A deeper
 `.cargo/config.toml` (the repo's own) and `CARGO_*` in the environment still win. A file whose
 first line is not av's is never rewritten. `AV_BUILD_CACHE=off` writes none.
 

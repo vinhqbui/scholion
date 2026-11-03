@@ -307,6 +307,9 @@ const CARGO_CONFIG: &str = "# written by av: lean builds for every task workspac
 incremental = false
 [profile.dev]
 debug = \"line-tables-only\"
+# Dependencies carry no debug info at all; the repo's own crates keep file:line.
+[profile.dev.package.\"*\"]
+debug = false
 ";
 
 /// A git repo with a root `Cargo.toml`.

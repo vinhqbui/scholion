@@ -38,7 +38,7 @@ hands it to whichever agent comes next.
   takes the work it's best at, another agent reviews it, and the reviewer merges.
 - **A dashboard** at `http://localhost:7420/ui` to watch them work.
 - **A disk that stays lean.** Workspaces of merged and abandoned tasks are removed after an hour
-  with their build output, a Rust repo's tasks build lean (a third of the disk of a default
+  with their build output, a Rust repo's tasks build lean (a fifth of the disk of a default
   `cargo test`, each task in its own target dir), and the hooks tell an agent what it left outside
   its workspace. `av disk` shows where the space went; `av gc` reclaims it.
 

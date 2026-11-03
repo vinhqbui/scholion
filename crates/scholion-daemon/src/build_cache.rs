@@ -1,8 +1,9 @@
 //! Plan 12: lean builds. A repo whose trunk has a root `Cargo.toml` gets
 //! `<ws_root>/<repo>/.cargo/config.toml`, which every task workspace of the repo inherits: no
-//! incremental cache and line tables instead of full debug info. Measured on scholion's own
-//! workspace, that is about a third of the disk of a default `cargo test` build (dogfood run 1:
-//! 20 GB per task, 14 GB of it test binaries that were 73% debug info, 3 GB incremental).
+//! incremental cache, line tables instead of full debug info for the repo's crates and none for
+//! dependencies. Measured on scholion's own workspace, that is a fifth of the disk of a default
+//! `cargo test` build (21 GB → 4.3 GB; dogfood run 1 paid 20 GB per task, 14 GB of it test
+//! binaries that were 73% debug info, 4 GB incremental).
 //!
 //! The file sets no `target-dir`: each workspace builds into its own `target/` (cargo's default),
 //! which goes with the workspace when the task is reclaimed. Plan 11's one target dir per repo
@@ -35,6 +36,9 @@ const CONFIG: &str = "# written by av: lean builds for every task workspace of t
 incremental = false
 [profile.dev]
 debug = \"line-tables-only\"
+# Dependencies carry no debug info at all; the repo's own crates keep file:line.
+[profile.dev.package.\"*\"]
+debug = false
 ";
 
 /// `<ws_root>/<repo>/.cargo/config.toml` (in this process).

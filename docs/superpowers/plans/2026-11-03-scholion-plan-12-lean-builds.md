@@ -24,19 +24,20 @@ required check's glob matched every path.
 Anatomy of the same tree built two ways (scholion at `aedb7e3`, `cargo test --workspace
 --no-run`, measured 2026-11-03 in the build container):
 
-| | default profile | lean (`debug = "line-tables-only"`, `incremental = false`) |
-|---|---|---|
-| total | **21 GB** | **6.7 GB** |
-| test/bin executables | 14 GB (65) | 4.9 GB (63) |
-| `incremental/` | 4.0 GB | 0 |
-| dependency rlib + rmeta | 2.7 GB | 1.4 GB |
-| build scripts | 270 MB | 240 MB |
+| | default profile | lean (`debug = "line-tables-only"`, `incremental = false`) | lean + `package."*".debug = false` (shipped) |
+|---|---|---|---|
+| total | **21 GB** | **6.7 GB** | **4.3 GB** |
+| test/bin executables | 14 GB (65) | 4.9 GB (63) | 3.0 GB (63) |
+| `incremental/` | 4.0 GB | 0 | 0 |
+| dependency rlib + rmeta | 2.7 GB | 1.4 GB | 1.3 GB |
+| build scripts | 270 MB | 240 MB | ≈ 240 MB |
 
 ## Task 1: one target dir per task, lean profile — done (this plan's first PR)
 
 - `build_cache.rs` writes, for a repo whose trunk has a root `Cargo.toml`,
-  `<ws_root>/<repo>/.cargo/config.toml` with `[build] incremental = false` and `[profile.dev]
-  debug = "line-tables-only"`, and **no `target-dir`**. Each workspace builds into its own
+  `<ws_root>/<repo>/.cargo/config.toml` with `[build] incremental = false`, `[profile.dev]
+  debug = "line-tables-only"`, `[profile.dev.package."*"] debug = false` (dependencies carry no
+  debug info; the repo's own crates keep file:line), and **no `target-dir`**. Each workspace builds into its own
   `target/` (cargo's default), which `remove_workspace` deletes with the workspace. A file whose
   first line starts with `# written by av:` is rewritten, so the Plan 11 file goes at start-up.
 - `scholion-vcs` adds `/target/` to `AGENT_IGNORES`: a workspace's top-level build output is never
@@ -47,7 +48,7 @@ Anatomy of the same tree built two ways (scholion at `aedb7e3`, `cargo test --wo
   workspaces of one imported cargo repo), `disk_and_gc_count_a_workspaces_build_output_apart`,
   `build_output_is_never_snapshotted_even_when_the_repo_does_not_ignore_it`.
 
-Expected effect on the run above: ≈ 20 → ≈ 7 GB per task (−65%), no false validations, and a
+Expected effect on the run above: ≈ 20 → ≈ 4.5 GB per task (−78%), no false validations, and a
 reviewer validating in the owner's workspace still gets a warm build.
 
 ## Task 2: checks scoped to what changed
