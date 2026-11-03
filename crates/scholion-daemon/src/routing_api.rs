@@ -391,7 +391,9 @@ pub const MAX_WAIT_SECS: u64 = 50;
 
 /// How often a waiting `next` looks again when nothing woke it. Work that arrives by an event or
 /// a backlog/profile change wakes it at once (`Wake`); the tick is for what only time releases: a
-/// lease running out (an abandoned task), a review reservation ending.
+/// lease running out (an abandoned task), a review reservation ending. It also bounds a missed
+/// wake: the event feed reads by id, so an event whose transaction commits after a higher id was
+/// read is never broadcast. Keep it short.
 pub const WAIT_TICK: Duration = Duration::from_secs(10);
 
 /// Event kinds after which `next` may have something new to give: a review, a merge, a handoff,
