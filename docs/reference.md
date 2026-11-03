@@ -557,14 +557,14 @@ and its merges, newest first. It is built from what Scholion already keeps; noth
 recorded, and no cost is tracked. "Build context pack" shows exactly what the next agent would
 receive at a given budget.
 Under the board, a Main panel lists main's last commits with their post-merge check and the task
-that landed each (read once the history is in, then when a merge, undo or revert arrives or at most
-once a minute), and its header says whether semantic search is on and how many rows wait in the
+that landed each (read once the history is in, then when a merge, undo or revert arrives, and once
+a minute while the page is live, since a post-merge check lands with no event), and its header says whether semantic search is on and how many rows wait in the
 outbox, the backup's state (ok, pending, failing), how many conventions the repo has and whether an
 import is running; a Disk panel (read at start, on its button and every five minutes while the
 page is live and visible, since measuring walks the filesystem) shows what workspaces, build
 caches, the store and scratch dirs take, the repo's workspaces largest first with the ones a sweep
 would reclaim, and what sessions left outside any workspace (512 MiB or more, the hooks' default,
-by a session of this repo in the last day earns a "Needs attention" row). The page never deletes;
+by a session of this repo's tasks, or of no task, in the last day earns a "Needs attention" row). The page never deletes;
 `av gc` does. When the page cannot load (the daemon is away at start, or the history cannot be
 read) it asks `/healthz` every five seconds and starts over once it answers; a feed that drops
 mid-session keeps reconnecting every few seconds as before.

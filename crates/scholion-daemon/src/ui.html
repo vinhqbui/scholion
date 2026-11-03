@@ -921,10 +921,11 @@ async function loadMain() {
   const parts = [];
   if (outbox) parts.push(h("span", { title: "Embeddings for semantic search" }, outbox.semantic ? `semantic on · ${outbox.pending} pending` : "semantic off"));
   if (backup && backup.remote) {
-    const remote = String(backup.remote).replace(/\/\/[^/@]+@/, "//"); // never show credentials
+    const scrub = s => String(s).replace(/\/\/[^/@\s]+@/g, "//"); // never show credentials, not even in git's errors
+    const remote = scrub(backup.remote);
     const word = backup.last_error ? "backup failing" : backup.last_pushed ? "backup ok" : "backup pending";
     parts.push(h("span", { class: backup.last_error ? "warn-text" : null,
-      title: backup.last_error || (backup.last_pushed ? `pushed to ${remote} ${ago(backup.last_pushed)}` : `nothing pushed to ${remote} yet`) },
+      title: backup.last_error ? scrub(backup.last_error) : backup.last_pushed ? `pushed to ${remote} ${ago(backup.last_pushed)}` : `nothing pushed to ${remote} yet` },
       word + (backup.branch ? " · " + backup.branch : "")));
   }
   if (conv) parts.push(h("span", { title: "Rules served in packs when their path glob matches" }, `${(conv.conventions || []).length} conventions`));
@@ -997,8 +998,12 @@ function renderDisk() {
 }
 document.getElementById("diskRefresh").append(icon("refresh", 15));
 document.getElementById("diskRefresh").addEventListener("click", () => loadDisk());
-// not while the daemon is away, the token is missing, or nobody is looking
+// not while the daemon is away, the token is missing, or nobody is looking; a tab coming back
+// into view catches up
 setInterval(() => { if (S.liveTone === "green" && !document.hidden) loadDisk(); }, DISK_EVERY);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && S.liveTone === "green" && diskIsDue()) loadDisk(); });
+// a post-merge check lands with no event, so main's log is also read when due on a timer
+setInterval(() => { if (S.liveTone === "green" && !document.hidden && S.histLoaded && mainIsDue()) loadMain().catch(() => {}); }, MAIN_EVERY);
 
 // What the repo works toward: active targets with how many of their backlog items merged, then
 // the last few closed ones. Targets are added with `av target add`; this page only reads them.
@@ -1454,6 +1459,7 @@ document.getElementById("repo").addEventListener("change", e => {
   S.repo = e.target.value; store(false, "av_repo", S.repo);
   // nothing of the old repo stays on the page while the new one loads
   S.events = []; S.health = null; S.targets = []; S.queuedItems = []; S.timelines = new Map();
+  fill(document.getElementById("mainLog"), empty("Reading main…")); fill(document.getElementById("mainStatus"));
   renderFeed(); loadTasks().catch(showErr); startFeed();
 });
 document.getElementById("showAbandoned").addEventListener("change", renderBoard);
@@ -1772,20 +1778,22 @@ function receiptEl(rc) {
 function showErr(e) { if (!(e instanceof Unauthorized)) banner("Could not reach the daemon: " + e.message); }
 
 // While the daemon is away, ask /healthz every five seconds and start over once it answers. One
-// waiter at a time: a second failed boot (the token dialog, say) joins the first.
-let waiting = false;
+// waiter at a time: a second failed boot of the same generation (the token dialog, say) joins the
+// first, and a newer generation (a repo change) takes over from an older waiter.
+let waitingGen = null;
 async function waitForDaemon(gen) {
-  if (waiting) return;
-  waiting = true;
+  if (waitingGen === gen) return;
+  waitingGen = gen;
   try {
-    while (gen === feedGen) {
+    while (gen === feedGen && waitingGen === gen) {
       await new Promise(r => setTimeout(r, 5000));
+      if (waitingGen !== gen) return;
       try {
         const res = await fetch("/healthz");
-        if (res.ok) { if (gen === feedGen) boot(); return; }
+        if (res.ok) { if (gen === feedGen && waitingGen === gen) boot(); return; }
       } catch (_) {}
     }
-  } finally { waiting = false; }
+  } finally { if (waitingGen === gen) waitingGen = null; }
 }
 
 async function boot() {
