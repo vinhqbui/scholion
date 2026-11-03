@@ -47,6 +47,9 @@ pub struct Config {
     /// `AV_WS_RETAIN_SECS` (default 3600; `never` = `None`): how long the workspace of a merged
     /// or abandoned task stays on disk before the daemon removes it. `0` removes it at once.
     pub ws_retain_secs: Option<u64>,
+    /// `AV_BUILD_CACHE` (default on; `off`, `0` or `false` turn it off): a repo with a root
+    /// `Cargo.toml` gets one cargo target dir for all its task workspaces.
+    pub build_cache: bool,
     /// `AV_BACKUP_REMOTES`: whitespace-separated `repo=url` pairs, pushed after every merge.
     /// `POST /v1/repos/{name}/backup` sets one at runtime.
     pub backup_remotes: Vec<(String, String)>,
@@ -131,6 +134,7 @@ impl Config {
                 None => DEFAULT_LEASE_SECS,
             },
             ws_retain_secs: parse_ws_retain(get("AV_WS_RETAIN_SECS").as_deref())?,
+            build_cache: parse_switch("AV_BUILD_CACHE", get("AV_BUILD_CACHE").as_deref())?,
             backup_remotes: parse_backup_remotes(get("AV_BACKUP_REMOTES").as_deref())?,
             token: normalize_secret(get("AV_TOKEN")),
         })
@@ -156,6 +160,18 @@ fn parse_ws_retain(value: Option<&str>) -> Result<Option<u64>> {
                 "AV_WS_RETAIN_SECS must be a number of seconds or `never`, got {v}"
             ))
         }),
+    }
+}
+
+/// An on/off setting: unset or blank is on; `off`, `0`, `false`, `no` are off; `on`, `1`, `true`,
+/// `yes` are on; anything else is `Invalid`.
+fn parse_switch(name: &str, value: Option<&str>) -> Result<bool> {
+    match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("") | Some("on" | "1" | "true" | "yes") => Ok(true),
+        Some("off" | "0" | "false" | "no") => Ok(false),
+        Some(v) => Err(AvError::Invalid(format!(
+            "{name} must be on or off, got {v}"
+        ))),
     }
 }
 
@@ -207,6 +223,7 @@ pub async fn build_state(cfg: &Config, database_url: &str) -> Result<AppState> {
     .with_expand_cap(cfg.expand_cap)
     .with_lease_secs(cfg.lease_secs)
     .with_ws_retain(cfg.ws_retain_secs)
+    .with_build_cache(cfg.build_cache)
     .with_disk_paths(
         Some(cfg.store_root.clone()),
         cfg.database_url.is_none().then(|| cfg.pg_dir.clone()),
@@ -249,6 +266,17 @@ mod tests {
         assert!(parse_backup_remotes(None).unwrap().is_empty());
         assert!(parse_backup_remotes(Some("no-equals")).is_err());
         assert!(parse_backup_remotes(Some("=url")).is_err());
+    }
+
+    #[test]
+    fn build_cache_is_on_unless_turned_off() {
+        assert!(parse_switch("X", None).unwrap());
+        assert!(parse_switch("X", Some("")).unwrap());
+        assert!(parse_switch("X", Some("on")).unwrap());
+        assert!(!parse_switch("X", Some("off")).unwrap());
+        assert!(!parse_switch("X", Some("0")).unwrap());
+        assert!(!parse_switch("X", Some(" FALSE ")).unwrap());
+        assert!(parse_switch("X", Some("maybe")).is_err());
     }
 
     #[test]

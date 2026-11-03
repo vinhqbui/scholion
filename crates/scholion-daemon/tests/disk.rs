@@ -297,6 +297,162 @@ async fn retain_zero_removes_the_workspace_with_the_merge() {
     assert_eq!(out["reclaimed"], json!([]), "{out}");
 }
 
+// ---- Task 3: one cargo build cache per repo ----
+
+const CARGO_CONFIG: &str =
+    "# written by av: one cargo target for every task workspace of this repo.
+# Delete this file, or set AV_BUILD_CACHE=off before `av up`, to opt out.
+[build]
+target-dir = \".cache/cargo-target\"
+[profile.dev]
+debug = \"line-tables-only\"
+";
+
+/// A git repo with a root `Cargo.toml`.
+fn cargo_git_repo() -> TempDir {
+    let d = TempDir::new().unwrap();
+    git(d.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        d.path().join("Cargo.toml"),
+        "[package]
+name = \"crab\"
+version = \"0.1.0\"
+edition = \"2021\"
+",
+    )
+    .unwrap();
+    std::fs::create_dir_all(d.path().join("src")).unwrap();
+    std::fs::write(
+        d.path().join("src/lib.rs"),
+        "pub fn crab() {}
+",
+    )
+    .unwrap();
+    git(d.path(), &["add", "-A"]);
+    git(d.path(), &["commit", "-q", "-m", "init"]);
+    d
+}
+
+async fn import(e: &Env, name: &str, src: &Path) {
+    let (status, body) = call(
+        &e.app,
+        "POST",
+        "/v1/repos",
+        Some(json!({"name": name, "git_source": src})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+fn cargo_config(e: &Env, repo: &str) -> PathBuf {
+    e.ws.path().join(repo).join(".cargo/config.toml")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cargo_repo_gets_one_build_cache_for_its_workspaces() {
+    let e = env().await;
+    let src = cargo_git_repo();
+    import(&e, "crab", src.path()).await;
+    assert_eq!(
+        std::fs::read_to_string(cargo_config(&e, "crab")).unwrap(),
+        CARGO_CONFIG
+    );
+    // a repo without a root Cargo.toml gets none
+    assert!(!cargo_config(&e, "demo").exists());
+    assert!(!e.ws.path().join("demo/.cargo").exists());
+
+    let (status, disk) = call(&e.app, "GET", "/v1/disk", None).await;
+    assert_eq!(status, StatusCode::OK, "{disk}");
+    let repo = |name: &str| {
+        disk["repos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .unwrap_or_else(|| panic!("{disk}"))
+            .clone()
+    };
+    assert_eq!(repo("crab")["build_cache"]["enabled"], true, "{disk}");
+    assert_eq!(
+        repo("crab")["build_cache"]["config"],
+        format!("{HOST_WS}/crab/.cargo/config.toml"),
+        "{disk}"
+    );
+    assert_eq!(repo("demo")["build_cache"]["config"], Value::Null, "{disk}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_users_own_cargo_config_is_never_overwritten() {
+    let e = env().await;
+    let mine = "[build]
+target-dir = \"/elsewhere\"
+";
+    std::fs::create_dir_all(e.ws.path().join("crab/.cargo")).unwrap();
+    std::fs::write(cargo_config(&e, "crab"), mine).unwrap();
+    let src = cargo_git_repo();
+    import(&e, "crab", src.path()).await;
+    assert_eq!(
+        std::fs::read_to_string(cargo_config(&e, "crab")).unwrap(),
+        mine
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_av_cargo_config_is_rewritten() {
+    let e = env().await;
+    std::fs::create_dir_all(e.ws.path().join("crab/.cargo")).unwrap();
+    std::fs::write(
+        cargo_config(&e, "crab"),
+        "# written by av: one cargo target for every task workspace of this repo.
+[build]
+",
+    )
+    .unwrap();
+    let src = cargo_git_repo();
+    import(&e, "crab", src.path()).await;
+    assert_eq!(
+        std::fs::read_to_string(cargo_config(&e, "crab")).unwrap(),
+        CARGO_CONFIG
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn build_cache_off_writes_nothing() {
+    let e = env_with(|s| s.with_build_cache(false)).await;
+    let src = cargo_git_repo();
+    import(&e, "crab", src.path()).await;
+    assert!(!cargo_config(&e, "crab").exists());
+    let (_, disk) = call(&e.app, "GET", "/v1/disk", None).await;
+    let crab = disk["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "crab")
+        .unwrap_or_else(|| panic!("{disk}"));
+    assert_eq!(crab["build_cache"]["enabled"], false, "{disk}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn start_up_gives_repos_imported_earlier_their_build_cache() {
+    let slot: Arc<std::sync::Mutex<Option<AppState>>> = Arc::default();
+    let keep = slot.clone();
+    let e = env_with(move |s| {
+        *keep.lock().unwrap() = Some(s.clone());
+        s
+    })
+    .await;
+    let src = cargo_git_repo();
+    import(&e, "crab", src.path()).await;
+    // as if imported by a daemon without the build cache
+    std::fs::remove_dir_all(e.ws.path().join("crab/.cargo")).unwrap();
+    let state = slot.lock().unwrap().clone().unwrap();
+    scholion_daemon::sync_repos(&state).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(cargo_config(&e, "crab")).unwrap(),
+        CARGO_CONFIG
+    );
+}
+
 // ---- the sweep, through the daemon's own start-up (`serve_with`) ----
 
 fn config(db: &TestDb, dir: &Path, retain: Option<u64>) -> Config {
@@ -315,6 +471,7 @@ fn config(db: &TestDb, dir: &Path, retain: Option<u64>) -> Config {
         pg_max_connections: 4,
         max_concurrent_starts: None,
         lease_secs: 1800,
+        build_cache: true,
         ws_retain_secs: retain,
         backup_remotes: Vec::new(),
         token: None,

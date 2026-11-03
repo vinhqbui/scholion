@@ -3,6 +3,7 @@
 mod api;
 mod auth;
 mod backup;
+mod build_cache;
 mod checks;
 mod derived;
 mod disk;
@@ -75,6 +76,8 @@ pub struct AppState {
     pub(crate) store_root: Option<PathBuf>,
     /// Lite mode's own Postgres directory (`AV_PG_DIR`), for `GET /v1/disk`.
     pub(crate) pg_dir: Option<PathBuf>,
+    /// `AV_BUILD_CACHE`: one cargo target per repo, shared by its task workspaces.
+    pub(crate) build_cache: bool,
     /// Open MCP sessions (`/mcp`), by `Mcp-Session-Id`.
     pub(crate) mcp: mcp::Sessions,
     task_locks: Arc<Mutex<HashMap<TaskId, Arc<tokio::sync::Mutex<()>>>>>,
@@ -132,6 +135,7 @@ impl AppState {
             reclaim_tick: disk::RECLAIM_TICK,
             store_root: None,
             pg_dir: None,
+            build_cache: true,
             mcp: Arc::default(),
             task_locks: Arc::default(),
             guard: Arc::new(AllowAll),
@@ -273,6 +277,12 @@ impl AppState {
     pub fn with_disk_paths(mut self, store_root: Option<PathBuf>, pg_dir: Option<PathBuf>) -> Self {
         self.store_root = store_root;
         self.pg_dir = pg_dir;
+        self
+    }
+
+    /// Whether a cargo repo's task workspaces share one build cache (`AV_BUILD_CACHE`, default on).
+    pub fn with_build_cache(mut self, on: bool) -> Self {
+        self.build_cache = on;
         self
     }
 

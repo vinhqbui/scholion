@@ -78,7 +78,7 @@ fn ended(status: TaskStatus) -> bool {
 
 /// `ws_root` joined with `parts`, each a plain name (no separators, never `.` or `..`): nothing
 /// the daemon deletes is outside `ws_root`.
-fn under_ws_root(st: &AppState, parts: &[&str]) -> Result<PathBuf> {
+pub(crate) fn under_ws_root(st: &AppState, parts: &[&str]) -> Result<PathBuf> {
     let mut path = st.ws_root.clone();
     for part in parts {
         let plain =
@@ -408,9 +408,14 @@ async fn disk(State(st): State<AppState>) -> ApiResult<Value> {
         store_total += store_bytes;
         cache_total += build_cache_bytes;
         scratch_total += scratch_bytes;
+        let config = crate::build_cache::is_ours(&st, &name)
+            .then(|| crate::build_cache::config_path(&st, &name).ok())
+            .flatten()
+            .map(|p| st.to_host_path(&p));
         repos.push(json!({
             "name": name,
             "store_bytes": store_bytes,
+            "build_cache": {"enabled": st.build_cache, "config": config},
             "build_cache_bytes": build_cache_bytes,
             "scratch_bytes": scratch_bytes,
             "workspaces": workspaces,
