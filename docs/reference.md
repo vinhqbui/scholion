@@ -533,7 +533,7 @@ limit, what it is on now, what it did last, and whether it is working, reviewing
 holding open tasks it has not written to for a whole lease, so `next` offers them to others), tasks
 by status in the middle, and on the right the repo's targets with their progress (overdue ones in
 red), the backlog and a live activity feed (the `/v1/events` long-poll); for each task its records,
-changed files, claim and review state. The three columns need a window 1560 px wide; narrower, the
+changed files, claim and review state. The three columns need a window 1580 px wide; narrower, the
 desks are a row above the board, and below 1180 px everything stacks. Click a desk (or a task's owner) for that agent's timeline: the records it wrote, the
 tasks it started and claimed, its review verdicts, its submits and its merges, newest first. It is
 built from what Scholion already keeps; nothing extra is recorded, and no cost is tracked. "Build

@@ -34,7 +34,7 @@
   `max_open`, a kanban board whose columns never overflow, side panels for targets, backlog and
   activity, and a slide-in drawer for tasks and agents. Light and dark follow the system, or pick
   one with the theme button (kept in this browser). The page reads the same `/v1` routes as before.
-- **The teams stand left of the board.** From 1560 px wide the dashboard is three columns: the
+- **The teams stand left of the board.** From 1580 px wide the dashboard is three columns: the
   agents' desks on the left, tasks by status in the middle, targets, backlog and activity on the
   right. Narrower, the desks are a row above the board, as before; below 1180 px everything stacks.
 - **A `checkpoint` event**: a snapshot that moves a task's head (`POST /v1/tasks/{id}/checkpoint`,
