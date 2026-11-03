@@ -55,13 +55,52 @@ pub fn router_with(state: AppState, extra: Router<AppState>) -> Router {
             state.clone(),
             crate::auth::require_token,
         ));
-    open.merge(api).with_state(state)
+    open.merge(api)
+        .layer(axum::middleware::map_response(stamp_version))
+        .with_state(state)
+}
+
+/// The daemon's crate version, sent on every response (`X-Av-Version`) and by `/v1/version`, so
+/// a client can tell it is talking to a daemon of another build.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Route families `/v1` serves (the first path segment after `/v1`, plus `mcp`).
+const ROUTE_FAMILIES: &[&str] = &[
+    "repos",
+    "reindex",
+    "tasks",
+    "receipts",
+    "events",
+    "maintenance",
+    "agents",
+    "backlog",
+    "targets",
+    "office",
+    "disk",
+    "gc",
+    "footprint",
+    "version",
+    "mcp",
+];
+
+async fn stamp_version(mut res: axum::response::Response) -> axum::response::Response {
+    res.headers_mut().insert(
+        "x-av-version",
+        axum::http::HeaderValue::from_static(VERSION),
+    );
+    res
+}
+
+/// `GET /v1/version`: the daemon's version and the route families it serves.
+async fn version() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "version": VERSION, "routes": ROUTE_FAMILIES }))
 }
 
 /// Every `/v1` route, without the token check: `router` adds it, and the MCP tools call these
 /// in-process after `/mcp` itself passed it.
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
+        .route("/v1/version", get(version))
         .route("/v1/repos", get(list_repos).post(add_repo))
         .route("/v1/repos/{name}/import", get(get_import))
         .route("/v1/reindex", post(crate::reindex::reindex))

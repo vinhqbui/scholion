@@ -4137,3 +4137,40 @@ async fn sync_repos_backfills_repos_that_are_only_on_disk() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "old");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn version_names_the_daemon_and_its_route_families() {
+    let e = env().await;
+    let (status, body) = call(&e.app, "GET", "/v1/version", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+    let routes: Vec<&str> = body["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap())
+        .collect();
+    for family in ["tasks", "backlog", "disk", "gc", "footprint", "version"] {
+        assert!(routes.contains(&family), "{family} missing from {routes:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_response_carries_the_daemon_version() {
+    use tower::ServiceExt as _;
+    let e = env().await;
+    for uri in ["/healthz", "/v1/repos", "/v1/no-such-route"] {
+        let req = Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res = e.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            res.headers()
+                .get("x-av-version")
+                .map(|v| v.to_str().unwrap()),
+            Some(env!("CARGO_PKG_VERSION")),
+            "{uri}"
+        );
+    }
+}

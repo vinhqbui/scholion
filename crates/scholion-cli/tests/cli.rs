@@ -3436,3 +3436,74 @@ fn gc_dry_run_says_what_it_would_remove() {
     assert!(sent.contains("\"dry_run\":false"), "{sent}");
     assert!(!sent.contains("retain_secs"), "{sent}");
 }
+
+/// A stand-in daemon that answers every request with `status_line` and an `X-Av-Version` header.
+fn canned_daemon(status_line: &'static str, body: &'static str, version: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let _ = write!(
+                s,
+                "HTTP/1.1 {status_line}\r\nx-av-version: {version}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    url
+}
+
+#[test]
+fn a_daemon_of_another_version_is_warned_about_once() {
+    let url = canned_daemon("200 OK", "[]", "0.0.1");
+    let dir = TempDir::new().unwrap();
+    let o = av_with(&url, dir.path(), &["repo", "list"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let e = err(&o);
+    assert_eq!(e.matches("warning: the daemon").count(), 1, "{e}");
+    assert!(
+        e.contains("0.0.1") && e.contains(env!("CARGO_PKG_VERSION")),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_daemon_of_the_same_version_is_not_warned_about() {
+    let url = canned_daemon("200 OK", "[]", env!("CARGO_PKG_VERSION"));
+    let dir = TempDir::new().unwrap();
+    let o = av_with(&url, dir.path(), &["repo", "list"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(!err(&o).contains("warning"), "{}", err(&o));
+}
+
+#[test]
+fn a_bare_404_says_the_daemon_is_probably_older() {
+    let url = canned_daemon("404 Not Found", "", "0.0.1");
+    let dir = TempDir::new().unwrap();
+    let o = av_with(&url, dir.path(), &["repo", "list"]);
+    assert!(!o.status.success());
+    let e = err(&o);
+    assert!(e.contains("probably older than this av"), "{e}");
+    assert!(
+        e.contains("0.0.1") && e.contains(env!("CARGO_PKG_VERSION")),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_404_the_daemon_explains_is_left_alone() {
+    let url = canned_daemon(
+        "404 Not Found",
+        r#"{"error":"no such task"}"#,
+        env!("CARGO_PKG_VERSION"),
+    );
+    let dir = TempDir::new().unwrap();
+    let o = av_with(&url, dir.path(), &["repo", "list"]);
+    assert!(!o.status.success());
+    let e = err(&o);
+    assert!(e.contains("no such task") && !e.contains("older"), "{e}");
+}
