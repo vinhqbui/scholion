@@ -1713,7 +1713,7 @@ fn hook_stop_blocks_once_when_a_session_left_a_big_build_outside_the_workspace()
         "{reason}"
     );
     assert!(
-        reason.contains(&d.ws.join("demo/.cache").display().to_string())
+        reason.contains(&d.ws.join("demo/.scratch").display().to_string())
             && reason.contains("$AV_SCRATCH"),
         "{reason}"
     );
@@ -3414,11 +3414,11 @@ fn canned(body: &'static str) -> Canned {
 const DISK: &str = r#"{"ws_root": "/home/u/ws", "store_root": "/home/u/.scholion/store",
  "pg_dir": "/home/u/.scholion/pg", "retain_secs": 3600,
  "repos": [{"name": "demo", "store_bytes": 31457280,
-   "build_cache": {"enabled": true, "config": "/home/u/ws/demo/.cargo/config.toml"},
+   "build_cache": {"enabled": true},
    "build_cache_bytes": 1288490188, "scratch_bytes": 40960,
    "workspaces": [
-     {"slug": "improve-greeting", "status": "merged", "bytes": 12582912, "age_secs": 7200, "reclaimable": true},
-     {"slug": "fix-thing", "status": "open", "bytes": 3145728, "age_secs": 300, "reclaimable": false}]}],
+     {"slug": "improve-greeting", "status": "merged", "bytes": 12582912, "scratch_bytes": 0, "age_secs": 7200, "reclaimable": true},
+     {"slug": "fix-thing", "status": "open", "bytes": 3145728, "scratch_bytes": 40960, "age_secs": 300, "reclaimable": false}]}],
  "outside": [{"session": "s1", "agent": "claude", "task": "0b6a", "slug": "fix-thing",
    "added": [{"path": "/home/u/.cache/huge", "bytes": 943718400},
              {"path": "/tmp/x/target", "bytes": 209715200}],
@@ -3438,8 +3438,9 @@ fn disk_shows_workspaces_caches_and_what_sessions_left_outside() {
         "12 MB",
         "reclaimable",
         "fix-thing",
+        "40 KB",
         "1.2 GB",
-        "/home/u/ws/demo/.cargo/config.toml",
+        "av gc --build-cache",
         "claude",
         "/home/u/.cache/huge",
         "900 MB",

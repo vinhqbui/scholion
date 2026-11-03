@@ -193,6 +193,37 @@ async fn agent_metadata_file_is_never_snapshotted() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn avs_cargo_config_is_never_snapshotted_but_an_agents_own_is() {
+    let e = env().await;
+    let w = e.vcs.create_workspace("demo", "crab").await.unwrap();
+    std::fs::create_dir_all(w.path.join(".cargo")).unwrap();
+    std::fs::write(
+        w.path.join(".cargo/config.toml"),
+        scholion_core::build_dir::cargo_config("crab"),
+    )
+    .unwrap();
+    std::fs::write(w.path.join("real.txt"), "tracked").unwrap();
+    let head = e.vcs.snapshot("demo", "crab").await.unwrap();
+    assert_eq!(
+        e.vcs
+            .changed_paths("demo", &w.base_change, &head)
+            .await
+            .unwrap(),
+        vec!["real.txt"]
+    );
+    // the agent replaces it with its own: that is part of the task's changes
+    std::fs::write(w.path.join(".cargo/config.toml"), "[build]\njobs = 2\n").unwrap();
+    let head = e.vcs.snapshot("demo", "crab").await.unwrap();
+    assert_eq!(
+        e.vcs
+            .changed_paths("demo", &w.base_change, &head)
+            .await
+            .unwrap(),
+        vec![".cargo/config.toml", "real.txt"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unsafe_repo_and_slug_names_are_rejected_without_touching_the_filesystem() {
     let e = env().await;
     let outside = e._store.path().parent().unwrap().to_path_buf();

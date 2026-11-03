@@ -254,8 +254,9 @@ pub async fn sync_repos(st: &AppState) -> Result<usize> {
             st.store.register_repo(&name, None).await?;
             added += 1;
         }
-        // repos imported before the build cache existed get it too
-        crate::build_cache::ensure_logged(st, &name).await;
+        // the shared build cache an older av wrote for the repo is unsound (two tasks' builds
+        // collide in it): remove it; tasks build into their own scratch dir
+        crate::build_cache::remove_legacy_logged(st, &name);
     }
     Ok(added)
 }
@@ -354,7 +355,7 @@ async fn import(st: &AppState, name: &str, src: &std::path::Path) -> Result<(Cha
     st.store
         .register_repo(name, source.as_deref().and_then(|p| p.to_str()))
         .await?;
-    crate::build_cache::ensure_logged(st, name).await;
+    crate::build_cache::remove_legacy_logged(st, name);
     let stats = index_change(st, name, "main", &main).await?;
     Ok((main, stats.parsed + stats.cached))
 }
@@ -530,6 +531,7 @@ pub(crate) async fn create_started(
 
 async fn prepare_workspace(st: &AppState, task: &Task) -> Result<()> {
     let info = st.vcs.create_workspace(&task.repo, &task.slug).await?;
+    crate::build_cache::ensure_task_config_logged(st, &info.path, &task.slug);
     st.store
         .set_workspace(task.id, &st.to_host_path(&info.path), &info.base_change)
         .await?;

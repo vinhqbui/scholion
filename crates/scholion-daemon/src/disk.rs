@@ -1,7 +1,10 @@
 //! Plan 11: what agents leave on disk. The workspace of a merged or abandoned task is removed
 //! once it has been in that status for `AV_WS_RETAIN_SECS` (by the sweep, `POST /v1/gc`, or with
 //! the merge or abandon itself when that is 0), and comes back when an undo or revert returns the
-//! task to work. `GET /v1/disk` shows what is where. The daemon deletes only under `ws_root`.
+//! task to work. Its scratch dir, which holds its build output (`build_cache`), goes with the
+//! merge or abandon itself whatever the retention (unless that is `never`): nothing needs it
+//! again, and it is most of what a task takes. `GET /v1/disk` shows what is where. The daemon
+//! deletes only under `ws_root`.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -22,9 +25,11 @@ use crate::error::ApiResult;
 /// How often the daemon looks for workspaces to reclaim.
 pub const RECLAIM_TICK: Duration = Duration::from_secs(60);
 
-/// `<ws_root>/<repo>/.scratch/<slug>`: a task's temporary files, removed with its workspace.
-const SCRATCH: &str = ".scratch";
-/// `<ws_root>/<repo>/.cache`: the build cache every workspace of a repo shares.
+/// `<ws_root>/<repo>/.scratch/<slug>`: a task's temporary files and build output, removed with
+/// the merge or abandon.
+const SCRATCH: &str = scholion_core::build_dir::SCRATCH;
+/// `<ws_root>/<repo>/.cache`: the build cache an older av had every workspace of a repo share;
+/// removed at start-up (`build_cache::remove_legacy`) and by `gc` with `build_cache`.
 const BUILD_CACHE: &str = ".cache";
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -165,7 +170,7 @@ fn exists(p: &Path) -> bool {
 }
 
 /// Bytes of the files under `p` (symlinks count as themselves, never followed).
-fn bytes_of(p: &Path) -> u64 {
+pub(crate) fn bytes_of(p: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(p) else {
         return 0;
     };
@@ -344,20 +349,70 @@ async fn reclaim_with(
     Ok(out)
 }
 
-/// With `AV_WS_RETAIN_SECS=0`, removes the workspace of `task`, which was just merged or
-/// abandoned; the caller holds its `lock_task`. Says what the client is told under `workspace`:
-/// `removed`, or `kept` (retention is not 0, or the removal failed: logged, and the sweep retries).
-pub(crate) async fn reclaim_task(st: &AppState, task: &Task) -> &'static str {
-    if st.ws_retain != Some(0) {
-        return "kept";
+/// What a merge or abandon did to the task's disk, as its answer says it.
+pub(crate) struct Ended {
+    /// `removed` (`AV_WS_RETAIN_SECS=0`), or `kept` (for the retention, or the removal failed:
+    /// logged, and the sweep retries).
+    pub workspace: &'static str,
+    /// `removed`, `none` (there was no scratch dir), or `kept` (retention `never`, or the removal
+    /// failed: logged, and the sweep or `gc` gets it with the workspace).
+    pub scratch: &'static str,
+}
+
+/// Removes what the task, just merged or abandoned, no longer needs; the caller holds its
+/// `lock_task`. The scratch dir (temporary files and build output) goes now unless the retention
+/// is `never`; the workspace only with `AV_WS_RETAIN_SECS=0`.
+pub(crate) async fn reclaim_task(st: &AppState, task: &Task) -> Ended {
+    match st.ws_retain {
+        None => Ended {
+            workspace: "kept",
+            scratch: "kept",
+        },
+        Some(0) => match reclaim_locked(st, task, false).await {
+            Ok(_) => Ended {
+                workspace: "removed",
+                scratch: "removed",
+            },
+            Err(e) => {
+                tracing::warn!(task = %task.slug, error = %e, "removing the workspace failed");
+                Ended {
+                    workspace: "kept",
+                    scratch: "kept",
+                }
+            }
+        },
+        Some(_) => Ended {
+            workspace: "kept",
+            scratch: match reclaim_scratch_locked(st, task).await {
+                Ok(true) => "removed",
+                Ok(false) => "none",
+                Err(e) => {
+                    tracing::warn!(task = %task.slug, error = %e, "removing the scratch dir failed");
+                    "kept"
+                }
+            },
+        },
     }
-    match reclaim_locked(st, task, false).await {
-        Ok(_) => "removed",
-        Err(e) => {
-            tracing::warn!(task = %task.slug, error = %e, "removing the workspace failed");
-            "kept"
-        }
+}
+
+/// Removes the scratch dir of `task` (the caller holds its `lock_task`); `false` when there was
+/// none. Logged in the feed as `scratch:reclaimed` with the bytes.
+async fn reclaim_scratch_locked(st: &AppState, task: &Task) -> Result<bool> {
+    let scratch = under_ws_root(st, &[&task.repo, SCRATCH, &task.slug])?;
+    if !exists(&scratch) {
+        return Ok(false);
     }
+    let bytes = measure(scratch.clone()).await;
+    remove_tree(scratch).await?;
+    st.store
+        .add_event(
+            &task.repo,
+            "scratch:reclaimed",
+            Some(task.id),
+            json!({"slug": task.slug, "bytes": bytes}),
+        )
+        .await?;
+    Ok(true)
 }
 
 /// Re-creates the workspace of `task` at its head when it was reclaimed (an undo or revert
@@ -374,6 +429,7 @@ pub(crate) async fn ensure_workspace(st: &AppState, task: &Task) -> Result<&'sta
     st.vcs
         .restore_workspace(&task.repo, &task.slug, &task.head_change)
         .await?;
+    crate::build_cache::ensure_task_config_logged(st, &dir, &task.slug);
     Ok("restored")
 }
 
@@ -422,8 +478,8 @@ async fn gc(State(st): State<AppState>, Json(b): Json<GcBody>) -> ApiResult<Recl
     Ok(Json(reclaim(&st, retain, b.dry_run, b.build_cache).await?))
 }
 
-/// Every repo's workspaces (with their task's status, how long it has had it, and whether a
-/// reclaim would remove it), scratch, build cache and store, with totals.
+/// Every repo's workspaces (with their task's status, how long it has had it, its scratch dir and
+/// whether a reclaim would remove it), scratch, old build cache and store, with totals.
 async fn disk(State(st): State<AppState>) -> ApiResult<Value> {
     let now = Utc::now();
     let mut tasks: BTreeMap<(String, String), (Task, chrono::DateTime<Utc>)> = BTreeMap::new();
@@ -453,6 +509,7 @@ async fn disk(State(st): State<AppState>) -> ApiResult<Value> {
         let mut workspaces = Vec::new();
         for slug in plain_dirs(&repo_dir) {
             let bytes = measure(repo_dir.join(&slug)).await;
+            let scratch = measure(repo_dir.join(SCRATCH).join(&slug)).await;
             ws_total += bytes;
             let entry = tasks.get(&(name.clone(), slug.clone()));
             let age = entry.map(|(_, since)| (now - *since).num_seconds().max(0) as u64);
@@ -462,6 +519,7 @@ async fn disk(State(st): State<AppState>) -> ApiResult<Value> {
                 "slug": slug,
                 "status": entry.map(|(t, _)| t.status.as_str()),
                 "bytes": bytes,
+                "scratch_bytes": scratch,
                 "age_secs": age,
                 "reclaimable": reclaimable,
             }));
@@ -469,14 +527,10 @@ async fn disk(State(st): State<AppState>) -> ApiResult<Value> {
         store_total += store_bytes;
         cache_total += build_cache_bytes;
         scratch_total += scratch_bytes;
-        let config = crate::build_cache::is_ours(&st, &name)
-            .then(|| crate::build_cache::config_path(&st, &name).ok())
-            .flatten()
-            .map(|p| st.to_host_path(&p));
         repos.push(json!({
             "name": name,
             "store_bytes": store_bytes,
-            "build_cache": {"enabled": st.build_cache, "config": config},
+            "build_cache": {"enabled": st.build_cache},
             "build_cache_bytes": build_cache_bytes,
             "scratch_bytes": scratch_bytes,
             "workspaces": workspaces,

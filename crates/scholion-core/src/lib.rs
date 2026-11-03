@@ -1,3 +1,4 @@
+pub mod build_dir;
 mod error;
 pub mod lifecycle;
 pub mod routing;

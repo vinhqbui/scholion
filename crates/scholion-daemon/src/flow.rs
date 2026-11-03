@@ -906,7 +906,7 @@ async fn record_merge(
     drop_task_scope(st, task).await;
     let changed = st.vcs.changed_paths(&task.repo, &pre_merge, &main).await?;
     let warnings = reindex_changed(st, &task.repo, "main", &main, &changed).await?;
-    let workspace = crate::disk::reclaim_task(st, task).await;
+    let ended = crate::disk::reclaim_task(st, task).await;
     Ok(json!({
         "status": status.as_str(),
         "main": main,
@@ -914,7 +914,8 @@ async fn record_merge(
         "conflicts": [],
         "warnings": warnings,
         "recovered": recovered,
-        "workspace": workspace,
+        "workspace": ended.workspace,
+        "scratch": ended.scratch,
     }))
 }
 
@@ -1082,10 +1083,12 @@ pub(crate) async fn abandon(
     }
     let status = st.store.transition(task.id, Event::Abandon).await?;
     drop_task_scope(&st, &task).await;
-    let workspace = crate::disk::reclaim_task(&st, &task).await;
-    Ok(Json(
-        json!({ "status": status.as_str(), "workspace": workspace }),
-    ))
+    let ended = crate::disk::reclaim_task(&st, &task).await;
+    Ok(Json(json!({
+        "status": status.as_str(),
+        "workspace": ended.workspace,
+        "scratch": ended.scratch,
+    })))
 }
 
 /// Brings back a reclaimed workspace when main no longer holds the task's merge (undo, revert).

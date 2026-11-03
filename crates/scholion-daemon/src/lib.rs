@@ -76,7 +76,8 @@ pub struct AppState {
     pub(crate) store_root: Option<PathBuf>,
     /// Lite mode's own Postgres directory (`AV_PG_DIR`), for `GET /v1/disk`.
     pub(crate) pg_dir: Option<PathBuf>,
-    /// `AV_BUILD_CACHE`: one cargo target per repo, shared by its task workspaces.
+    /// `AV_BUILD_CACHE`: each task workspace of a Rust repo gets a cargo config that builds into
+    /// its scratch dir (`build_cache`).
     pub(crate) build_cache: bool,
     /// What sessions reported adding outside any task workspace (`POST /v1/footprint`), newest
     /// first, one per session, in memory only.
@@ -284,7 +285,8 @@ impl AppState {
         self
     }
 
-    /// Whether a cargo repo's task workspaces share one build cache (`AV_BUILD_CACHE`, default on).
+    /// Whether a task workspace of a cargo repo gets a config that builds into its scratch dir
+    /// (`AV_BUILD_CACHE`, default on).
     pub fn with_build_cache(mut self, on: bool) -> Self {
         self.build_cache = on;
         self

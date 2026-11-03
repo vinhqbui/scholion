@@ -297,9 +297,9 @@ async fn retain_zero_removes_the_workspace_with_the_merge() {
     assert_eq!(out["reclaimed"], json!([]), "{out}");
 }
 
-// ---- Task 3: one cargo build cache per repo ----
+// ---- Task 3: one build dir per task, in its scratch dir ----
 
-const CARGO_CONFIG: &str =
+const LEGACY_CONFIG: &str =
     "# written by av: one cargo target for every task workspace of this repo.
 # Delete this file, or set AV_BUILD_CACHE=off before `av up`, to opt out.
 [build]
@@ -308,8 +308,8 @@ target-dir = \".cache/cargo-target\"
 debug = \"line-tables-only\"
 ";
 
-/// A git repo with a root `Cargo.toml`.
-fn cargo_git_repo() -> TempDir {
+/// A git repo with a root `Cargo.toml`; with `own_config`, a tracked `.cargo/config.toml` too.
+fn cargo_git_repo(own_config: Option<&str>) -> TempDir {
     let d = TempDir::new().unwrap();
     git(d.path(), &["init", "-q", "-b", "main"]);
     std::fs::write(
@@ -328,6 +328,10 @@ edition = \"2021\"
 ",
     )
     .unwrap();
+    if let Some(text) = own_config {
+        std::fs::create_dir_all(d.path().join(".cargo")).unwrap();
+        std::fs::write(d.path().join(".cargo/config.toml"), text).unwrap();
+    }
     git(d.path(), &["add", "-A"]);
     git(d.path(), &["commit", "-q", "-m", "init"]);
     d
@@ -344,96 +348,125 @@ async fn import(e: &Env, name: &str, src: &Path) {
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
-fn cargo_config(e: &Env, repo: &str) -> PathBuf {
-    e.ws.path().join(repo).join(".cargo/config.toml")
+/// A task started in `repo` (as `start_task` does in `demo`).
+async fn start_in(e: &Env, repo: &str, title: &str) -> Value {
+    let (status, body) = call(
+        &e.app,
+        "POST",
+        "/v1/tasks",
+        Some(json!({"repo": repo, "title": title, "goal": "Pinch", "agent": "claude", "session": "s-1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+fn task_dir(e: &Env, repo: &str, t: &Value) -> PathBuf {
+    e.ws.path().join(repo).join(slug(t))
+}
+
+fn scratch_dir(e: &Env, repo: &str, t: &Value) -> PathBuf {
+    e.ws.path().join(repo).join(".scratch").join(slug(t))
+}
+
+fn task_config(e: &Env, repo: &str, t: &Value) -> PathBuf {
+    task_dir(e, repo, t).join(".cargo/config.toml")
+}
+
+fn repo_entry(disk: &Value, name: &str) -> Value {
+    disk["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == name)
+        .unwrap_or_else(|| panic!("{disk}"))
+        .clone()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_cargo_repo_gets_one_build_cache_for_its_workspaces() {
+async fn a_task_in_a_cargo_repo_builds_into_its_own_scratch_dir() {
     let e = env().await;
-    let src = cargo_git_repo();
+    let src = cargo_git_repo(None);
     import(&e, "crab", src.path()).await;
-    assert_eq!(
-        std::fs::read_to_string(cargo_config(&e, "crab")).unwrap(),
-        CARGO_CONFIG
+    let t = start_in(&e, "crab", "Pinch harder").await;
+    let text = std::fs::read_to_string(task_config(&e, "crab", &t)).unwrap();
+    assert_eq!(text, scholion_core::build_dir::cargo_config(slug(&t)));
+    assert!(
+        text.contains(&format!(
+            "target-dir = \"../.scratch/{}/cargo-target\"",
+            slug(&t)
+        )),
+        "{text}"
     );
-    // a repo without a root Cargo.toml gets none
-    assert!(!cargo_config(&e, "demo").exists());
-    assert!(!e.ws.path().join("demo/.cargo").exists());
+    // a second task gets its own: the two never share artifacts
+    let u = start_in(&e, "crab", "Pinch softer").await;
+    assert_ne!(
+        std::fs::read_to_string(task_config(&e, "crab", &u)).unwrap(),
+        text
+    );
+    // no per-repo file, and a repo without a root Cargo.toml gets nothing
+    assert!(!e.ws.path().join("crab/.cargo").exists());
+    let d = start_task(&e, "Wave hello").await;
+    assert!(!task_config(&e, "demo", &d).exists());
+    assert!(!task_dir(&e, "demo", &d).join(".cargo").exists());
 
     let (status, disk) = call(&e.app, "GET", "/v1/disk", None).await;
     assert_eq!(status, StatusCode::OK, "{disk}");
-    let repo = |name: &str| {
-        disk["repos"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|r| r["name"] == name)
-            .unwrap_or_else(|| panic!("{disk}"))
-            .clone()
-    };
-    assert_eq!(repo("crab")["build_cache"]["enabled"], true, "{disk}");
     assert_eq!(
-        repo("crab")["build_cache"]["config"],
-        format!("{HOST_WS}/crab/.cargo/config.toml"),
+        repo_entry(&disk, "crab")["build_cache"]["enabled"],
+        true,
         "{disk}"
     );
-    assert_eq!(repo("demo")["build_cache"]["config"], Value::Null, "{disk}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_users_own_cargo_config_is_never_overwritten() {
+async fn avs_cargo_config_is_not_among_the_tasks_changes() {
     let e = env().await;
-    let mine = "[build]
-target-dir = \"/elsewhere\"
-";
-    std::fs::create_dir_all(e.ws.path().join("crab/.cargo")).unwrap();
-    std::fs::write(cargo_config(&e, "crab"), mine).unwrap();
-    let src = cargo_git_repo();
+    let src = cargo_git_repo(None);
     import(&e, "crab", src.path()).await;
-    assert_eq!(
-        std::fs::read_to_string(cargo_config(&e, "crab")).unwrap(),
-        mine
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn an_older_av_cargo_config_is_rewritten() {
-    let e = env().await;
-    std::fs::create_dir_all(e.ws.path().join("crab/.cargo")).unwrap();
+    let t = start_in(&e, "crab", "Pinch harder").await;
     std::fs::write(
-        cargo_config(&e, "crab"),
-        "# written by av: one cargo target for every task workspace of this repo.
-[build]
-",
+        task_dir(&e, "crab", &t).join("src/lib.rs"),
+        "pub fn crab() -> u8 { 1 }\n",
     )
     .unwrap();
-    let src = cargo_git_repo();
+    let (status, body) = post(&e, &t, "checkpoint", json!({"agent": "claude"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["changed"], json!(["src/lib.rs"]), "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repos_own_cargo_config_is_left_alone() {
+    let e = env().await;
+    let mine = "[build]
+jobs = 2
+";
+    let src = cargo_git_repo(Some(mine));
     import(&e, "crab", src.path()).await;
+    let t = start_in(&e, "crab", "Pinch harder").await;
     assert_eq!(
-        std::fs::read_to_string(cargo_config(&e, "crab")).unwrap(),
-        CARGO_CONFIG
+        std::fs::read_to_string(task_config(&e, "crab", &t)).unwrap(),
+        mine
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn build_cache_off_writes_nothing() {
     let e = env_with(|s| s.with_build_cache(false)).await;
-    let src = cargo_git_repo();
+    let src = cargo_git_repo(None);
     import(&e, "crab", src.path()).await;
-    assert!(!cargo_config(&e, "crab").exists());
+    let t = start_in(&e, "crab", "Pinch harder").await;
+    assert!(!task_config(&e, "crab", &t).exists());
     let (_, disk) = call(&e.app, "GET", "/v1/disk", None).await;
-    let crab = disk["repos"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["name"] == "crab")
-        .unwrap_or_else(|| panic!("{disk}"));
-    assert_eq!(crab["build_cache"]["enabled"], false, "{disk}");
+    assert_eq!(
+        repo_entry(&disk, "crab")["build_cache"]["enabled"],
+        false,
+        "{disk}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn start_up_gives_repos_imported_earlier_their_build_cache() {
+async fn start_up_removes_the_shared_build_cache_an_older_av_wrote() {
     let slot: Arc<std::sync::Mutex<Option<AppState>>> = Arc::default();
     let keep = slot.clone();
     let e = env_with(move |s| {
@@ -441,15 +474,172 @@ async fn start_up_gives_repos_imported_earlier_their_build_cache() {
         s
     })
     .await;
-    let src = cargo_git_repo();
+    // as left by a daemon that pointed every workspace at one target dir
+    std::fs::create_dir_all(e.ws.path().join("demo/.cargo")).unwrap();
+    std::fs::write(e.ws.path().join("demo/.cargo/config.toml"), LEGACY_CONFIG).unwrap();
+    let cache = e.ws.path().join("demo/.cache/cargo-target/debug");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("libcrab.rlib"), vec![0u8; 4096]).unwrap();
+    // a user's own file and cache are not av's to remove
+    let src = cargo_git_repo(None);
     import(&e, "crab", src.path()).await;
-    // as if imported by a daemon without the build cache
-    std::fs::remove_dir_all(e.ws.path().join("crab/.cargo")).unwrap();
+    let mine = "[build]
+target-dir = \".cache/cargo-target\"
+";
+    std::fs::create_dir_all(e.ws.path().join("crab/.cargo")).unwrap();
+    std::fs::write(e.ws.path().join("crab/.cargo/config.toml"), mine).unwrap();
+    std::fs::create_dir_all(e.ws.path().join("crab/.cache")).unwrap();
+
     let state = slot.lock().unwrap().clone().unwrap();
     scholion_daemon::sync_repos(&state).await.unwrap();
+    assert!(!e.ws.path().join("demo/.cargo").exists());
+    assert!(!e.ws.path().join("demo/.cache").exists());
     assert_eq!(
-        std::fs::read_to_string(cargo_config(&e, "crab")).unwrap(),
-        CARGO_CONFIG
+        std::fs::read_to_string(e.ws.path().join("crab/.cargo/config.toml")).unwrap(),
+        mine
+    );
+    assert!(e.ws.path().join("crab/.cache").exists());
+}
+
+// ---- the scratch dir (with the build output) goes with the merge or abandon ----
+
+fn fill_scratch(e: &Env, t: &Value) -> PathBuf {
+    let target = scratch_dir(e, "demo", t).join("cargo-target/debug");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("big"), vec![0u8; 8192]).unwrap();
+    target
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_removes_the_scratch_dir_at_once_and_keeps_the_workspace_for_the_retention() {
+    let e = env().await;
+    let t = approved(&e, "Wave hello").await;
+    fill_scratch(&e, &t);
+    let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{merge}");
+    assert_eq!(merge["workspace"], "kept", "{merge}");
+    assert_eq!(merge["scratch"], "removed", "{merge}");
+    assert!(!scratch_dir(&e, "demo", &t).exists());
+    assert!(ws_dir(&e, &t).join("app/greeter.py").exists());
+
+    // the feed says what it freed
+    let (_, events) = call(
+        &e.app,
+        "GET",
+        "/v1/events?repo=demo&since=0&limit=500",
+        None,
+    )
+    .await;
+    let ev = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ev| ev["kind"] == "scratch:reclaimed")
+        .unwrap_or_else(|| panic!("{events}"));
+    assert_eq!(ev["payload"]["slug"], t["task"]["slug"]);
+    assert_eq!(ev["payload"]["bytes"], 8192, "{ev}");
+
+    // the disk view shows the workspace without build output
+    let (_, disk) = call(&e.app, "GET", "/v1/disk", None).await;
+    let demo = repo_entry(&disk, "demo");
+    let w = listed(&demo["workspaces"], &t).unwrap_or_else(|| panic!("{disk}"));
+    assert_eq!(w["scratch_bytes"], 0, "{disk}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn abandon_removes_the_scratch_dir_at_once() {
+    let e = env().await;
+    let t = start_task(&e, "Wave hello").await;
+    fill_scratch(&e, &t);
+    let (status, body) = post(&e, &t, "abandon", json!({"agent": "claude"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workspace"], "kept", "{body}");
+    assert_eq!(body["scratch"], "removed", "{body}");
+    assert!(!scratch_dir(&e, "demo", &t).exists());
+    assert!(ws_dir(&e, &t).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_without_a_scratch_dir_says_so() {
+    let e = env().await;
+    let (_, merge) = merged(&e, "Wave hello").await;
+    assert_eq!(merge["scratch"], "none", "{merge}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retain_never_keeps_the_scratch_dir_too() {
+    let e = env_with(|s| s.with_ws_retain(None)).await;
+    let t = approved(&e, "Wave hello").await;
+    fill_scratch(&e, &t);
+    let (status, merge) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{merge}");
+    assert_eq!(merge["workspace"], "kept", "{merge}");
+    assert_eq!(merge["scratch"], "kept", "{merge}");
+    assert!(scratch_dir(&e, "demo", &t).exists());
+    // until asked
+    let out = gc(&e, json!({"retain_secs": 0})).await;
+    assert!(listed(&out["reclaimed"], &t).is_some(), "{out}");
+    assert!(!scratch_dir(&e, "demo", &t).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn disk_shows_each_workspaces_scratch_dir() {
+    let e = env().await;
+    let t = start_task(&e, "Wave hello").await;
+    fill_scratch(&e, &t);
+    let (_, disk) = call(&e.app, "GET", "/v1/disk", None).await;
+    let demo = repo_entry(&disk, "demo");
+    let w = listed(&demo["workspaces"], &t).unwrap_or_else(|| panic!("{disk}"));
+    assert_eq!(w["scratch_bytes"], 8192, "{disk}");
+    assert_eq!(demo["scratch_bytes"], 8192, "{disk}");
+    assert_eq!(disk["totals"]["scratch_bytes"], 8192, "{disk}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_workspace_gets_its_cargo_config_back() {
+    let e = env().await;
+    let src = cargo_git_repo(None);
+    import(&e, "crab", src.path()).await;
+    let t = start_in(&e, "crab", "Pinch harder").await;
+    std::fs::write(
+        task_dir(&e, "crab", &t).join("src/lib.rs"),
+        "pub fn crab() -> u8 { 1 }\n",
+    )
+    .unwrap();
+    record_decision(&e, &t).await;
+    let (status, body) = submit(&e, &t).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(
+        &e,
+        &t,
+        "validate",
+        json!({"agent": "claude", "command": "cargo test", "exit_code": 0}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(
+        &e,
+        &t,
+        "review",
+        json!({"reviewer": "reviewer", "verdict": "approve"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(&e, &t, "merge", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    gc(&e, json!({"retain_secs": 0})).await;
+    assert!(!task_dir(&e, "crab", &t).exists());
+
+    let (status, body) = post(&e, &t, "undo", json!({"agent": "merger"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workspace"], "restored", "{body}");
+    assert_eq!(
+        std::fs::read_to_string(task_config(&e, "crab", &t)).unwrap(),
+        scholion_core::build_dir::cargo_config(slug(&t))
+    );
+    assert_eq!(
+        std::fs::read_to_string(task_dir(&e, "crab", &t).join("src/lib.rs")).unwrap(),
+        "pub fn crab() -> u8 { 1 }\n"
     );
 }
 

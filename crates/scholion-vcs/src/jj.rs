@@ -28,7 +28,7 @@ use jj_lib::config::{ConfigLayer, ConfigSource, StackedConfig};
 use jj_lib::default_backend_factories::{default_backend_factories, default_working_copy_factory};
 use jj_lib::git::{self, GitImportOptions};
 use jj_lib::gitignore::GitIgnoreFile;
-use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
+use jj_lib::matchers::{DifferenceMatcher, EverythingMatcher, FilesMatcher, NothingMatcher};
 use jj_lib::merge::Merge;
 use jj_lib::merged_tree::MergedTree;
 use jj_lib::object_id::ObjectId as _;
@@ -42,6 +42,7 @@ use jj_lib::store::Store;
 use jj_lib::working_copy::SnapshotOptions;
 use jj_lib::workspace::Workspace;
 use pollster::block_on;
+use scholion_core::build_dir;
 use scholion_core::{
     AvError, ChangeId, LogEntry, MergeOutcome, RebaseOutcome, Result, Vcs, WorkspaceInfo,
 };
@@ -462,6 +463,25 @@ impl Inner {
         })
     }
 
+    /// Which new files a snapshot starts tracking: everything, except the `.cargo/config.toml`
+    /// the daemon wrote into the workspace to send the task's build output to its scratch dir
+    /// (`scholion_core::build_dir`). A file there that is not av's (the repo's, or one the agent
+    /// wrote) is tracked like any other.
+    fn start_tracking_matcher(
+        ws_dir: &Path,
+    ) -> Result<DifferenceMatcher<EverythingMatcher, FilesMatcher>> {
+        let config = build_dir::CARGO_CONFIG;
+        let ours =
+            std::fs::read_to_string(ws_dir.join(config)).is_ok_and(|text| build_dir::is_av(&text));
+        let left_out = ours
+            .then(|| RepoPath::from_internal_string(config).map_err(verr))
+            .transpose()?;
+        Ok(DifferenceMatcher::new(
+            EverythingMatcher,
+            FilesMatcher::new(left_out),
+        ))
+    }
+
     fn snapshot(&self, repo: &str, slug: &str) -> Result<ChangeId> {
         valid_component("workspace", slug)?;
         let dir = self.ws_dir(repo, slug);
@@ -477,12 +497,13 @@ impl Inner {
             .clone();
         let wc_commit = ro.store().get_commit(&wc_id).map_err(verr)?;
         let mut locked = block_on(ws.start_working_copy_mutation()).map_err(verr)?;
+        let start_tracking = Self::start_tracking_matcher(&dir)?;
         let options = SnapshotOptions {
             base_ignores: GitIgnoreFile::empty()
                 .chain(RepoPath::root(), Path::new(""), AGENT_IGNORES)
                 .map_err(verr)?,
             progress: None,
-            start_tracking_matcher: &EverythingMatcher,
+            start_tracking_matcher: &start_tracking,
             force_tracking_matcher: &NothingMatcher,
             max_new_file_size: MAX_NEW_FILE_SIZE,
         };

@@ -976,7 +976,7 @@ function renderDisk() {
     return h("button", { class: "ws-row", type: "button", onclick: task ? () => openTask(task.id) : null, disabled: !task },
       w.status ? statusBadge(w.status) : badge("no task", "gray"), h("span", { class: "mono path" }, w.slug),
       w.reclaimable && badge("reclaimable", "amber", { title: "Past the retention: the next sweep or av gc removes it" }),
-      h("span", { class: "mono n" }, `${bytes(w.bytes)} · ${w.age_secs == null ? "—" : span(w.age_secs)}`));
+      h("span", { class: "mono n" }, `${bytes(w.bytes)}${w.scratch_bytes ? ` + ${bytes(w.scratch_bytes)} scratch` : ""} · ${w.age_secs == null ? "—" : span(w.age_secs)}`));
   });
   const outside = (d.outside || []).slice(0, 10).map(f => h("div", { class: "ws-row" },
     person(f.agent || "?", 18, null, "sm"),
@@ -986,10 +986,10 @@ function renderDisk() {
   fill(box,
     h("div", { class: "figs" },
       fig("workspaces", bytes(t.workspaces_bytes), "every task workspace of every repo"),
-      fig("build cache", bytes(t.build_cache_bytes), "one cargo target dir per repo"),
+      fig("old build cache", bytes(t.build_cache_bytes), "shared caches an older av wrote; av gc --build-cache"),
       fig("store", bytes(t.store_bytes), "the jj store"),
-      fig("scratch", bytes(t.scratch_bytes), "the tasks' scratch dirs")),
-    repo && [h("div", { class: "sub-h" }, `${S.repo}: workspaces · store ${bytes(repo.store_bytes)} · cache ${bytes(repo.build_cache_bytes)}`),
+      fig("scratch", bytes(t.scratch_bytes), "the tasks' scratch dirs and build output")),
+    repo && [h("div", { class: "sub-h" }, `${S.repo}: workspaces · store ${bytes(repo.store_bytes)} · scratch ${bytes(repo.scratch_bytes)}`),
       wsRows.length ? wsRows : empty("No workspace on disk.")],
     outside.length > 0 && [h("div", { class: "sub-h" }, "Left outside any workspace by sessions"), outside],
     h("p", { class: "foot-note sm" },

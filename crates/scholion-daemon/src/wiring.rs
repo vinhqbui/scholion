@@ -47,8 +47,8 @@ pub struct Config {
     /// `AV_WS_RETAIN_SECS` (default 3600; `never` = `None`): how long the workspace of a merged
     /// or abandoned task stays on disk before the daemon removes it. `0` removes it at once.
     pub ws_retain_secs: Option<u64>,
-    /// `AV_BUILD_CACHE` (default on; `off`, `0` or `false` turn it off): a repo with a root
-    /// `Cargo.toml` gets one cargo target dir for all its task workspaces.
+    /// `AV_BUILD_CACHE` (default on; `off`, `0` or `false` turn it off): each task workspace of a
+    /// repo with a root `Cargo.toml` gets a cargo config that builds into the task's scratch dir.
     pub build_cache: bool,
     /// `AV_BACKUP_REMOTES`: whitespace-separated `repo=url` pairs, pushed after every merge.
     /// `POST /v1/repos/{name}/backup` sets one at runtime.

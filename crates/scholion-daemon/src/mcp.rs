@@ -973,9 +973,13 @@ async fn run_tool(
                     format!("/v1/tasks/{t}/abandon"),
                     Some(json!({"agent": agent})),
                     generation,
-                    |r| match r["workspace"].as_str() {
-                        Some("removed") => format!(
+                    |r| match (r["workspace"].as_str(), r["scratch"].as_str()) {
+                        (Some("removed"), _) => format!(
                             "task {}; its workspace was removed",
+                            r["status"].as_str().unwrap_or_default()
+                        ),
+                        (_, Some("removed")) => format!(
+                            "task {}; its scratch dir (with its build output) was removed",
                             r["status"].as_str().unwrap_or_default()
                         ),
                         _ => format!("task {}", r["status"].as_str().unwrap_or_default()),

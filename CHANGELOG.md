@@ -16,10 +16,17 @@
     whether a sweep would remove it, plus scratch, build cache and store, and what sessions left
     outside any workspace. **`av gc [--dry-run] [--retain SECS] [--build-cache]`** (`POST /v1/gc`)
     reclaims on demand. Both take `--json`.
-  - **One cargo build cache per repo.** For a repo with a root `Cargo.toml` the daemon writes
-    `<ws_root>/<repo>/.cargo/config.toml` (at import and start-up), so every task workspace builds
-    into `<ws_root>/<repo>/.cache/cargo-target` instead of its own `target/`. The repo's own cargo
-    config and `CARGO_TARGET_DIR` still win; `AV_BUILD_CACHE=off` writes nothing.
+  - **One build dir per task, gone with the task.** A task started in a repo with a root
+    `Cargo.toml` gets a `.cargo/config.toml` in its workspace that sends cargo's output to the
+    task's scratch dir (`<ws_root>/<repo>/.scratch/<slug>/cargo-target`) with line tables instead
+    of full debug info (8 GB instead of over 20 GB for a `cargo test --workspace` of this repo).
+    The merge or abandon removes the scratch dir at once, whatever the retention (`scratch:
+    removed` in the answer; `never` keeps it), so a finished task's build output never waits out
+    the retention. Snapshots leave the file untracked while it is av's; the repo's own file is
+    never touched, and `CARGO_TARGET_DIR` still wins; `AV_BUILD_CACHE=off` writes nothing. Not one
+    target dir per repo shared by its workspaces, as an unreleased av did: two checkouts of
+    one crate collide in it and cargo runs the test binary one task built for another. The daemon
+    removes that file and its `.cache` at start-up. `av disk` shows each workspace's scratch dir.
   - **The hooks watch what a session leaves behind.** `SessionStart` gives a task a scratch dir,
     exported as `$AV_SCRATCH` through `$CLAUDE_ENV_FILE`, and takes a snapshot of the build,
     dependency and cache dirs under `$HOME` and the temp dir. `Stop` compares, blocks once when the

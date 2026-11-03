@@ -362,11 +362,12 @@ fn footprint_reason(added: &[(PathBuf, u64)], total: u64, task_dir: Option<&Path
         footprint::human(total),
         list.join(", ")
     );
-    match task_dir.and_then(Path::parent) {
-        Some(repo_dir) => format!(
-            "{what} Build inside the workspace (removed when the task ends) or the repo's cache \
-             {}, move it to $AV_SCRATCH, or remove it; then record where anything kept lives.",
-            repo_dir.join(".cache").display()
+    let scratch = task_dir.and_then(|d| Some(d.parent()?.join(".scratch").join(d.file_name()?)));
+    match scratch {
+        Some(scratch) => format!(
+            "{what} Build inside the workspace or in $AV_SCRATCH ({}); both go when the task \
+             ends. Move it there or remove it; then record where anything kept lives.",
+            scratch.display()
         ),
         None => format!(
             "{what} Remove what is no longer needed, or say where anything kept lives and why."

@@ -54,8 +54,8 @@ pub fn render_disk(v: &Value) -> String {
                 .max(4);
             let _ = writeln!(
                 o,
-                "  {:width$}  {:10} {:>8}  {:>5}",
-                "SLUG", "STATUS", "SIZE", "AGE"
+                "  {:width$}  {:10} {:>8} {:>8}  {:>5}",
+                "SLUG", "STATUS", "SIZE", "SCRATCH", "AGE"
             );
             for w in &workspaces {
                 let status = w["status"].as_str().unwrap_or("-");
@@ -69,25 +69,32 @@ pub fn render_disk(v: &Value) -> String {
                     ""
                 };
                 let line = format!(
-                    "  {:width$}  {status:10} {:>8}  {age:>5}{mark}",
+                    "  {:width$}  {status:10} {:>8} {:>8}  {age:>5}{mark}",
                     s(&w["slug"]),
-                    bytes(&w["bytes"])
+                    bytes(&w["bytes"]),
+                    bytes(&w["scratch_bytes"])
                 );
                 let _ = writeln!(o, "{}", line.trim_end());
             }
         }
-        let _ = writeln!(o, "  scratch      {}", bytes(&repo["scratch_bytes"]));
-        let cache = &repo["build_cache"];
-        let config = match (cache["enabled"].as_bool(), cache["config"].as_str()) {
-            (Some(false), _) => "off (AV_BUILD_CACHE=off)".to_owned(),
-            (_, Some(path)) => format!("cargo config {path}"),
-            _ => "no av cargo config here".to_owned(),
-        };
         let _ = writeln!(
             o,
-            "  build cache  {} ({config})",
-            bytes(&repo["build_cache_bytes"])
+            "  scratch      {} (each task's temporary files and build output; removed with its merge or abandon)",
+            bytes(&repo["scratch_bytes"])
         );
+        if repo["build_cache"]["enabled"].as_bool() == Some(false) {
+            let _ = writeln!(
+                o,
+                "  build dirs   off (AV_BUILD_CACHE=off): cargo builds into each workspace's own target/"
+            );
+        }
+        if repo["build_cache_bytes"].as_u64().unwrap_or(0) > 0 {
+            let _ = writeln!(
+                o,
+                "  old cache    {} (the shared build cache an older av wrote; av gc --build-cache removes it)",
+                bytes(&repo["build_cache_bytes"])
+            );
+        }
         let _ = writeln!(o, "  store        {}", bytes(&repo["store_bytes"]));
     }
     let outside = v["outside"].as_array().cloned().unwrap_or_default();
@@ -127,14 +134,17 @@ pub fn render_disk(v: &Value) -> String {
         let _ = writeln!(o, "\npostgres     {pg}");
     }
     let t = &v["totals"];
-    let _ = writeln!(
+    let _ = write!(
         o,
-        "\ntotal: workspaces {}, scratch {}, build cache {}, store {}",
+        "\ntotal: workspaces {}, scratch {}, store {}",
         bytes(&t["workspaces_bytes"]),
         bytes(&t["scratch_bytes"]),
-        bytes(&t["build_cache_bytes"]),
         bytes(&t["store_bytes"])
     );
+    if t["build_cache_bytes"].as_u64().unwrap_or(0) > 0 {
+        let _ = write!(o, ", old build cache {}", bytes(&t["build_cache_bytes"]));
+    }
+    o.push('\n');
     o
 }
 
@@ -155,7 +165,7 @@ pub fn render_gc(v: &Value) -> String {
         );
     }
     if let Some(cache) = v["build_cache_bytes"].as_u64() {
-        let _ = writeln!(o, "{verb} build cache  {}", human(cache));
+        let _ = writeln!(o, "{verb} old build cache  {}", human(cache));
     }
     for e in v["errors"].as_array().into_iter().flatten() {
         let _ = writeln!(
@@ -205,7 +215,7 @@ mod tests {
         let out = render_disk(
             &json!({"ws_root": "/w", "retain_secs": null, "pg_dir": null,
             "repos": [{"name": "demo", "workspaces": [],
-                       "build_cache": {"enabled": false, "config": null}}],
+                       "build_cache": {"enabled": false}}],
             "outside": [], "totals": {}}),
         );
         assert!(out.contains("AV_WS_RETAIN_SECS=never"), "{out}");

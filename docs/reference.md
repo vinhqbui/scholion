@@ -262,7 +262,7 @@ The daemon can also run on the host (`cargo run -p scholion-daemon`) against the
 | Store | Holds | Notes |
 |---|---|---|
 | jj repo (volume `av-store`) | File contents, changes, operation log | Each repo is a git import (`git/` bare clone, `main/` default workspace). `ChangeId` is the jj commit id. |
-| Task workspaces (`AV_WS_ROOT`) | Each task's working copy, its scratch dir (`<repo>/.scratch/<slug>`) and the repo's shared build cache (`<repo>/.cache`) | Bind-mounted so agents edit on the host; clients are given host paths. Removed once the task has been merged or abandoned for `AV_WS_RETAIN_SECS`. |
+| Task workspaces (`AV_WS_ROOT`) | Each task's working copy and its scratch dir (`<repo>/.scratch/<slug>`, which holds its build output) | Bind-mounted so agents edit on the host; clients are given host paths. The scratch dir goes with the merge or abandon; the workspace once the task has been merged or abandoned for `AV_WS_RETAIN_SECS`. |
 | Postgres | Tasks, records, anchors, conventions, ledger, receipts, code index, outbox | Source of truth. |
 | Qdrant | Vectors for records, conventions and code chunks | Derived; filled from the outbox. |
 
@@ -340,7 +340,7 @@ and an embedder (below); packs then rank by structure and Postgres full-text.
 | `AV_HOME` | `~/.scholion` | daemon data: `pg/` (Postgres), `store/` (jj repositories), `daemon.log` (moved to `daemon.log.1` by `av up` once over 50 MB), `daemon.pid` |
 | `AV_WS_ROOT` | `~/ws` | where task workspaces appear (agents edit files here) |
 | `AV_WS_RETAIN_SECS` | `3600` | how long a merged or abandoned task keeps its workspace; `0` removes it at once, `never` keeps it (see [Disk](#disk-what-agents-create-and-what-av-reclaims)) |
-| `AV_BUILD_CACHE` | `on` | `off`: write no shared cargo config for Rust repos |
+| `AV_BUILD_CACHE` | `on` | `off`: write no per-task cargo config into Rust workspaces |
 | `AV_DATABASE_URL` | (none) | use this Postgres instead of the daemon's own |
 | `AV_PG_DIR` | `$AV_HOME/pg` | data, password and binaries of the daemon's own Postgres |
 | `AV_PG_INSTALL_DIR` | (none) | an existing PostgreSQL 16 installation (the directory holding `bin/`, e.g. `/usr/lib/postgresql/16`) instead of the bundled or downloaded one |
@@ -397,7 +397,7 @@ Defaults (override with environment variables before `up`):
 | `AV_TOKEN` | (none) | shared bearer token for every route but `/healthz` and `/ui`; the CLI sends `$AV_TOKEN`. Unset = no auth. |
 | `AV_BACKUP_REMOTES` | (none) | `repo=url` pairs, whitespace-separated: main is pushed there after every merge and undo (`scholion repo backup` sets one at runtime). |
 | `AV_WS_RETAIN_SECS` | `3600` | how long a merged or abandoned task keeps its workspace; `0` removes it at once, `never` keeps it. |
-| `AV_BUILD_CACHE` | `on` | `off`: write no shared cargo config for Rust repos. |
+| `AV_BUILD_CACHE` | `on` | `off`: write no per-task cargo config into Rust workspaces. |
 
 ### Docker Desktop without WSL integration
 
@@ -597,18 +597,18 @@ scratch files. Nothing used to own their lifetime. One machine filled 333 GB thi
 
 | What the agent made | Size | Why it stayed |
 |---|---|---|
-| A cargo `target/` wherever it built: one per task workspace, plus `/tmp` and ad-hoc dirs | about 24 GB per build of this workspace | every task is a full checkout with its own target dir, and no workspace was ever removed |
+| A cargo `target/` wherever it built: one per task workspace, plus `/tmp` and ad-hoc dirs | 20 to 24 GB per build of this workspace with full debug info (8 GB with line tables, 5 GB of it the 63 test binaries) | every task is a full checkout with its own target dir, and no workspace was ever removed |
 | Task workspaces | a few GB | never removed on merge, abandon, undo or revert |
 | Bench clones and venvs | about 1 GB per session | `scholion-bench` kept every clone |
 | Ad-hoc dirs outside any workspace (`~/dogfood`, `~/.grok/worktrees`, …) | tens of GB | no hook looked at them and nobody asked about them |
 
 ```bash
-av disk                     # workspaces, scratch, build caches and store per repo, and what sessions left outside
+av disk                     # workspaces (with their scratch dirs) and store per repo, and what sessions left outside
 av disk --json              # the same, as GET /v1/disk returns it
 av gc --dry-run             # what would be removed now
 av gc                       # remove workspaces past the retention (POST /v1/gc)
 av gc --retain 0            # every merged or abandoned task's workspace, whatever its age
-av gc --build-cache         # also each repo's shared build cache
+av gc --build-cache         # also the shared build cache an older av wrote (<repo>/.cache)
 ```
 
 **Workspaces of finished tasks.** Once a task has been merged or abandoned for
@@ -621,27 +621,36 @@ task back to work restores its workspace at the task's head. Open, handed-off, i
 conflicted tasks are never touched, and the daemon deletes nothing outside `ws_root`. `av disk`
 marks the workspaces a sweep would remove as `reclaimable`.
 
-**One build cache per repo.** When a repo with a `Cargo.toml` at its root is imported (and for
-every repo at start-up), the daemon writes `<ws_root>/<repo>/.cargo/config.toml`:
+**One build dir per task, gone with the task.** When a task starts in a repo whose root has a
+`Cargo.toml`, the daemon writes `.cargo/config.toml` into the new workspace:
 
 ```toml
-# written by av: one cargo target for every task workspace of this repo.
-# Delete this file, or set AV_BUILD_CACHE=off before `av up`, to opt out.
+# written by av: this task's cargo output goes to its scratch dir.
+# Removed with the task. Delete this file, or set AV_BUILD_CACHE=off before `av up`, to opt out.
 [build]
-target-dir = ".cache/cargo-target"
+target-dir = "../.scratch/<slug>/cargo-target"
 [profile.dev]
 debug = "line-tables-only"
 ```
 
-Cargo reads `.cargo/config.toml` in the current directory and every parent, so this one file
-covers every task workspace of the repo without touching the repo or any snapshot. A relative
-`target-dir` is resolved from the parent of `.cargo`, so every build lands in
-`<ws_root>/<repo>/.cache/cargo-target`. A deeper `.cargo/config.toml` (the repo's own) and
-`CARGO_TARGET_DIR` still win. A file without av's first line is never rewritten.
-`AV_BUILD_CACHE=off` writes none. The trade-off: parallel builds of one repo wait on cargo's lock
-on the shared target dir instead of each building from scratch. Python and Node already have
-global caches (pip, uv, npm, pnpm), so nothing is written for them. `av gc --build-cache` removes
-the caches; the next build fills them again.
+Cargo reads `.cargo/config.toml` in the current directory and every parent, so the file covers a
+build started anywhere in the workspace; a relative `target-dir` is resolved from the parent of
+`.cargo`, so every build of the task lands in `<ws_root>/<repo>/.scratch/<slug>/cargo-target`,
+which the merge or abandon removes at once (below). The file is never part of the task's changes:
+snapshots leave it untracked while its first line is av's; a file that is not av's (the repo's
+own, or one the agent wrote in its place) is tracked like any other and never overwritten.
+`CARGO_TARGET_DIR` in the environment still wins. `AV_BUILD_CACHE=off` writes none, and cargo
+then builds into the workspace's `target/`, removed with the workspace. Line tables instead of
+full debug info cut each test binary by about 80 % and still give file:line in panics and
+backtraces; one `cargo test --workspace` of this repo is 8 GB with them and over 20 GB without.
+Python and Node already have global caches (pip, uv, npm, pnpm), so nothing is written for them.
+
+Why not one target dir shared by every workspace of a repo, as an unreleased av did
+(`<ws_root>/<repo>/.cargo/config.toml` → `<ws_root>/<repo>/.cache/cargo-target`): cargo names a
+workspace crate's artifacts by its path relative to the workspace root, so two checkouts of one
+crate collide, and cargo ran the test binary one task had built for another. At start-up the
+daemon removes that file, when it is av's, and the `.cache` it pointed at; `av gc --build-cache`
+removes a `.cache` that is still there.
 
 **What a session leaves outside its workspace.** The Claude Code hooks (and Grok's, which run the
 same `av hook`) take a snapshot at `SessionStart`: under `$HOME`, the temp dir and
@@ -649,8 +658,8 @@ same `av hook`) take a snapshot at `SessionStart`: under `$HOME`, the temp dir a
 `.venv`, `venv`, `dist`, `build`, `.cache`, `worktrees`, `.gradle` or `.next` down to four levels.
 `AV_WS_ROOT` and `$AV_HOME` are left out. `Stop` scans again and diffs. When the session added at
 least `AV_FOOTPRINT_WARN_MB` (default 512), it blocks the stop once per session. The agent is told
-where, and asked to build inside the workspace or the repo's cache, move it to `$AV_SCRATCH`, or
-remove it, and to record where anything kept lives. Every addition is reported to the daemon, and
+where, and asked to build inside the workspace or in `$AV_SCRATCH`, move it there, or remove it,
+and to record where anything kept lives. Every addition is reported to the daemon, and
 `av disk` lists it under "outside any workspace" with the agent, task, time and largest paths. The
 daemon only shows these paths and never removes them. A scan stops at `AV_FOOTPRINT_SECS`
 (default 20) and is then marked `partial`, so some directories may be missing or counted as new.
@@ -659,7 +668,9 @@ daemon only shows these paths and never removes them. A scan stops at `AV_FOOTPR
 **`$AV_SCRATCH`.** In a task, `SessionStart` creates `<ws_root>/<repo>/.scratch/<slug>` and
 appends `export AV_SCRATCH=…` to Claude Code's `$CLAUDE_ENV_FILE`, so every later Bash command
 of the session has it. The pack ends with `Temporary files: $AV_SCRATCH (removed with the task).`
-It is removed with the workspace.
+It holds the task's build output too, and is removed by the merge or abandon itself (the answer
+says `scratch: removed`), whatever `AV_WS_RETAIN_SECS` is, unless that is `never`; the sweep and
+`av gc` remove it with the workspace otherwise.
 
 **What av does not touch.** Claude Code's own data (`~/.claude`) is swept by Claude Code itself
 (`cleanupPeriodDays`, default 30 days). `scholion-bench run` removes each session's copy after verify unless
