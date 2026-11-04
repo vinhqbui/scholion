@@ -108,7 +108,7 @@ jj 0.46.0, git 2.39.5, harness and `av` at `669080e`, model `deepseek-flash`.
   output (`hook_response`) but nothing from PreToolUse hooks. `hook-count` only counts calls. DESIGN's
   fallback for an `av` loss ("check `pack.md` and the hook output in the transcripts") cannot be done for
   the pre-read channel as the harness stands. Running `av hook pre-read` again by hand after the session
-  printed nothing, because the task had been abandoned. If that diagnosis matters, have the hook command
+  printed nothing; the task had been abandoned by then, and the cause was not investigated further. If that diagnosis matters, have the hook command
   in `settings()` tee its stdout next to `hook-count` before the sweep. That is a harness change with a
   test, and is left out of this PR.
 - The progress line prints `spent $-0.00` before the first session. It is cosmetic and was left alone.
