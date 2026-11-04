@@ -506,51 +506,6 @@ the commit it blames. A blame of imported history does not go back commit by com
 the newest imported commit that changed the file and gives it every line, so that record is the
 file's latest commit, not necessarily the commit that wrote that line.
 
-### An agent on another host
-
-The daemon owns every workspace and snapshots it; an agent on another machine works in a checkout
-of the task there and sends each checkpoint as a patch (Plan 14,
-`docs/superpowers/plans/2026-11-04-scholion-plan-14-remote-workspaces.md`). The checkout is a plain
-git repository `av` makes and keeps in step; it needs `git` on that host, the daemon needs nothing
-new.
-
-```bash
-export AV_URL=http://daemon-host:7420 AV_TOKEN=...      # the daemon on the other machine
-av task start --repo pantry --title "Atomic save" --goal "..." --checkout ~/src/atomic-save
-av remote clone <task-id> ~/src/atomic-save             # or: a checkout of a task that exists
-cd ~/src/atomic-save
-av checkpoint                    # sends `git diff` since the last sync; the daemon applies + snapshots
-av remote pull                   # takes the daemon's head (after `av sync`, a same-host edit, ...)
-```
-
-In a checkout, `av checkpoint`, the Claude Code hooks, `av validate` (its checkpoint), `submit`,
-`record`, `handoff` and `sync` send the checkout's edits first, so the daemon answers from the
-files the agent has. When the daemon's head has moved since the last sync (a checkpoint on its
-host, `av sync`'s rebase, `undo` or `revert`), the checkpoint is answered `409` with the head;
-`av checkpoint` then pulls (a three-way apply puts the local edits back) and sends once more. Lines
-both sides changed get conflict markers in the checkout and the command exits non-zero naming the
-files; resolve them and `av checkpoint` again. The local edits are also kept as a git commit
-before the pull, named in the message if they could not be put back.
-
-The API, for other clients:
-
-- `POST /v1/tasks/{id}/checkpoint?base=<change>`, body a patch as
-  `git diff --binary --full-index --no-renames --src-prefix=a/ --dst-prefix=b/` writes it
-  (text, binary `literal`/`delta`, new and deleted files, modes), at most 64 MiB (`413` above).
-  `200` is a checkpoint's answer plus `applied` (the paths written) and `tree` (the git tree id
-  of the new head, which a client can compare with its own `git write-tree`). `409`: stale base,
-  with `head_change` and header `X-Av-Head`. `400`: a patch that is malformed, does not match the
-  workspace's files, renames or copies, changes a symlink or submodule, or names a path outside
-  the workspace or in `.jj`, `.git` or `.av-task`; nothing is written. `422`: a write under a
-  lost claim (`X-Av-Generation`), as for every write. Without `base` the route is the usual
-  local checkpoint and ignores its body.
-- `GET /v1/tasks/{id}/patch?from=<change>` (`main`, `task:<slug>` or a commit id; without `from`
-  the empty tree, so a whole checkout): the task's head as a patch `git apply` accepts, conflicted
-  files with their markers; headers `X-Av-Head` and `X-Av-Tree`. Reads the store only.
-
-Not supported: two writers on one task from different hosts (the second one's checkpoints keep
-pulling), symlink changes from a checkout, and sending tasks to other hosts (multi-host dispatch).
-
 ### Many agents at once
 
 Run as many agents as you like on one daemon. There is no seat cap: each distinct agent
@@ -653,6 +608,51 @@ project with profiles for Claude Code and Grok and a
 tagged backlog. Each table in its README says which agent should take which task. With no
 subscription, `examples/routing-smoke/deepseek-demo.sh` runs two Claude Code agents on DeepSeek
 Flash through the same loop on its own daemon (the run checked for 0.0.2).
+
+### An agent on another host
+
+The daemon owns every workspace and snapshots it; an agent on another machine works in a checkout
+of the task there and sends each checkpoint as a patch (Plan 14,
+`docs/superpowers/plans/2026-11-04-scholion-plan-14-remote-workspaces.md`). The checkout is a plain
+git repository `av` makes and keeps in step; it needs `git` on that host, the daemon needs nothing
+new.
+
+```bash
+export AV_URL=http://daemon-host:7420 AV_TOKEN=...      # the daemon on the other machine
+av task start --repo pantry --title "Atomic save" --goal "..." --checkout ~/src/atomic-save
+av remote clone <task-id> ~/src/atomic-save             # or: a checkout of a task that exists
+cd ~/src/atomic-save
+av checkpoint                    # sends `git diff` since the last sync; the daemon applies + snapshots
+av remote pull                   # takes the daemon's head (after `av sync`, a same-host edit, ...)
+```
+
+In a checkout, `av checkpoint`, the Claude Code hooks, `av validate` (its checkpoint), `submit`,
+`record`, `handoff` and `sync` send the checkout's edits first, so the daemon answers from the
+files the agent has. When the daemon's head has moved since the last sync (a checkpoint on its
+host, `av sync`'s rebase, `undo` or `revert`), the checkpoint is answered `409` with the head;
+`av checkpoint` then pulls (a three-way apply puts the local edits back) and sends once more. Lines
+both sides changed get conflict markers in the checkout and the command exits non-zero naming the
+files; resolve them and `av checkpoint` again. The local edits are also kept as a git commit
+before the pull, named in the message if they could not be put back.
+
+The API, for other clients:
+
+- `POST /v1/tasks/{id}/checkpoint?base=<change>`, body a patch as
+  `git diff --binary --full-index --no-renames --src-prefix=a/ --dst-prefix=b/` writes it
+  (text, binary `literal`/`delta`, new and deleted files, modes), at most 64 MiB (`413` above).
+  `200` is a checkpoint's answer plus `applied` (the paths written) and `tree` (the git tree id
+  of the new head, which a client can compare with its own `git write-tree`). `409`: stale base,
+  with `head_change` and header `X-Av-Head`. `400`: a patch that is malformed, does not match the
+  workspace's files, renames or copies, changes a symlink or submodule, or names a path outside
+  the workspace or in `.jj`, `.git` or `.av-task`; nothing is written. `422`: a write under a
+  lost claim (`X-Av-Generation`), as for every write. Without `base` the route is the usual
+  local checkpoint and ignores its body.
+- `GET /v1/tasks/{id}/patch?from=<change>` (`main`, `task:<slug>` or a commit id; without `from`
+  the empty tree, so a whole checkout): the task's head as a patch `git apply` accepts, conflicted
+  files with their markers; headers `X-Av-Head` and `X-Av-Tree`. Reads the store only.
+
+Not supported: two writers on one task from different hosts (the second one's checkpoints keep
+pulling), symlink changes from a checkout, and sending tasks to other hosts (multi-host dispatch).
 
 ### Dashboard
 
