@@ -2,14 +2,16 @@
 
 ## Unreleased
 
-- **Remote workspaces by checkpoint-by-patch** (Plan 14). An agent on another host works in a git
-  checkout of its task (`av remote clone TASK DIR`, `av task start --checkout DIR`) and each
-  checkpoint goes to the daemon as a patch (`POST /v1/tasks/{id}/checkpoint?base=`), which the
-  daemon applies in process to the workspace it still owns and snapshots as a local checkpoint;
-  a stale base is `409` with the head and `av checkpoint` pulls (`GET /v1/tasks/{id}/patch?from=`,
-  `av remote pull`) and resends. Hooks, `submit`, `record`, `handoff`, `validate` and `sync` in
-  a checkout send its edits first. The daemon runs no git for it. Reference: "An agent on another
-  host"; plan and measurement: `docs/superpowers/plans/2026-11-04-scholion-plan-14-remote-workspaces.md`.
+- **Records on the pull request: `av notes`** (Plan 13 Phase 2, the PR bot). Renders a task's
+  decisions, dead ends, notes, review findings, handoffs and checks, plus what other tasks recorded
+  about the files it changes, as one Markdown block between `<!-- scholion:notes v1 task=<id> -->`
+  markers; reads `/v1` only. `--pr [N]` posts it through `gh`, or edits the comment that already
+  holds the task's block (other text and other tasks' blocks stay; an unchanged block is not
+  sent). The task is an id, a slug or `repo/slug`; `--format json`. Record text cannot close the
+  markers and its `@names` notify no one. The CLI posts because the daemon runs on the
+  developer's machine, out of a GitHub runner's reach; `integrations/github/` has the format and a
+  sample workflow for a self-hosted runner that can reach it. `integrations/README.md` lists every
+  integration.
 - **Bench: E4 at scale, `run --noise N`** (Plan 13 Phase 1, harness only; nothing run yet). Adds N
   deterministic irrelevant notes to every relay task, the same ones in the `notes` arm's
   `NOTES.md` and as the `av` arm's anchored records: a seeded generator over the base tree's own
@@ -18,6 +20,14 @@
   (cache reads included) and `memory_tokens` (`NOTES.md` or the start pack); a noise run's report
   names its level and adds a "Memory at scale" table; a results directory holds one level. Design,
   levels, metrics and a per-cell cost estimate: `bench/results/2026-11-e4-scale/DESIGN.md`.
+- **Remote workspaces by checkpoint-by-patch** (Plan 14). An agent on another host works in a git
+  checkout of its task (`av remote clone TASK DIR`, `av task start --checkout DIR`) and each
+  checkpoint goes to the daemon as a patch (`POST /v1/tasks/{id}/checkpoint?base=`), which the
+  daemon applies in process to the workspace it still owns and snapshots as a local checkpoint;
+  a stale base is `409` with the head and `av checkpoint` pulls (`GET /v1/tasks/{id}/patch?from=`,
+  `av remote pull`) and resends. Hooks, `submit`, `record`, `handoff`, `validate` and `sync` in
+  a checkout send its edits first. The daemon runs no git for it. Reference: "An agent on another
+  host"; plan and measurement: `docs/superpowers/plans/2026-11-04-scholion-plan-14-remote-workspaces.md`.
 - **Name fan-out cap** (`AV_INDEX_MAX_FANOUT=N`, off by default). The code graph links a call by its
   bare name to every symbol of that name, so `new` alone gave tokio 500k of its 896k edges. With a
   cap, a name more than N other symbols define links to none of them; overlay views apply it to
