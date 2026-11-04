@@ -65,6 +65,10 @@ pub fn session_start(client: &Client, budget: u32, code: &str, map: bool, max_co
         print_pack(client, &input, &dir, tf, budget, code, map, max_code);
         if let Some(scratch) = scratch_dir(client, &dir) {
             announce_scratch(&scratch);
+            // only for the task's own workspace, the same check the scratch dir passed
+            if let Some(target) = crate::target_dir::own(&dir) {
+                export_target_dir(&target);
+            }
         }
     }
     if let Some(session) = session {
@@ -137,6 +141,28 @@ fn scratch_dir(client: &Client, dir: &Path) -> Option<PathBuf> {
 /// `'…'` for sh.
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Points the session's later cargo commands (`$CLAUDE_ENV_FILE`) at the workspace's own
+/// `target/`, whatever `CARGO_TARGET_DIR` the user's shell had: a shared one makes `cargo test`
+/// run another task's test binary (Plan 12 Task 3). Says nothing: the pack and the scratch line
+/// are what the agent reads.
+fn export_target_dir(target: &Path) {
+    let Some(file) = std::env::var_os("CLAUDE_ENV_FILE").filter(|f| !f.is_empty()) else {
+        return;
+    };
+    let lines = format!(
+        "export CARGO_TARGET_DIR={}\nunset CARGO_BUILD_TARGET_DIR\n",
+        sh_quote(&target.to_string_lossy())
+    );
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .and_then(|mut f| f.write_all(lines.as_bytes()));
+    if let Err(e) = written {
+        eprintln!("av: hook session-start: cannot write CLAUDE_ENV_FILE: {e}");
+    }
 }
 
 /// Exports `AV_SCRATCH` to the session's later commands (`$CLAUDE_ENV_FILE`) and says so after

@@ -5,6 +5,7 @@ mod footprint;
 mod hook;
 mod local;
 mod runner;
+mod target_dir;
 mod taskfile;
 mod watch;
 
@@ -1566,7 +1567,10 @@ fn run(cli: Cli) -> Result<()> {
                 })
                 .transpose()?;
             let (code, tail) = run_capturing(
-                std::process::Command::new(&command[0]).args(&command[1..]),
+                target_dir::apply(
+                    &root,
+                    std::process::Command::new(&command[0]).args(&command[1..]),
+                ),
                 &root,
                 &command[0],
             )?;
@@ -1576,7 +1580,7 @@ fn run(cli: Cli) -> Result<()> {
             for c in wanted["checks"].as_array().into_iter().flatten() {
                 let cmd = s(&c["command"]);
                 let (exit, out) = run_capturing(
-                    std::process::Command::new("sh").args(["-c", cmd]),
+                    target_dir::apply(&root, std::process::Command::new("sh").args(["-c", cmd])),
                     &root,
                     cmd,
                 )?;

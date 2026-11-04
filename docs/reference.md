@@ -724,6 +724,14 @@ removes them when it starts. Hard links need the
 workspaces and the cache on one filesystem (they are: both under `ws_root`); where linking fails,
 a workspace simply starts without them. `AV_BUILD_CACHE=off` keeps and seeds nothing.
 
+**Your `CARGO_TARGET_DIR` does not apply inside a task.** A target dir shared by two workspaces
+of one repo makes `cargo test` in one run the other's test binary. So in a cargo workspace,
+`av validate`, the Claude Code session-start hook (through `$CLAUDE_ENV_FILE`) and
+`integrations/generic/av-wrap.sh` set `CARGO_TARGET_DIR` to the workspace's own `target/` and
+unset `CARGO_BUILD_TARGET_DIR`. This also overrides `build.target-dir` in
+`~/.cargo/config.toml`. An explicit `--target-dir` in a command still wins; what it leaves
+outside the workspace is not reclaimed (the footprint reports it).
+
 To spend less per task still: scope a required convention's check by its glob, so a change to
 `docs/` does not pay for the full workspace build. `av convention add --repo scholion --scope
 'crates/**' --required --check 'cargo test --workspace' 'Tests pass'` runs only when a changed
