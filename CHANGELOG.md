@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Records on the pull request: `av notes`** (Plan 13 Phase 2, the PR bot). Renders a task's
+  decisions, dead ends, notes, review findings, handoffs and checks, plus what other tasks recorded
+  about the files it changes, as one Markdown block between `<!-- scholion:notes v1 task=<id> -->`
+  markers; reads `/v1` only. `--pr [N]` posts it through `gh`, or edits the comment that already
+  holds the task's block (other text and other tasks' blocks stay; an unchanged block is not
+  sent). The task is an id, a slug or `repo/slug`; `--format json`. Record text cannot close the
+  markers and its `@names` notify no one. The CLI posts because the daemon runs on the
+  developer's machine, out of a GitHub runner's reach; `integrations/github/` has the format and a
+  sample workflow for a self-hosted runner that can reach it. `integrations/README.md` lists every
+  integration.
 - **Cold start from git history** (Plan 13 Phase 2). `av repo add NAME PATH --mine-history N`,
   `av init --mine-history N` and `av repo mine NAME [--limit N]` (`POST /v1/repos/{name}/history`)
   turn at most N commits of the repo's history (every ancestor of main, newest first) into
