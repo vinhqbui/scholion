@@ -24,9 +24,9 @@ starts where Claude stopped. Gemini reviews the work, and the reviewer merges it
 Git remembers **what** changed. Scholion also remembers **why**, and **what didn't work**, and
 hands it to whichever agent comes next.
 
-[![A recorded run: Codex's brief leads with Claude's decision and dead end](docs/img/demo-replay.png)](https://openevaluations.si/demo)
+[![A recorded run: Codex's brief leads with Claude's decision and dead end](docs/img/demo-replay.png)](https://scholion.openevaluations.si/demo)
 
-**[Watch the recorded run](https://openevaluations.si/demo)**
+**[Watch the recorded run](https://scholion.openevaluations.si/demo)**
 
 ## Why it exists
 
@@ -83,6 +83,14 @@ av init --for codex --for gemini --for cursor # the same for other agents
 
 Restart your agent, then ask it to *"start an av task to …"*. Open `http://localhost:7420/ui` to
 watch.
+
+Other channels ([details](docs/install.md)):
+
+```bash
+cargo binstall --git https://github.com/vinhqbui/scholion scholion-cli   # prebuilt, no compile
+brew tap vinhqbui/scholion https://github.com/vinhqbui/scholion && brew install scholion
+docker run -d -p 127.0.0.1:7420:7420 -v scholion:/data ghcr.io/vinhqbui/scholion
+```
 
 ## ⭐ If it helps, star it
 
