@@ -201,6 +201,8 @@ pub fn clone(client: &Client, task: &str, dir: &Path, agent: &str, session: &str
         return Err(local(format!("{} exists and is not empty", dir.display())));
     }
     std::fs::create_dir_all(dir).map_err(local)?;
+    // git runs in `dir`, so every path handed to it (the separate index) must not be relative
+    let dir = &std::path::absolute(dir).map_err(local)?;
     let git = Git::new(dir);
     git.run(&["init", "-q"])?;
     // as in a workspace: the task file and build output are never part of a change

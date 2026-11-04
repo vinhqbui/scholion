@@ -8,8 +8,9 @@ snapshots as usual, and answers with what the agent needs to stay in sync. This 
 Phase 3 (`agentvcs/docs/superpowers/plans/2026-11-04-agentvcs-plan-13-rollout.md`): hosted Teams
 needs it, and so does a customer-hosted runner with a hosted brain.
 
-**Status (2026-11-04):** Tasks 1–7 done on branch `remote-checkpoint`; Task 8 (the measurement)
-is below under "Measurement". Not merged.
+**Status (2026-11-04):** Tasks 1–8 done on branch `remote-checkpoint`. Measured: a remote
+checkpoint's median round trip is 1.5× a local one (31.5 ms vs 21 ms), under the 2× target.
+Not merged.
 
 ## The problem
 
@@ -167,11 +168,28 @@ refuses anyway), or a second remote writer.
 
 Method: the daemon (release build) runs in one container with Postgres in a second; the remote
 checkout lives in a third container on the same Docker network, so the round trip crosses a
-network stack (not a WAN). The repo is this one (Scholion, about 330 tracked files). Each side
+network stack (not a WAN). The repo is this one (Scholion's 531 tracked files, 7.2 MB, imported as a fresh one-commit repo). Each side
 edits one file and runs `av checkpoint` ten times (`scripts/checkpoint-timing.sh`); the local
 runs are in the task's workspace on the daemon's container, the remote runs in the checkout.
 
-MEASUREMENT_RESULTS
+Results (2026-11-04, release build, all three containers on one Windows 11 / Docker Desktop
+machine; each run appends one line to `README.md`):
+
+| | runs | median | notes |
+|---|---|---|---|
+| local, `av checkpoint` in the workspace | 10 | 21.5 ms | first run 6089 ms (the workspace's first snapshot), then 21–46 ms |
+| remote, `av checkpoint` in the checkout | 10 | 32 ms | first run 54 ms, then 30–35 ms |
+| remote, second round (run first) | 20 | 31.5 ms | |
+| local, second round | 20 | 21 ms | |
+| remote after a same-host edit (`409`, pull, resend) | 5 | 77 ms | first 524 ms; three round trips plus `git apply --3way` |
+
+**Ratio: 31.5 / 21 = 1.5×, under the 2× target.** The extra ~10 ms is the client's git work
+(`add -A`, `write-tree`, `diff --cached`, `commit-tree` over 531 files) plus one HTTP round trip
+and the in-process apply; the daemon's snapshot is the same as the local one. `av remote clone`
+of the whole tree took 192 ms. Not measured: a WAN round trip (add its latency once per
+checkpoint, three times on a `409`) and large trees (the clone patch is in memory on both sides).
+The measurement also found a bug, fixed with a test: `av remote clone` and `task start --checkout`
+with a relative `DIR` built the separate index at a doubled path.
 
 ## Verification
 

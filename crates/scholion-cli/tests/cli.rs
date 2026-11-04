@@ -4231,7 +4231,8 @@ fn task_start_with_checkout_makes_the_checkout_instead_of_using_the_workspace() 
             "--goal",
             "g",
             "--checkout",
-            dir.to_str().unwrap(),
+            // relative to where `av` runs, as typed
+            "mine",
         ],
     ));
     assert!(o.contains("## Task"), "{o}");
