@@ -23,10 +23,11 @@ sets. That matches cold's 0/3 on this task on 2026-10-29 and 2026-10-31.
 ## Spend
 
 - Harness total **$0.027** at the peak prices `0.30,0.30,0.006,1.20`.
-- DeepSeek balance **$6.44 before (16:32 UTC) and $6.44 after (16:35 UTC)**. The endpoint reports whole
-  cents, so the real charge was too small to show, under about one cent. The run fell in DeepSeek's
-  off-peak window (16:30 to 00:30 UTC), so the real bill should be about half the harness figure.
-  Well under the owner's $1.00 cap.
+- DeepSeek balance **$6.44 before (16:32 UTC), $6.42 a few minutes after the run**: **$0.02 spent**,
+  well under the owner's $1.00 cap. Right after the run (16:35 UTC) the balance still read $6.44, so
+  billing lags by a few minutes. Wait before reading the "after" balance. The endpoint reports whole
+  cents. The run fell in DeepSeek's off-peak window (16:30 to 00:30 UTC), so the harness's peak-price
+  figure is an upper bound.
 - Per session that is $0.008 to $0.011 at peak prices, in line with DESIGN's $0.013 a session.
 
 ## Exact command
