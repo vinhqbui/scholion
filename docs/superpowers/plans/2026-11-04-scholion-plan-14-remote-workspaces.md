@@ -177,7 +177,7 @@ machine; each run appends one line to `README.md`):
 
 | | runs | median | notes |
 |---|---|---|---|
-| local, `av checkpoint` in the workspace | 10 | 21.5 ms | first run 6089 ms (the workspace's first snapshot), then 21–46 ms |
+| local, `av checkpoint` in the workspace | 10 | 21.5 ms | first run 6089 ms (cold start: the daemon's first checkpoint on the repo, run before the remote one), then 21–46 ms |
 | remote, `av checkpoint` in the checkout | 10 | 32 ms | first run 54 ms, then 30–35 ms |
 | remote, second round (run first) | 20 | 31.5 ms | |
 | local, second round | 20 | 21 ms | |
