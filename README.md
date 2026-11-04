@@ -100,4 +100,4 @@ as audited infrastructure. Some of the design borrows ideas from Anthropic's pub
 Scholion is an independent project, **not affiliated with or endorsed by Anthropic**.
 
 **Editions.** This repository is the free Community edition ([MIT](LICENSE)). It works with any
-number of agents, with no seat limit. A hosted Commercial edition is planned but not available.
+number of agents, with no seat limit. A hosted Commercial edition, **Scholion Cloud**, is planned but not available yet.
