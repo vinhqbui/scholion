@@ -1762,6 +1762,10 @@ impl Footprint {
             ("CLAUDE_ENV_FILE", self.env_file.to_str().unwrap()),
             ("AV_FOOTPRINT", on),
             ("AV_FOOTPRINT_WARN_MB", "1"),
+            // as if the user's shell named no target dir (this test process may have one); a
+            // test that wants one pushes it after these
+            ("CARGO_TARGET_DIR", ""),
+            ("CARGO_BUILD_TARGET_DIR", ""),
         ]
     }
 
@@ -1822,9 +1826,9 @@ fn hook_session_start_gives_the_task_a_scratch_dir_and_snapshots_the_footprint()
 #[cfg(unix)]
 #[test]
 fn hook_session_start_points_cargo_at_the_current_workspaces_own_target_dir() {
+    // the session starts in a task that is no cargo workspace (a Python one)
     let (d, ws, scratch) = started();
-    std::fs::write(ws.join("Cargo.toml"), "[workspace]\n").unwrap();
-    // a second task of the repo, as the Stop hook would hand the same session next
+    // a second task of the repo, a cargo workspace, as the Stop hook would hand the session next
     ok(av(
         &d,
         scratch.path(),
@@ -1872,7 +1876,11 @@ fn hook_session_start_points_cargo_at_the_current_workspaces_own_target_dir() {
         assert!(o.status.success(), "{}", err(&o));
         out(&o)
     };
-    assert_eq!(seen(&ws), format!("{}|unset", ws.join("target").display()));
+    assert_eq!(
+        seen(&ws),
+        format!("{}|{}", shared.display(), shared.display()),
+        "no cargo workspace: nothing to protect, the caller's value stays"
+    );
     assert_eq!(
         seen(&ws2.join("app")),
         format!("{}|unset", ws2.join("target").display())

@@ -65,10 +65,10 @@ pub fn session_start(client: &Client, budget: u32, code: &str, map: bool, max_co
         print_pack(client, &input, &dir, tf, budget, code, map, max_code);
         if let Some(scratch) = scratch_dir(client, &dir) {
             announce_scratch(&scratch);
-            // only for the task's own workspace, the same check the scratch dir passed
-            if crate::target_dir::own(&dir).is_some() {
-                export_target_dir();
-            }
+            // in the task's own workspace (the check the scratch dir passed), cargo or not: the
+            // snippet finds a cargo workspace per command, and the Stop hook may hand this
+            // session a Rust task after a Python one
+            export_target_dir();
         }
     }
     if let Some(session) = session {

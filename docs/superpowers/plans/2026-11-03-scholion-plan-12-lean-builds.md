@@ -87,7 +87,8 @@ What was built (client side only; the daemon cannot set an agent's environment):
 - The session-start hook, when the user's environment names a target dir, appends a line of
   shell code to `$CLAUDE_ENV_FILE`. Claude Code runs that file before every Bash command, and the
   line points cargo at the `target/` of the task workspace the command runs in: the nearest dir
-  with a `.av-task` and a `Cargo.toml`. It computes the dir per command, not as a written path,
+  with a `.av-task` and a `Cargo.toml`, written for any task workspace, cargo or not, since a
+  later task of the same session may be a Rust one. It computes the dir per command, not as a written path,
   because the Stop hook keeps one session going from task to task; a fixed path would send task
   2's builds into task 1's `target/`, shared with task 1's reviewer. Without such a variable the
   hook writes nothing, since cargo's default already is the workspace's `target/`, and the file
@@ -104,7 +105,9 @@ What was built (client side only; the daemon cannot set an agent's environment):
 Superseded: registering build dirs outside `ws_root` (`POST /v1/tasks/{id}/build-dir`,
 `AV_BUILD_ROOT`). Builds no longer go there unless a command asks for it explicitly.
 
-Known gaps: an MCP-only agent's own cargo runs are not covered (its `av validate` is); a
+Known gaps: a session that starts outside any task workspace and only then calls `start_task`
+or `av next` gets no snippet (the hook ran before there was a task); an MCP-only agent's own
+cargo runs are not covered. `av validate` is, in both cases. A
 `build.target-dir` in `~/.cargo/config.toml` is overridden for `av validate` and `av-wrap.sh`
 but not for a Claude Code session's own commands (the hook only looks at the variables).
 Follow-up: `AV_SCRATCH` is still written as a fixed path, so a session moved on to a second
