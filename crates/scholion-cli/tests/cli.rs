@@ -1816,28 +1816,96 @@ fn hook_session_start_gives_the_task_a_scratch_dir_and_snapshots_the_footprint()
     );
 }
 
-/// In a cargo workspace the session's own builds go to the workspace's `target/` too, whatever
-/// `CARGO_TARGET_DIR` the user's shell had (Plan 12 Task 3).
+/// With a target dir in the user's environment, the session's own cargo builds go to the
+/// `target/` of whichever task workspace a command runs in: the Stop hook keeps one session going
+/// from task to task, so the env file computes it per command (Plan 12 Task 3).
+#[cfg(unix)]
 #[test]
-fn hook_session_start_points_cargo_at_the_workspaces_own_target_dir() {
-    let (d, ws, _scratch) = started();
+fn hook_session_start_points_cargo_at_the_current_workspaces_own_target_dir() {
+    let (d, ws, scratch) = started();
     std::fs::write(ws.join("Cargo.toml"), "[workspace]\n").unwrap();
+    // a second task of the repo, as the Stop hook would hand the same session next
+    ok(av(
+        &d,
+        scratch.path(),
+        &[
+            "task",
+            "start",
+            "--repo",
+            "demo",
+            "--title",
+            "Second one",
+            "--goal",
+            "Another",
+        ],
+    ));
+    let ws2 = d.ws.join("demo/second-one");
+    std::fs::write(ws2.join("Cargo.toml"), "[workspace]\n").unwrap();
     let fp = Footprint::new();
+    let shared = scratch.path().join("shared-target");
+    let mut env = fp.env("off");
+    env.push(("CARGO_TARGET_DIR", shared.to_str().unwrap()));
     ok(av_stdin_env(
         &d.url,
         &ws,
-        &fp.env("off"),
+        &env,
         &["hook", "session-start"],
         &hook_input(&ws, "SessionStart", "cc-target"),
     ));
-    let scratch = d.ws.join("demo/.scratch/improve-greeting");
+    let file = std::fs::read_to_string(&fp.env_file).unwrap();
+    let av_scratch = d.ws.join("demo/.scratch/improve-greeting");
+    assert!(
+        file.starts_with(&format!("export AV_SCRATCH='{}'\n", av_scratch.display())),
+        "{file}"
+    );
+    // what a Bash command sees, run where the agent is
+    let seen = |cwd: &Path| -> String {
+        let o = Command::new("bash")
+            .arg("-c")
+            .arg(r#". "$ENV_FILE"; printf '%s|%s' "$CARGO_TARGET_DIR" "${CARGO_BUILD_TARGET_DIR-unset}""#)
+            .current_dir(cwd)
+            .env("ENV_FILE", &fp.env_file)
+            .env("CARGO_TARGET_DIR", &shared)
+            .env("CARGO_BUILD_TARGET_DIR", &shared)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", err(&o));
+        out(&o)
+    };
+    assert_eq!(seen(&ws), format!("{}|unset", ws.join("target").display()));
+    assert_eq!(
+        seen(&ws2.join("app")),
+        format!("{}|unset", ws2.join("target").display())
+    );
+    let elsewhere = scratch.path();
+    assert_eq!(
+        seen(elsewhere),
+        format!("{}|{}", shared.display(), shared.display()),
+        "outside a task the caller's value stays"
+    );
+}
+
+/// Without a target dir in the user's environment cargo already builds into the workspace's
+/// `target/`, and the env file stays plain assignments (PowerShell reads only those).
+#[test]
+fn hook_session_start_leaves_cargo_alone_when_no_target_dir_is_set() {
+    let (d, ws, _scratch) = started();
+    std::fs::write(ws.join("Cargo.toml"), "[workspace]\n").unwrap();
+    let fp = Footprint::new();
+    let mut env = fp.env("off");
+    env.push(("CARGO_TARGET_DIR", ""));
+    env.push(("CARGO_BUILD_TARGET_DIR", ""));
+    ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &env,
+        &["hook", "session-start"],
+        &hook_input(&ws, "SessionStart", "cc-plain"),
+    ));
+    let av_scratch = d.ws.join("demo/.scratch/improve-greeting");
     assert_eq!(
         std::fs::read_to_string(&fp.env_file).unwrap(),
-        format!(
-            "export AV_SCRATCH='{}'\nexport CARGO_TARGET_DIR='{}'\nunset CARGO_BUILD_TARGET_DIR\n",
-            scratch.display(),
-            ws.join("target").display()
-        )
+        format!("export AV_SCRATCH='{}'\n", av_scratch.display())
     );
 }
 

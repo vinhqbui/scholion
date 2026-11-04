@@ -66,8 +66,8 @@ pub fn session_start(client: &Client, budget: u32, code: &str, map: bool, max_co
         if let Some(scratch) = scratch_dir(client, &dir) {
             announce_scratch(&scratch);
             // only for the task's own workspace, the same check the scratch dir passed
-            if let Some(target) = crate::target_dir::own(&dir) {
-                export_target_dir(&target);
+            if crate::target_dir::own(&dir).is_some() {
+                export_target_dir();
             }
         }
     }
@@ -143,23 +143,33 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Points the session's later cargo commands (`$CLAUDE_ENV_FILE`) at the workspace's own
-/// `target/`, whatever `CARGO_TARGET_DIR` the user's shell had: a shared one makes `cargo test`
-/// run another task's test binary (Plan 12 Task 3). Says nothing: the pack and the scratch line
-/// are what the agent reads.
-fn export_target_dir(target: &Path) {
+/// Shell code for `$CLAUDE_ENV_FILE`, which Claude Code runs before every Bash command: cargo
+/// builds into the `target/` of the task workspace the command runs in (the nearest dir with a
+/// `.av-task` and a `Cargo.toml`), and outside any task the caller's value stays. Computed per
+/// command, not written as a path, because the Stop hook keeps one session going from task to
+/// task. Parameter expansion only, so Git Bash forks nothing.
+pub(crate) const TARGET_DIR_SNIPPET: &str = r#"__av_d="$PWD"; while [ -n "$__av_d" ] && [ ! -f "$__av_d/.av-task" ]; do __av_d="${__av_d%/*}"; done; if [ -n "$__av_d" ] && [ -f "$__av_d/Cargo.toml" ]; then export CARGO_TARGET_DIR="$__av_d/target"; unset CARGO_BUILD_TARGET_DIR; fi; unset __av_d
+"#;
+
+/// Points the session's later cargo commands (`$CLAUDE_ENV_FILE`) at the task workspace's own
+/// `target/` when the user's environment names a target dir: a shared one makes `cargo test`
+/// run another task's test binary (Plan 12 Task 3). Without one, cargo's default already is the
+/// workspace's `target/`, and the file stays plain assignments: PowerShell takes the file's
+/// variables only when every line is one, so shell code there would cost it `AV_SCRATCH` too.
+/// Says nothing: the pack and the scratch line are what the agent reads.
+fn export_target_dir() {
+    let set = |v: &str| std::env::var_os(v).is_some_and(|x| !x.is_empty());
+    if !set("CARGO_TARGET_DIR") && !set("CARGO_BUILD_TARGET_DIR") {
+        return;
+    }
     let Some(file) = std::env::var_os("CLAUDE_ENV_FILE").filter(|f| !f.is_empty()) else {
         return;
     };
-    let lines = format!(
-        "export CARGO_TARGET_DIR={}\nunset CARGO_BUILD_TARGET_DIR\n",
-        sh_quote(&target.to_string_lossy())
-    );
     let written = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&file)
-        .and_then(|mut f| f.write_all(lines.as_bytes()));
+        .and_then(|mut f| f.write_all(TARGET_DIR_SNIPPET.as_bytes()));
     if let Err(e) = written {
         eprintln!("av: hook session-start: cannot write CLAUDE_ENV_FILE: {e}");
     }

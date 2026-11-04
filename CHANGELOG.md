@@ -43,9 +43,11 @@
 - **A task's builds stay in its own `target/`** (Plan 12 Task 3). A `CARGO_TARGET_DIR` in the
   user's environment (or `build.target-dir` in `~/.cargo/config.toml`) put every task workspace
   of a repo into one target dir again, where `cargo test` runs another task's test binary. In a
-  cargo workspace, `av validate` (the command and every check), the session-start hook (through
-  `$CLAUDE_ENV_FILE`) and `av-wrap.sh` set `CARGO_TARGET_DIR` to the workspace's `target/` and
-  unset `CARGO_BUILD_TARGET_DIR`. That is the dir the dependency cache seeds and the merge
+  cargo workspace, `av validate` (the command and every check) and `av-wrap.sh` set
+  `CARGO_TARGET_DIR` to the workspace's `target/` and unset `CARGO_BUILD_TARGET_DIR`; when the
+  user's environment names a target dir, the session-start hook adds shell code to
+  `$CLAUDE_ENV_FILE` that does the same for every Bash command, for the task workspace it runs in
+  (a session the Stop hook moves to another task follows it). That is the dir the dependency cache seeds and the merge
   reclaims. An explicit `--target-dir` still wins.
 - **`av agent rm NAME`** (`DELETE /v1/agents/{name}`). Removes a profile. An unknown name is
   404. An agent that still owns an open, handed-off, in-review or conflicted task is 409 unless `--force`

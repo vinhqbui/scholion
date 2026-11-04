@@ -726,10 +726,12 @@ a workspace simply starts without them. `AV_BUILD_CACHE=off` keeps and seeds not
 
 **Your `CARGO_TARGET_DIR` does not apply inside a task.** A target dir shared by two workspaces
 of one repo makes `cargo test` in one run the other's test binary. So in a cargo workspace,
-`av validate`, the Claude Code session-start hook (through `$CLAUDE_ENV_FILE`) and
-`integrations/generic/av-wrap.sh` set `CARGO_TARGET_DIR` to the workspace's own `target/` and
-unset `CARGO_BUILD_TARGET_DIR`. This also overrides `build.target-dir` in
-`~/.cargo/config.toml`. An explicit `--target-dir` in a command still wins; what it leaves
+`av validate` and `integrations/generic/av-wrap.sh` set `CARGO_TARGET_DIR` to the workspace's
+own `target/` and unset `CARGO_BUILD_TARGET_DIR`, which also overrides `build.target-dir` in
+`~/.cargo/config.toml`. When your environment sets either variable, the Claude Code session-start
+hook adds shell code to `$CLAUDE_ENV_FILE` that does the same before every Bash command, for the
+task workspace the command runs in. That file is then no longer plain assignments, so Claude
+Code's PowerShell tool gets none of its variables (`AV_SCRATCH` included). An explicit `--target-dir` in a command still wins; what it leaves
 outside the workspace is not reclaimed (the footprint reports it).
 
 To spend less per task still: scope a required convention's check by its glob, so a change to
