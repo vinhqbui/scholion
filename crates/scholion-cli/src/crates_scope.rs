@@ -95,7 +95,8 @@ pub fn scope(meta: &Value, prefix: &str, changed: &[String]) -> Scope {
         .flatten()
         .filter_map(Value::as_str)
         .collect();
-    // name -> repo-relative dir, and name -> names it depends on by path (every kind)
+    // name -> dir relative to the cargo workspace root, and name -> names it depends on by
+    // path (every kind)
     let mut dirs: Vec<(String, String)> = vec![];
     let mut deps: HashMap<String, Vec<String>> = HashMap::new();
     for p in meta["packages"].as_array().into_iter().flatten() {
@@ -115,13 +116,7 @@ pub fn scope(meta: &Value, prefix: &str, changed: &[String]) -> Scope {
         let Ok(rel) = dir.strip_prefix(ws_root) else {
             return Scope::Workspace;
         };
-        let rel = slashed(rel);
-        let dir = match (prefix.is_empty(), rel.is_empty()) {
-            (true, _) => rel,
-            (false, true) => prefix.to_owned(),
-            (false, false) => format!("{prefix}/{rel}"),
-        };
-        dirs.push((name.to_owned(), dir));
+        dirs.push((name.to_owned(), slashed(rel)));
         let on: Vec<String> = p["dependencies"]
             .as_array()
             .into_iter()
@@ -133,16 +128,29 @@ pub fn scope(meta: &Value, prefix: &str, changed: &[String]) -> Scope {
     }
     let mut touched = BTreeSet::new();
     for path in changed {
+        let rest = if prefix.is_empty() {
+            Some(path.as_str())
+        } else {
+            path.strip_prefix(prefix).and_then(|r| r.strip_prefix('/'))
+        };
+        let Some(rest) = rest else {
+            return Scope::Workspace; // outside the cargo workspace
+        };
         let owner = dirs
             .iter()
-            .filter(|(_, d)| d.is_empty() || path == d || path.starts_with(&format!("{d}/")))
+            .filter(|(_, d)| {
+                if d.is_empty() {
+                    root_package_owns(rest)
+                } else {
+                    rest == d || rest.starts_with(&format!("{d}/"))
+                }
+            })
             .max_by_key(|(_, d)| d.len());
         match owner {
-            // a root package owns the root, but not the files cargo reads for the whole workspace
-            Some((name, d)) if !(d.is_empty() && is_workspace_file(path)) => {
+            Some((name, _)) => {
                 touched.insert(name.clone());
             }
-            _ => return Scope::Workspace,
+            None => return Scope::Workspace,
         }
     }
     if touched.is_empty() {
@@ -164,12 +172,14 @@ pub fn scope(meta: &Value, prefix: &str, changed: &[String]) -> Scope {
     Scope::Packages(chosen.into_iter().collect())
 }
 
-/// Files at the workspace root that every member's build reads.
-fn is_workspace_file(path: &str) -> bool {
-    matches!(
-        path,
-        "Cargo.toml" | "Cargo.lock" | "rust-toolchain.toml" | "rust-toolchain"
-    ) || path.starts_with(".cargo/")
+/// What a package at the workspace root owns: its sources, not the rest of the tree (fixture dirs
+/// other members read, and `Cargo.toml`, `Cargo.lock`, `.cargo/`, which every member's build
+/// reads).
+fn root_package_owns(path: &str) -> bool {
+    path == "build.rs"
+        || ["src/", "tests/", "benches/", "examples/"]
+            .iter()
+            .any(|d| path.starts_with(d))
 }
 
 #[cfg(test)]
@@ -282,6 +292,21 @@ mod tests {
         assert_eq!(scope(&m, "", &paths(&["Cargo.lock"])), Scope::Workspace);
         assert_eq!(
             scope(&m, "", &paths(&[".cargo/config.toml"])),
+            Scope::Workspace
+        );
+        // a fixture dir another member may read through `../`
+        assert_eq!(
+            scope(&m, "", &paths(&["fixtures/a.json"])),
+            Scope::Workspace
+        );
+        assert_eq!(scope(&m, "", &paths(&["build.rs"])), pkgs(&["root"]));
+        // the same under a repo subdirectory
+        assert_eq!(
+            scope(&m, "rust", &paths(&["rust/src/main.rs"])),
+            pkgs(&["root"])
+        );
+        assert_eq!(
+            scope(&m, "rust", &paths(&["rust/Cargo.lock"])),
             Scope::Workspace
         );
     }

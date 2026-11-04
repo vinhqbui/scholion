@@ -619,6 +619,9 @@ pub(crate) async fn changed_and_checks(
     Ok((changed, checks))
 }
 
+/// The placeholder `av validate` expands in a check command to the packages a change affects.
+const CRATES: &str = "{crates}";
+
 /// Why the task's convention checks do not allow approval at `head` (`None`: they do). The
 /// newest result per convention across the validations at `head` counts; a check with no
 /// result counts as not run.
@@ -635,11 +638,26 @@ async fn check_problem(st: &AppState, task: &Task, head: &ChangeId) -> Result<Op
         .filter(|r| r.kind == RecordKind::Validation && r.change_id.as_ref() == Some(head))
         .collect();
     records.sort_by_key(|r| r.created_at);
+    // A check that says `{crates}` counts only as run by a client that expanded it: run as
+    // written, `cargo test {crates}` filters every test out and exits 0 (Plan 12 Task 2).
+    let expands: std::collections::HashSet<i64> = wanted
+        .iter()
+        .filter(|c| {
+            c.check_command
+                .as_deref()
+                .is_some_and(|k| k.contains(CRATES))
+        })
+        .map(|c| c.id.0)
+        .collect();
     let mut latest = std::collections::HashMap::new();
     for r in &records {
         let body: Value = serde_json::from_str(&r.body).unwrap_or_default();
         for c in body["checks"].as_array().into_iter().flatten() {
             if let (Some(id), Some(code)) = (c["convention_id"].as_i64(), c["exit_code"].as_i64()) {
+                let expanded = c["command"].as_str().is_some_and(|k| !k.contains(CRATES));
+                if expands.contains(&id) && !expanded {
+                    continue;
+                }
                 latest.insert(id, code);
             }
         }
@@ -652,6 +670,14 @@ async fn check_problem(st: &AppState, task: &Task, head: &ChangeId) -> Result<Op
             Some(code) => problems.push(format!(
                 "conv:{} check `{cmd}` failed (exit {code}): {}",
                 c.id.0, c.text
+            )),
+            None if cmd.contains(CRATES) => problems.push(format!(
+                "conv:{} check `{cmd}` not run at head {} (`av validate` runs it and replaces \
+                 {CRATES} with -p for each changed crate and its dependants, or --workspace; a \
+                 result counts only with that expanded `command`): {}",
+                c.id.0,
+                short(&head.0),
+                c.text
             )),
             None => problems.push(format!(
                 "conv:{} check `{cmd}` not run at head {} (`av validate` runs it): {}",

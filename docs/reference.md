@@ -737,7 +737,10 @@ change (a path outside every member, such as the root `Cargo.toml`, `Cargo.lock`
 `rust-toolchain.toml`, `.cargo/` or a fixture dir a test reads through `../..`), or cargo is
 missing, it is `--workspace`. The check line prints the command as it ran (for a change in `scholion-pack`: `cargo test
 -p scholion-bench -p scholion-cli -p scholion-daemon -p scholion-pack`) and the validation record
-keeps it, so a reviewer sees what a green check covered. Choosing packages also unifies features over
+keeps it, so a reviewer sees what a green check covered. Approval counts a result for such a check only
+when its `command` was expanded (run as written, `cargo test {crates}` filters every test out
+and passes), so an older `av` cannot pass it. A package at the workspace root owns only its
+`src/`, `tests/`, `benches/`, `examples/` and `build.rs`. Choosing packages also unifies features over
 those packages only.
 
 **What a session leaves outside its workspace.** The Claude Code hooks (and Grok's, which run the

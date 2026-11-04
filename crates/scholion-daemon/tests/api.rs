@@ -2512,6 +2512,55 @@ async fn checks_list_the_changed_paths_and_keep_the_command_that_ran() {
     );
 }
 
+/// Run as written, `cargo test {crates}` filters every test out and exits 0, so a result for such
+/// a check counts only with the command a client expanded.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crates_check_counts_only_when_its_command_was_expanded() {
+    let e = env().await;
+    let conv = add_conv(&e, "app/**", "tests pass", Some("cargo test {crates}")).await;
+    let t = start_task(&e, "Upper names").await;
+    write_file(&e, &t, "app/util.py", UPPER);
+    decide(&e, &t).await;
+    assert_eq!(submit(&e, &t).await.0, StatusCode::OK);
+    let refused = |body: &Value| {
+        let msg = body["error"].as_str().unwrap_or_default().to_owned();
+        assert!(
+            msg.contains(&format!("conv:{conv}")) && msg.contains("not run"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("replaces {crates}"),
+            "says who expands it: {msg}"
+        );
+    };
+
+    // an older av: no command
+    validate_with(&e, &t, json!([{"convention_id": conv, "exit_code": 0}])).await;
+    let (status, body) = review(&e, &t, "reviewer", "approve").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    refused(&body);
+
+    // run by hand as written
+    validate_with(
+        &e,
+        &t,
+        json!([{"convention_id": conv, "exit_code": 0, "command": "cargo test {crates}"}]),
+    )
+    .await;
+    let (status, body) = review(&e, &t, "reviewer", "approve").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    refused(&body);
+
+    validate_with(
+        &e,
+        &t,
+        json!([{"convention_id": conv, "exit_code": 0, "command": "cargo test -p app"}]),
+    )
+    .await;
+    let (status, body) = review(&e, &t, "reviewer", "approve").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_removed_convention_is_no_longer_listed_or_enforced() {
     let e = env().await;

@@ -47,7 +47,9 @@
     `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `bench/`) or a failed
     `cargo metadata` gives `--workspace`. The line prints the command that ran, and the check's
     result keeps it (`command`); `GET /v1/tasks/{id}/checks` adds `changed`, the task's changed
-    paths.
+    paths. Approval counts a result for a `{crates}` check only with an expanded `command`: run
+    as written, `cargo test {crates}` filters every test out and passes, so an older `av` (or an
+    MCP agent that leaves `command` out) cannot pass it.
 - **`av agent rm NAME`** (`DELETE /v1/agents/{name}`). Removes a profile. An unknown name is
   404. An agent that still owns an open, handed-off, in-review or conflicted task is 409 unless `--force`
   (`?force=true`); the tasks stay. A profile an extension manages is refused, the same way

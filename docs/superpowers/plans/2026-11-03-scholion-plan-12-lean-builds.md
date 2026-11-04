@@ -79,7 +79,9 @@ never by command text, so the client may run an expanded command.
   the repo root. An edge B → A exists when B lists a dependency with a `path` whose `name` (the
   package name, not a `rename`) is member A, **of every kind**: normal, `dev` and `build`.
   `scholion-testutil` is a dev-dependency of most crates, so a change to it reaches all of them.
-- **Path → package.** The member with the longest directory that is a prefix of the path.
+- **Path → package.** The member with the longest directory that is a prefix of the path. A
+  package at the cargo workspace root owns only `src/`, `tests/`, `benches/`, `examples/` and
+  `build.rs`; anything else there (fixture dirs, `Cargo.lock`) is outside every member.
 - **Closure.** The touched members plus every member that depends on one of them, transitively.
   The command gets `-p a -p b …`, sorted.
 - **Falls back to `--workspace`** (never to an empty string) when any changed path is outside
@@ -89,6 +91,13 @@ never by command text, so the client may run an expanded command.
   workspace. A wrong guess must cost a full build, not a missed dependant.
 - **Visible.** `av validate` prints the expanded command (`check conv:N passed (\`cargo test -p
   a -p b\`, exit 0)`) and stores it as the check result's `command`, so a reviewer sees what ran.
+- **Fails closed for clients that do not expand it.** Run as written, `cargo test {crates}`
+  takes `{crates}` as a test-name filter: it builds, runs 0 tests and exits 0. So for a check
+  whose command says `{crates}`, approval counts a result only when it carries a `command`
+  without the placeholder (`flow::check_problem`); otherwise the check is "not run", and the
+  message says `av validate` expands it. An `av` older than this, or an MCP agent that omits
+  `command`, cannot pass such a check. The MCP `validate` tool forwards a check's `command`
+  but its schema does not list it (the tool list is size-guarded); the refusal names it.
 - **Known difference.** `-p a -p b` unifies features over the chosen packages only, so a
   feature that only another member turns on is off. A test that needs it fails visibly; it never
   passes by mistake for a crate that was not chosen, because unchosen crates do not run.
