@@ -334,6 +334,9 @@ pub(crate) struct CheckResult {
     exit_code: i32,
     #[serde(default)]
     output_tail: String,
+    /// The command as it ran, after `av validate` expanded `{crates}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
 }
 
 /// Records that `command` ran in the workspace with `exit_code`, bound to the head it ran at.
@@ -590,20 +593,30 @@ fn same_edit(
 
 /// Required conventions with a check command whose glob matches a path the task changed.
 pub(crate) async fn applicable_checks(st: &AppState, task: &Task) -> Result<Vec<Convention>> {
+    Ok(changed_and_checks(st, task).await?.1)
+}
+
+/// The task's changed paths (base to head, sorted) and the required checks they call for.
+pub(crate) async fn changed_and_checks(
+    st: &AppState,
+    task: &Task,
+) -> Result<(Vec<String>, Vec<Convention>)> {
     if task.head_change.0.is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
-    let changed = st
+    let mut changed = st
         .vcs
         .changed_paths(&task.repo, &task.base_change, &task.head_change)
         .await?;
-    Ok(st
+    changed.sort();
+    let checks = st
         .store
         .conventions_for(&task.repo, &changed)
         .await?
         .into_iter()
         .filter(|c| c.required && c.check_command.is_some())
-        .collect())
+        .collect();
+    Ok((changed, checks))
 }
 
 /// Why the task's convention checks do not allow approval at `head` (`None`: they do). The
