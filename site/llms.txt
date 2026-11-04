@@ -13,6 +13,7 @@ Status: an experiment, written almost entirely by coding agents with one human s
 - Git keeps snapshots and drops intent, decisions and dead ends. A diff shows what changed, never why.
 - Pasting more of the repo into the prompt doesn't help: the context window fills before the agent knows what matters.
 - Scholion stores the "why" next to the code and hands any agent a context pack built from it: more relevant context, never more than the budget allows.
+- You may pay for several agent subscriptions, each better at something different. Scholion gives them one repository, one backlog and one shared memory, so the next agent, from any vendor, starts where the last one stopped.
 
 ## Concepts
 
