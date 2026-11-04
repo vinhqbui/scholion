@@ -1,5 +1,6 @@
 mod agents;
 mod client;
+mod crates_scope;
 mod disk;
 mod footprint;
 mod hook;
@@ -1575,10 +1576,16 @@ fn run(cli: Cli) -> Result<()> {
                 &command[0],
             )?;
             let wanted = client.get(&format!("/v1/tasks/{task}/checks"), &[])?;
+            let changed: Vec<String> = strings(&wanted["changed"])
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
             let mut checks = vec![];
             let mut checks_failed = false;
             for c in wanted["checks"].as_array().into_iter().flatten() {
-                let cmd = s(&c["command"]);
+                // `{crates}`: the packages the change can affect (Plan 12 Task 2)
+                let expanded = crates_scope::expand(s(&c["command"]), &root, &changed);
+                let cmd = expanded.as_str();
                 let (exit, out) = run_capturing(
                     target_dir::apply(&root, std::process::Command::new("sh").args(["-c", cmd])),
                     &root,
@@ -1590,7 +1597,10 @@ fn run(cli: Cli) -> Result<()> {
                     if exit == 0 { "passed" } else { "FAILED" }
                 );
                 checks_failed |= exit != 0;
-                checks.push(json!({"convention_id": c["convention_id"], "exit_code": exit, "output_tail": out}));
+                checks.push(
+                    json!({"convention_id": c["convention_id"], "exit_code": exit,
+                                   "output_tail": out, "command": cmd}),
+                );
             }
             drop(slot);
             let r = client.post_as(
