@@ -15,8 +15,8 @@ names, so the file never holds it. Codex introduces itself as `codex-mcp-client`
 `X-Av-Agent` header is what makes it route, own tasks and review as `codex`.
 
 Put the instructions from [`../agents-instructions.md`](../agents-instructions.md) into
-`AGENTS.md`. Codex reads `AGENTS.md`, but it did not hand the MCP server's own instructions to the
-model, so for Codex the file is not optional.
+`AGENTS.md`. Codex reads `AGENTS.md`; in one `codex exec` check the model had not seen the MCP
+server's own instructions, so for Codex the file is not optional.
 
 ## Hooks
 
