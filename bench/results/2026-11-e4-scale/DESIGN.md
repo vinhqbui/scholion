@@ -130,9 +130,10 @@ dates, not dollars.
 From the earlier runs' rows: 2026-10-29 (peak) $1.171 / 90 sessions = **$0.013 a session** (median
 $0.010–0.011 per arm); 2026-10-31 (off-peak) $0.590 / 90 = **$0.0066 a session**. The `notes` arm
 adds `NOTES.md`: read once at input price, then about 15 turns of cache reads, i.e. per 1k tokens of
-file $0.00039 at peak ($0.0002 off-peak). Upper bound doubles that extra (cache misses, a second
-read). `av` is held roughly flat: its pack is capped at 800 tokens and the hook at 400 per file;
-+10 % allowed for longer hook output.
+file $0.00039 at peak ($0.0002 off-peak). `av` is held roughly flat: its pack is capped at 800
+tokens and the hook at 400 per file. The upper column adds 15 % session-to-session spread to every
+cell (for `av` that also covers longer hook output) and doubles the `NOTES.md` extra (cache
+misses, a second read).
 
 | cell | sessions | peak estimate | peak upper | off-peak estimate |
 |---|---|---|---|---|
@@ -140,11 +141,11 @@ read). `av` is held roughly flat: its pack is capped at 800 tokens and the hook 
 | `notes`, N = 0 | 30 | $0.39 | $0.45 | $0.20 |
 | `notes`, N = 50 | 30 | $0.43 | $0.52 | $0.22 |
 | `notes`, N = 200 | 30 | $0.53 | $0.71 | $0.27 |
-| `notes`, N = 500 | 30 | $0.70 | $1.02 | $0.36 |
-| `av`, any N | 30 | $0.39 | $0.43 | $0.20 |
+| `notes`, N = 500 | 30 | $0.70 | $1.07 | $0.36 |
+| `av`, any N | 30 | $0.39 | $0.45 | $0.20 |
 | **sweep, 9 cells** | 270 | **≈ $4.0** | **≈ $5.0** | **≈ $2.0** |
 
-So about **$0.40–0.70 per cell at peak (≤ $1.02), $0.20–0.36 off-peak**. Spend nothing beyond
+So about **$0.40–0.70 per cell at peak (≤ $1.07), $0.20–0.36 off-peak**. Spend nothing beyond
 that without a pilot: run the smoke below, then one `notes` and one `av` cell at N = 500 (the most
 expensive and the most informative), check the balance, then the rest.
 
