@@ -8,6 +8,7 @@ mod disk;
 mod embedded_pg;
 mod mcp;
 mod office;
+mod remote;
 mod routing;
 mod serve;
 mod swarm;

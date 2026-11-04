@@ -5,6 +5,7 @@ mod disk;
 mod footprint;
 mod hook;
 mod local;
+mod remote;
 mod runner;
 mod target_dir;
 mod taskfile;
@@ -88,8 +89,15 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TaskCmd,
     },
-    /// Snapshot the workspace and refresh the index.
+    /// Snapshot the workspace and refresh the index. In a checkout made by `av remote clone`
+    /// (another host than the daemon's), send the checkout's changes as a patch instead.
     Checkpoint,
+    /// A task's checkout on another host than the daemon's: its checkpoints go to the daemon as
+    /// patches, and the daemon still owns and snapshots the workspace.
+    Remote {
+        #[command(subcommand)]
+        cmd: RemoteCmd,
+    },
     /// Record an intent, decision, attempt (dead end) or note.
     Record {
         #[arg(long, required_unless_present = "json", requires = "summary")]
@@ -741,7 +749,25 @@ enum TaskCmd {
         goal: String,
         #[arg(long, default_value_t = 800)]
         budget: u32,
+        /// Work in a checkout in DIR on this host instead of the daemon's workspace (for a
+        /// daemon on another host; same as `av remote clone` after the start).
+        #[arg(long, value_name = "DIR")]
+        checkout: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum RemoteCmd {
+    /// Make DIR (default: the task's slug) a git checkout of the task at its head. `av checkpoint`,
+    /// the hooks, `submit`, `record`, `handoff` and `sync` there send its changes as patches.
+    Clone {
+        /// Task id.
+        task: String,
+        dir: Option<PathBuf>,
+    },
+    /// Bring this checkout up to the daemon's head (after a checkpoint on the daemon's host, a
+    /// sync or another writer), keeping local edits; edits that meet get conflict markers.
+    Pull,
 }
 
 /// `path` or `path:symbol` -> anchor JSON.
@@ -886,6 +912,10 @@ fn matches_everything(scope: &str) -> bool {
         .trim_start_matches("./")
         .trim_start_matches('/');
     s.is_empty() || s.chars().all(|c| c == '*' || c == '/')
+}
+
+fn cwd() -> Result<PathBuf> {
+    std::env::current_dir().map_err(|e| CliError::Local(e.to_string()))
 }
 
 fn generation_for(cli: &Cli, task: &str) -> Option<i64> {
@@ -1170,6 +1200,7 @@ fn run(cli: Cli) -> Result<()> {
                     title,
                     goal,
                     budget,
+                    checkout,
                 },
         } => {
             let session = cli
@@ -1181,6 +1212,15 @@ fn run(cli: Cli) -> Result<()> {
                 &json!({"repo": repo, "title": title, "goal": goal, "agent": cli.agent, "session": session, "budget": budget}),
             )?;
             let task = &r["task"];
+            if let Some(dir) = checkout {
+                remote::clone(&client, s(&task["id"]), dir, &cli.agent, &session)?;
+                println!("checkout: {}", dir.display());
+                println!("task: {} ({})", s(&task["id"]), s(&task["slug"]));
+                println!("session: {session}\n");
+                println!("{}", s(&r["pack"]["markdown"]));
+                print_receipt(&r["pack"]);
+                return Ok(());
+            }
             let workspace = PathBuf::from(s(&task["workspace_path"]));
             let tf = TaskFile {
                 task: s(&task["id"]).to_owned(),
@@ -1191,6 +1231,7 @@ fn run(cli: Cli) -> Result<()> {
                 nudged_session: None,
                 continue_session: None,
                 continues: 0,
+                remote: None,
             };
             write_taskfile(&workspace, &tf);
             println!("workspace: {}", workspace.display());
@@ -1201,11 +1242,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Checkpoint => {
             let (task, _) = resolve_task(&cli)?;
-            let r = client.post_as(
-                &format!("/v1/tasks/{task}/checkpoint"),
-                &json!({}),
-                generation_for(&cli, &task),
-            )?;
+            let r = remote::checkpoint_task(&client, &task, generation_for(&cli, &task), &cwd()?)?;
             let changed: Vec<&str> = r["changed"]
                 .as_array()
                 .map(|a| a.iter().filter_map(Value::as_str).collect())
@@ -1222,6 +1259,40 @@ fn run(cli: Cli) -> Result<()> {
                 .filter_map(Value::as_str)
             {
                 eprintln!("av: warning: {w}");
+            }
+        }
+        Cmd::Remote {
+            cmd: RemoteCmd::Clone { task, dir },
+        } => {
+            let r = client.get(&format!("/v1/tasks/{task}"), &[])?;
+            let slug = s(&r["task"]["slug"]).to_owned();
+            let dir = dir.clone().unwrap_or_else(|| PathBuf::from(&slug));
+            let session = cli
+                .session
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let c = remote::clone(&client, task, &dir, &cli.agent, &session)?;
+            println!("checkout: {}", dir.display());
+            println!("task: {} ({slug})", s(&r["task"]["id"]));
+            println!("head: {}", short(s(&c["head_change"])));
+            println!("session: {session}");
+        }
+        Cmd::Remote {
+            cmd: RemoteCmd::Pull,
+        } => {
+            let here = cwd()?;
+            let (dir, _) = taskfile::find(&here).ok_or(CliError::NoTask)?;
+            let p = remote::pull(&client, &dir)?;
+            if !p.moved {
+                println!("up to date at {}", short(&p.head));
+            } else {
+                println!("pulled to {}", short(&p.head));
+            }
+            if !p.conflicts.is_empty() {
+                return Err(CliError::Local(format!(
+                    "your edits meet the daemon's changes in: {}; resolve the conflict markers, then `av checkpoint`",
+                    p.conflicts.join(", ")
+                )));
             }
         }
         Cmd::Record {
@@ -1246,6 +1317,8 @@ fn run(cli: Cli) -> Result<()> {
                 }
             };
             let (task, _) = resolve_task(&cli)?;
+            // anchors are hashed against the daemon's workspace: send a remote checkout's edits
+            remote::push_if_remote(&client, &task, generation_for(&cli, &task), &cwd()?)?;
             for mut item in items {
                 item["agent"] = json!(cli.agent);
                 if item["receipt"].is_null() {
@@ -1511,6 +1584,7 @@ fn run(cli: Cli) -> Result<()> {
                 .map(|r| parse_record_spec(r))
                 .collect::<Result<Vec<_>>>()?;
             let (task, _) = resolve_task(&cli)?;
+            remote::push_if_remote(&client, &task, generation_for(&cli, &task), &cwd()?)?;
             let mut body = json!({"agent": cli.agent});
             if !records.is_empty() {
                 body["records"] = Value::Array(records);
@@ -1552,11 +1626,7 @@ fn run(cli: Cli) -> Result<()> {
             let cwd = std::env::current_dir().map_err(|e| CliError::Local(e.to_string()))?;
             let root = taskfile::find(&cwd).map(|(dir, _)| dir).unwrap_or(cwd);
             // Checkpoint first, so the checks that apply follow the files as they are now.
-            client.post_as(
-                &format!("/v1/tasks/{task}/checkpoint"),
-                &json!({}),
-                generation_for(&cli, &task),
-            )?;
+            remote::checkpoint_task(&client, &task, generation_for(&cli, &task), &root)?;
             // the command and the checks are the build: they run while a host build slot is held
             let slot = max_builds
                 .map(|n| {
@@ -1674,6 +1744,9 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Sync => {
             let (task, _) = resolve_task(&cli)?;
+            let here = cwd()?;
+            let pushed =
+                remote::push_if_remote(&client, &task, generation_for(&cli, &task), &here)?;
             let r = client.post_as(
                 &format!("/v1/tasks/{task}/sync"),
                 &json!({"agent": cli.agent}),
@@ -1687,6 +1760,11 @@ fn run(cli: Cli) -> Result<()> {
             let conflicts = strings(&r["conflicts"]);
             if !conflicts.is_empty() {
                 println!("conflicts ({}): {}", conflicts.len(), conflicts.join(", "));
+            }
+            if pushed && let Some((dir, _)) = taskfile::find(&here) {
+                // the rebase moved the head: bring the checkout onto it (markers included)
+                let p = remote::pull(&client, &dir)?;
+                println!("checkout pulled to {}", short(&p.head));
             }
         }
         Cmd::Revert { task_id, reason } => {
@@ -1745,6 +1823,7 @@ fn run(cli: Cli) -> Result<()> {
             prefer,
         } => {
             let (task, _) = resolve_task(&cli)?;
+            remote::push_if_remote(&client, &task, generation_for(&cli, &task), &cwd()?)?;
             let r = client.post_as(
                 &format!("/v1/tasks/{task}/handoff"),
                 &json!({"agent": cli.agent, "done": done, "remaining": remaining,
@@ -1945,6 +2024,7 @@ fn run(cli: Cli) -> Result<()> {
                     nudged_session: None,
                     continue_session: None,
                     continues: 0,
+                    remote: None,
                 },
             );
             println!("workspace: {}", workspace.display());
@@ -2252,6 +2332,7 @@ fn run(cli: Cli) -> Result<()> {
                     nudged_session: None,
                     continue_session: None,
                     continues: 0,
+                    remote: None,
                 },
             );
             println!("workspace: {}", workspace.display());
