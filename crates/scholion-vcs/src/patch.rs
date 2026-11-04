@@ -1,6 +1,7 @@
 //! Git-format patches for remote checkpoints (Plan 14). `render` writes one from two versions of
-//! each path; `apply` works out what a patch does to the current files. Both are pure: no disk, no
-//! git, no jj. The format is what `git diff --binary --full-index --no-renames` writes and what
+//! each path; `apply` works out what a patch does to the current files. Both are pure (no disk, no
+//! git, no repository; `render` uses jj-lib's line diff). The format is what
+//! `git diff --binary --full-index --no-renames` writes and what
 //! `git apply` reads: text hunks, `GIT binary patch` (`literal` and `delta`), new and deleted
 //! files, `old mode`/`new mode`.
 //!

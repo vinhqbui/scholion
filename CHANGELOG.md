@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Remote workspaces by checkpoint-by-patch** (Plan 14). An agent on another host works in a git
+  checkout of its task (`av remote clone TASK DIR`, `av task start --checkout DIR`) and each
+  checkpoint goes to the daemon as a patch (`POST /v1/tasks/{id}/checkpoint?base=`), which the
+  daemon applies in process to the workspace it still owns and snapshots as a local checkpoint;
+  a stale base is `409` with the head and `av checkpoint` pulls (`GET /v1/tasks/{id}/patch?from=`,
+  `av remote pull`) and resends. Hooks, `submit`, `record`, `handoff`, `validate` and `sync` in
+  a checkout send its edits first. The daemon runs no git for it. Reference: "An agent on another
+  host"; plan and measurement: `docs/superpowers/plans/2026-11-04-scholion-plan-14-remote-workspaces.md`.
 - **Bench: E4 at scale, `run --noise N`** (Plan 13 Phase 1, harness only; nothing run yet). Adds N
   deterministic irrelevant notes to every relay task, the same ones in the `notes` arm's
   `NOTES.md` and as the `av` arm's anchored records: a seeded generator over the base tree's own
