@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Solo-first pitch.** The README, the site hero, `site/llms.txt` and the `/scholion:setup` skill lead
+  with one agent on one repo ("Your next Claude Code session starts knowing last session's dead
+  ends"); the several-vendor relay comes second. `av init --for codex` now also writes the
+  `X-Av-Agent` header, like Grok, Gemini and Cursor (docs updated).
 - **Bench: E4 at scale, `run --noise N`** (Plan 13 Phase 1, harness only; nothing run yet). Adds N
   deterministic irrelevant notes to every relay task, the same ones in the `notes` arm's
   `NOTES.md` and as the `av` arm's anchored records: a seeded generator over the base tree's own
