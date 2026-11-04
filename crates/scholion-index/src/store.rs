@@ -204,8 +204,9 @@ impl PgIndex {
 
     /// Caps name fan-out: a reference whose name more than `cap` other symbols of the scope
     /// define links to none of them (`None`, the default, links every one). Stored edges follow
-    /// the cap they were built with, so a changed cap reaches a repo when it is imported or
-    /// reindexed again. Overlay views apply it to the names as the view sees them.
+    /// the cap they were built with, so set it before a repo is imported: reindexing skips
+    /// unchanged files and relinks only what changes. Overlay views apply it to the names as the
+    /// view sees them.
     pub fn with_max_fanout(mut self, cap: Option<u32>) -> Self {
         self.max_fanout = cap;
         self
@@ -673,9 +674,14 @@ fn view_pairs(max_fanout: Option<u32>) -> String {
         None => format!("{base},\n pairs AS ({raw})"),
         Some(cap) => format!(
             "{base},
+                 name_k AS (SELECT name, count(*) AS k FROM view_syms GROUP BY name),
+                 -- only names few enough here to pass the filter below; `new` defined in a
+                 -- masked file stays over the cap and is not recomputed
                  masked_names AS (
-                     SELECT DISTINCT name FROM symbols
-                     WHERE repo = $1 AND scope = 'main' AND path = ANY($3)
+                     SELECT DISTINCT m.name FROM symbols m
+                     JOIN name_k n ON n.name = m.name
+                     WHERE m.repo = $1 AND m.scope = 'main' AND m.path = ANY($3)
+                       AND n.k <= {cap} + 1
                  ),
                  raw_pairs AS (
                      {raw}
@@ -687,7 +693,6 @@ fn view_pairs(max_fanout: Option<u32>) -> String {
                      JOIN view_syms d ON d.name = r.name AND d.id <> s.id
                      WHERE s.scope = 'main' AND d.scope = 'main'
                  ),
-                 name_k AS (SELECT name, count(*) AS k FROM view_syms GROUP BY name),
                  pairs AS (
                      SELECT p.src, p.dst
                      FROM raw_pairs p

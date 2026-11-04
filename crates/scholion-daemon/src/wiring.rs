@@ -37,7 +37,7 @@ pub struct Config {
     pub expand_cap: Option<u64>,
     /// `AV_INDEX_MAX_FANOUT`: a call whose name more than this many other symbols define links
     /// to none of them in the code graph; unset = every one. Stored edges keep the cap they were
-    /// built with: a changed cap reaches a repo when it is imported again or reindexed.
+    /// built with: set it before a repo is imported (reindex skips unchanged files).
     pub index_max_fanout: Option<u32>,
     /// `AV_PG_MAX_CONNECTIONS` (default 16): Postgres pool size. Every concurrent agent request
     /// holds a connection while it runs, so raise it with the number of agents.
