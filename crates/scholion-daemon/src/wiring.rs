@@ -172,9 +172,10 @@ fn parse_attention(get: &dyn Fn(&str) -> Option<String>) -> Result<crate::Attent
     let d = crate::AttentionLimits::default();
     let num = |name: &str, default: u64| -> Result<u64> {
         match get(name) {
-            Some(v) => v.trim().parse().map_err(|_| {
-                AvError::Invalid(format!("{name} must be a whole number, got {v}"))
-            }),
+            Some(v) => v
+                .trim()
+                .parse()
+                .map_err(|_| AvError::Invalid(format!("{name} must be a whole number, got {v}"))),
             None => Ok(default),
         }
     };
@@ -320,7 +321,10 @@ mod tests {
     #[test]
     fn attention_limits_default_and_parse() {
         let none = |_: &str| None;
-        assert_eq!(parse_attention(&none).unwrap(), crate::AttentionLimits::default());
+        assert_eq!(
+            parse_attention(&none).unwrap(),
+            crate::AttentionLimits::default()
+        );
         let some = |k: &str| (k == "AV_ATTN_REVIEW_SECS").then(|| " 60 ".to_owned());
         let l = parse_attention(&some).unwrap();
         assert_eq!(l.review_secs, 60);

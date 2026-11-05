@@ -519,13 +519,23 @@ fn show_diff_and_path_log_read_without_a_workspace() {
 fn attention_lists_an_overdue_target_as_json_and_as_lines() {
     let (d, _ws, scratch) = started();
     let quiet = ok(av(&d, scratch.path(), &["attention", "--repo", "demo"]));
-    assert_eq!(quiet, "nothing needs attention
-");
+    assert_eq!(
+        quiet,
+        "nothing needs attention
+"
+    );
     ok(av(
         &d,
         scratch.path(),
         &[
-            "target", "add", "--repo", "demo", "--title", "Release 1", "--due", "2020-01-01",
+            "target",
+            "add",
+            "--repo",
+            "demo",
+            "--title",
+            "Release 1",
+            "--due",
+            "2020-01-01",
         ],
     ));
     let v: serde_json::Value =

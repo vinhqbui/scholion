@@ -271,7 +271,11 @@ async fn attention(
     // backlog items no agent can do: without profiles nothing is ranked, yet any agent takes
     // untagged work, so only what needs a skill, or what no profiled agent fits
     let profiles = st.store.list_profiles().await?;
-    for e in st.store.list_backlog(repo, Some(BacklogState::Queued)).await? {
+    for e in st
+        .store
+        .list_backlog(repo, Some(BacklogState::Queued))
+        .await?
+    {
         let i = &e.item;
         let fits = !routing::rank(i, &profiles).is_empty();
         if fits || (i.needs.is_empty() && profiles.is_empty()) {
@@ -290,7 +294,11 @@ async fn attention(
 
     // targets past their due day: overdue from the end of it (UTC)
     let today = now.date_naive();
-    for t in st.store.list_targets(repo, Some(TargetStatus::Active)).await? {
+    for t in st
+        .store
+        .list_targets(repo, Some(TargetStatus::Active))
+        .await?
+    {
         let Some(due) = t.due.filter(|d| *d < today) else {
             continue;
         };

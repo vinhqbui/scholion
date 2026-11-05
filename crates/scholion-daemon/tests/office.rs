@@ -251,8 +251,10 @@ async fn submitted_as(e: &Env, agent: &str, title: &str, text: &str) -> Value {
         &e.app,
         "POST",
         "/v1/tasks",
-        Some(json!({"repo": "demo", "title": title, "goal": "Make hello louder",
-                    "agent": agent, "session": format!("s-{agent}")})),
+        Some(
+            json!({"repo": "demo", "title": title, "goal": "Make hello louder",
+                    "agent": agent, "session": format!("s-{agent}")}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{t}");
@@ -371,8 +373,10 @@ async fn attention_lists_each_stuck_situation_worst_first() {
         &e.app,
         "POST",
         "/v1/backlog",
-        Some(json!({"repo": "demo", "title": "Train the model", "goal": "train",
-                    "needs": ["gpu"]})),
+        Some(
+            json!({"repo": "demo", "title": "Train the model", "goal": "train",
+                    "needs": ["gpu"]}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{b}");
@@ -390,8 +394,10 @@ async fn attention_lists_each_stuck_situation_worst_first() {
         &e.app,
         "POST",
         "/v1/footprint",
-        Some(json!({"session": "cc-1", "agent": "claude", "task": id(&quiet),
-                    "added": [{"path": "/home/me/target-x", "bytes": 4096}]})),
+        Some(
+            json!({"session": "cc-1", "agent": "claude", "task": id(&quiet),
+                    "added": [{"path": "/home/me/target-x", "bytes": 4096}]}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{b}");
@@ -420,15 +426,22 @@ async fn attention_lists_each_stuck_situation_worst_first() {
         .collect();
     assert_eq!(sev, [3, 3, 2, 2, 2, 2, 1, 1, 1], "{a}");
     assert!(
-        a["items"].as_array().unwrap().iter().all(|i| i["repo"] == "demo"
-            && i["since"].is_string()
-            && i["detail"].is_string()
-            && i["title"].is_string()),
+        a["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["repo"] == "demo"
+                && i["since"].is_string()
+                && i["detail"].is_string()
+                && i["title"].is_string()),
         "{a}"
     );
 
     let red = item(&a, "main_red");
-    assert_eq!(red["slug"], theirs["task"]["slug"], "the merge that went red: {red}");
+    assert_eq!(
+        red["slug"], theirs["task"]["slug"],
+        "the merge that went red: {red}"
+    );
     let c = item(&a, "conflicted");
     assert_eq!(c["slug"], mine["task"]["slug"]);
     assert_eq!(c["agent"], "claude");
@@ -438,7 +451,10 @@ async fn attention_lists_each_stuck_situation_worst_first() {
     assert_eq!(r["since"], event_at(&e, &waiting, "submit").await.as_str());
     let ap = item(&a, "approved_not_merged");
     assert_eq!(ap["task_id"], approved["task"]["id"]);
-    assert_eq!(ap["since"], event_at(&e, &approved, "approve").await.as_str());
+    assert_eq!(
+        ap["since"],
+        event_at(&e, &approved, "approve").await.as_str()
+    );
     let h = item(&a, "unclaimed_handoff");
     assert_eq!(h["slug"], handed["task"]["slug"]);
     assert_eq!(h["since"], event_at(&e, &handed, "handoff").await.as_str());
