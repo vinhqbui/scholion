@@ -12,7 +12,7 @@ The project website: a static page, no build step. Everything is in this folder.
 | `404.html` | Served by Cloudflare Pages for unknown paths. |
 | `_headers` | Cloudflare Pages response headers (CSP, `text/markdown` for `llms.txt`). |
 | `og.png` | 1200×630 link preview, rendered from `scripts/og.html` (see "Link preview"). |
-| `img/demo-replay.png` | Screenshot of `/demo` under the hero; a copy of `docs/img/demo-replay.png`, which the README uses. |
+| `img/demo-replay.png` | Screenshot of `/demo` under the hero: `docs/img/demo-replay.png` (which the README uses) with its top 10 px cropped off (a sliver of the page header). If you replace it, keep the `width`/`height` attributes of its `<img>` in `index.html` equal to the file's size. |
 | `favicon.svg`, `robots.txt`, `sitemap.xml` | The usual. |
 
 Numbers on the page come from these result directories, and only these:
