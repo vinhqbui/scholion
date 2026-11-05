@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **`embeddinggemma-2` is the default Ollama embedder.** On the E1 retrieval set (42 tasks, six
+  repos) it scored the same as `qwen3-embedding` (symbols shown 0.59 vs 0.57 at 2000 tokens, 0.81 vs
+  0.83 at 8000; files with code shown equal) at 271M parameters and 512 dimensions instead of 7.6B
+  and 4096. The daemon now takes `embeddinggemma-2` when `ollama list` has it, else
+  `qwen3-embedding`, so a host with only the old model keeps it and its vectors. After pulling
+  `embeddinggemma-2` on such a host, run `av reindex` (no `--repo`) once: the collections are
+  rebuilt at the new dimension, and until then the outbox worker logs a dimension mismatch that now
+  says so and packs fall back to full-text. `AV_OLLAMA_EMBED_MODEL` (now in `docs/reference.md`)
+  still names a single model.
 - **Site refresh.** The Mission section, the problem intro and the many-agents heading follow the
   solo-first hero; a screenshot of the recorded run sits under the hero; the Claude Code plugin
   install (`/scholion:setup`) is on the page and in `site/llms.txt`; the guides show and declare
