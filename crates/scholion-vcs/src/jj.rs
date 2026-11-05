@@ -834,14 +834,13 @@ impl Inner {
         Ok(ChangeId(pushed))
     }
 
-    /// Fetches `branch` of `remote_url` into `refs/av/advance/<branch>` of the repo's git dir,
-    /// imports that commit into jj (as jj's git import does a new head: `import_head_commits`,
-    /// then `add_head`) and moves trunk to it when it descends from trunk. No operation is
-    /// committed to jj unless it does.
-    fn advance_trunk(&self, repo: &str, remote_url: &str, branch: &str) -> Result<Advance> {
+    /// Fetches `branch` of `remote_url` into `refs/av/advance/<branch>` of the repo's git dir and
+    /// returns the commit fetched. Touches no jj state (only that private ref), so it runs
+    /// without the per-repo lock: a slow remote never holds up snapshots.
+    fn fetch_advance(&self, repo: &str, remote_url: &str, branch: &str) -> Result<ChangeId> {
         let url = remote_arg(remote_url, "fetch from")?;
         // an unknown repo is NotFound before any git runs
-        let (_ws, ro) = self.load_main(repo)?;
+        self.loader(repo)?;
         let git_dir = self.repo_dir(repo).join("git");
         let source = branch_ref(&git_dir, branch)?;
         let local = format!("refs/av/advance/{branch}");
@@ -863,8 +862,16 @@ impl Inner {
             &git_dir,
             &["rev-parse", "--verify", &format!("{local}^{{commit}}")],
         )?;
+        Ok(ChangeId(fetched))
+    }
+
+    /// Moves trunk to `to` (a commit `fetch_advance` brought into the git dir) when it descends
+    /// from trunk. The commit enters jj as jj's git import brings a new head in
+    /// (`import_head_commits`, then `add_head`); no operation is committed unless trunk moves.
+    fn advance_to(&self, repo: &str, branch: &str, to: ChangeId) -> Result<Advance> {
+        let (_ws, ro) = self.load_main(repo)?;
         let trunk = self.trunk_commit(repo, &ro)?;
-        let (from, to) = (ChangeId(trunk.id().hex()), ChangeId(fetched));
+        let from = ChangeId(trunk.id().hex());
         if from == to {
             return Ok(Advance::UpToDate { head: from });
         }
@@ -1242,9 +1249,13 @@ impl Vcs for JjVcs {
     }
 
     async fn advance_trunk(&self, repo: &str, remote_url: &str, branch: &str) -> Result<Advance> {
-        let (name, url, branch) = (repo.to_owned(), remote_url.to_owned(), branch.to_owned());
-        self.run(repo, move |i| i.advance_trunk(&name, &url, &branch))
-            .await
+        let (name, url, b) = (repo.to_owned(), remote_url.to_owned(), branch.to_owned());
+        // the network part without the per-repo lock, as `push_backup`
+        let to = self
+            .read(repo, move |i| i.fetch_advance(&name, &url, &b))
+            .await?;
+        let (name, b) = (repo.to_owned(), branch.to_owned());
+        self.run(repo, move |i| i.advance_to(&name, &b, to)).await
     }
 
     async fn trunk_log(&self, repo: &str, limit: usize) -> Result<Vec<LogEntry>> {
