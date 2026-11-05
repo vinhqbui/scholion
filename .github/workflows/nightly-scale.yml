@@ -71,9 +71,11 @@ jobs:
       - name: Build (release, as the committed runs)
         run: cargo build --release --locked -p scholion-daemon -p scholion-bench
       - name: Clone tokio
-        # A branch, not a detached tag: the import reads the clone's HEAD as the trunk.
+        # A branch, not a detached tag: the import reads the clone's HEAD as the trunk. Shallow
+        # (one commit), as the committed django run was: the daemon's blame walks at most 2000
+        # commits of main, and on tokio's full history a file untouched that long has none.
         run: |
-          git clone --quiet --single-branch --branch "$TOKIO_TAG" \
+          git clone --quiet --depth 1 --single-branch --branch "$TOKIO_TAG" \
             https://github.com/tokio-rs/tokio.git "$RUNNER_TEMP/tokio"
           git -C "$RUNNER_TEMP/tokio" checkout --quiet -B main
           echo "tokio at $(git -C "$RUNNER_TEMP/tokio" rev-parse HEAD)"
