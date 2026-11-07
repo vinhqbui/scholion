@@ -9,6 +9,11 @@
 //! does (finished tasks' workspaces oldest first, whatever the retention, then each repo's build
 //! cache); while it is still below, no new task workspace is made (HTTP 507) and
 //! `GET /v1/attention` says `disk_low`. Tasks that already have a workspace keep working.
+//!
+//! The build budget (`AV_BUILD_CACHE_MAX_GB`, `Budget`): each repo's build output (every
+//! workspace's own `target/` plus `<repo>/.cache/`) is held under it by the reclaim tick and
+//! `POST /v1/gc` (`enforce_budget`): finished tasks' `target/` first, then idle ones, then the deps
+//! cache. A `target/` touched within `AV_BUILD_IDLE_SECS` is never removed.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
