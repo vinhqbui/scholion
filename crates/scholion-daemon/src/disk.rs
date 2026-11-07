@@ -69,6 +69,54 @@ impl Floor {
     }
 }
 
+/// The build budget (`AV_BUILD_CACHE_MAX_GB`): the most build output one repo keeps, in bytes
+/// (0 = off), how long an unfinished task's `target/` must be untouched before it may go, what
+/// the last enforcement left over budget, and one lock, so the tick and `POST /v1/gc` never
+/// enforce at once.
+#[derive(Clone)]
+pub(crate) struct Budget {
+    max: Arc<AtomicU64>,
+    idle_secs: Arc<AtomicU64>,
+    over: Arc<Mutex<BTreeMap<String, Over>>>,
+    enforcing: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self {
+            max: Arc::default(),
+            idle_secs: Arc::new(AtomicU64::new(crate::wiring::DEFAULT_BUILD_IDLE_SECS)),
+            over: Arc::default(),
+            enforcing: Arc::default(),
+        }
+    }
+}
+
+impl Budget {
+    pub(crate) fn set(&self, bytes: u64) {
+        self.max.store(bytes, Ordering::Relaxed);
+    }
+
+    pub(crate) fn bytes(&self) -> u64 {
+        self.max.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_idle(&self, secs: u64) {
+        self.idle_secs.store(secs, Ordering::Relaxed);
+    }
+}
+
+/// A repo the last enforcement left over its build budget.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct Over {
+    pub(crate) repo: String,
+    /// Its build output then (every `target/` plus `.cache/`), as the enforcement reckoned it.
+    pub(crate) bytes: u64,
+    pub(crate) budget_bytes: u64,
+    /// Since when enforcement has found it over (since the daemon started).
+    pub(crate) since: DateTime<Utc>,
+}
+
 /// The disk under `ws_root` is below the floor.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Low {
