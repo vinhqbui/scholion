@@ -1864,11 +1864,14 @@ fn hook_stop_asks_once_per_session_to_record_unexplained_changes() {
 
 // ---- Plan 11: a scratch dir per task, and the footprint of what a session adds
 
-/// A temp `HOME`, `TMPDIR` and `AV_HOME` for footprint tests, and the env file.
+/// A temp `HOME`, `TMPDIR` and `AV_HOME` for footprint tests, the env file, and a `PATH` of
+/// one empty dir (`bin`): the hooks look for `docker` there, so a test puts a fake one in it,
+/// and the host's real docker (CI runners have one) is never seen.
 struct Footprint {
     home: TempDir,
     tmp: TempDir,
     av_home: TempDir,
+    bin: TempDir,
     env_file: PathBuf,
 }
 
@@ -1880,6 +1883,7 @@ impl Footprint {
             home,
             tmp: TempDir::new().unwrap(),
             av_home: TempDir::new().unwrap(),
+            bin: TempDir::new().unwrap(),
             env_file,
         }
     }
@@ -1889,6 +1893,7 @@ impl Footprint {
             ("HOME", self.home.path().to_str().unwrap()),
             ("TMPDIR", self.tmp.path().to_str().unwrap()),
             ("AV_HOME", self.av_home.path().to_str().unwrap()),
+            ("PATH", self.bin.path().to_str().unwrap()),
             ("CLAUDE_ENV_FILE", self.env_file.to_str().unwrap()),
             ("AV_FOOTPRINT", on),
             ("AV_FOOTPRINT_WARN_MB", "1"),
@@ -1905,6 +1910,54 @@ impl Footprint {
             .join("footprint")
             .join(format!("{session}.json"))
     }
+
+    /// A fake `docker` on the hooks' `PATH`: logs every call to `docker.log` in `bin` (one line
+    /// of arguments each), answers `ps`, `images -q`, `image inspect` and `volume ls` with the
+    /// files `ps`, `images`, `inspect` and `volumes` of `bin` (empty when missing; the filters
+    /// are ignored, so a test writes only what docker would match), and succeeds silently on
+    /// anything else (`rm`, `rmi`, `volume rm`).
+    #[cfg(unix)]
+    fn fake_docker(&self) {
+        let bin = self.bin.path().display();
+        write_script(
+            &self.bin.path().join("docker"),
+            &format!(
+                "#!/bin/sh\necho \"$*\" >> '{bin}/docker.log'\n\
+                 case \"$1 $2\" in\n\
+                 \"ps \"*) cat '{bin}/ps' 2>/dev/null ;;\n\
+                 \"images \"*) cat '{bin}/images' 2>/dev/null ;;\n\
+                 \"image inspect\") cat '{bin}/inspect' 2>/dev/null ;;\n\
+                 \"volume ls\") cat '{bin}/volumes' 2>/dev/null ;;\n\
+                 esac\nexit 0\n"
+            ),
+        );
+    }
+
+    /// What the fake docker was asked, one call per line.
+    #[cfg(unix)]
+    fn docker_log(&self) -> String {
+        std::fs::read_to_string(self.bin.path().join("docker.log")).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    fn docker_answers(&self, file: &str, text: &str) {
+        std::fs::write(self.bin.path().join(file), text).unwrap();
+    }
+}
+
+/// The task id of the workspace `ws` (its `.av-task`).
+fn task_id_of(ws: &Path) -> String {
+    let tf: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(ws.join(".av-task")).unwrap()).unwrap();
+    tf["task"].as_str().unwrap().to_owned()
+}
+
+/// The `AV_DOCKER_LABELS` line the session-start hook writes for the task of `ws` as `agent`.
+fn labels_line(ws: &Path, agent: &str) -> String {
+    format!(
+        "export AV_DOCKER_LABELS='--label av.task={} --label av.agent={agent}'\n",
+        task_id_of(ws)
+    )
 }
 
 fn hook_input(ws: &Path, event: &str, session: &str) -> String {
@@ -1936,10 +1989,13 @@ fn hook_session_start_gives_the_task_a_scratch_dir_and_snapshots_the_footprint()
     );
     let scratch = d.ws.join("demo/.scratch/improve-greeting");
     assert!(scratch.is_dir());
+    // the labels are exported whether or not docker is on PATH (plain assignments only)
     assert_eq!(
         std::fs::read_to_string(&fp.env_file).unwrap(),
-        format!("export AV_SCRATCH='{}'\n", scratch.display())
+        format!("export AV_SCRATCH='{}'\n", scratch.display()) + &labels_line(&ws, "agent")
     );
+    // without docker on PATH the pack says nothing about containers
+    assert!(!printed.contains("AV_DOCKER_LABELS"), "{printed}");
     let snap: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fp.snapshot("cc-fp")).unwrap()).unwrap();
     assert_eq!(snap["partial"], false, "{snap}");
@@ -2043,8 +2099,41 @@ fn hook_session_start_leaves_cargo_alone_when_no_target_dir_is_set() {
     let av_scratch = d.ws.join("demo/.scratch/improve-greeting");
     assert_eq!(
         std::fs::read_to_string(&fp.env_file).unwrap(),
-        format!("export AV_SCRATCH='{}'\n", av_scratch.display())
+        format!("export AV_SCRATCH='{}'\n", av_scratch.display()) + &labels_line(&ws, "agent")
     );
+}
+
+/// Everything a session starts through docker carries `av.task` and `av.agent` labels, so the
+/// footprint can count it and `av gc --containers` can remove it: the hook exports the flags
+/// and, with docker on PATH, tells the agent in one line.
+#[cfg(unix)]
+#[test]
+fn hook_session_start_exports_docker_labels_and_says_so_when_docker_is_on_path() {
+    let (d, ws, _scratch) = started();
+    let fp = Footprint::new();
+    fp.fake_docker();
+    let mut env = fp.env("on");
+    env.push(("AV_AGENT", "grok"));
+    let printed = ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &env,
+        &["hook", "session-start"],
+        &hook_input(&ws, "SessionStart", "cc-labels"),
+    ));
+    let file = std::fs::read_to_string(&fp.env_file).unwrap();
+    assert!(file.ends_with(&labels_line(&ws, "grok")), "{file}");
+    let line = printed
+        .lines()
+        .find(|l| l.contains("$AV_DOCKER_LABELS"))
+        .unwrap_or_else(|| panic!("{printed}"));
+    assert!(
+        line.starts_with("Containers: add $AV_DOCKER_LABELS to every docker run/build"),
+        "{line}"
+    );
+    assert!(line.contains("av gc --containers"), "{line}");
+    // session-start only looks for docker; it runs nothing yet
+    assert_eq!(fp.docker_log(), "");
 }
 
 #[test]

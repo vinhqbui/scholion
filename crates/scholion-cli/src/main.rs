@@ -1,6 +1,7 @@
 mod agents;
 mod attention;
 mod client;
+mod containers;
 mod crates_scope;
 mod disk;
 mod footprint;
@@ -2063,7 +2064,14 @@ fn run(cli: Cli) -> Result<()> {
                 code,
                 no_map,
                 max_code,
-            } => hook::session_start(&client, *budget, code, !*no_map, *max_code),
+            } => hook::session_start(
+                &client,
+                &hook::hook_agent(&cli.agent),
+                *budget,
+                code,
+                !*no_map,
+                *max_code,
+            ),
             HookCmd::PostEdit => hook::post_edit(&client, &hook::hook_agent(&cli.agent)),
             HookCmd::PreRead => hook::pre_read(&client),
             HookCmd::Stop => hook::stop(&client, &hook::hook_agent(&cli.agent)),

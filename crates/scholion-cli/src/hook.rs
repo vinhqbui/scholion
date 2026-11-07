@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::client::Client;
+use crate::containers;
 use crate::footprint;
 use crate::taskfile::{self, TaskFile};
 
@@ -51,9 +52,17 @@ fn now_ms() -> u64 {
 /// or after `/clear` the agent has not got what was sent under the task's session (at start-up,
 /// the pack `av next` printed went to whoever ran it), so the session starts over and
 /// everything is sent again. Only a resumed session keeps its ledger.
-/// Then gives the task a scratch directory (`$AV_SCRATCH`, removed with the task) and, task or
-/// not, takes the footprint snapshot the Stop hook compares against (Plan 11).
-pub fn session_start(client: &Client, budget: u32, code: &str, map: bool, max_code: Option<usize>) {
+/// Then gives the task a scratch directory (`$AV_SCRATCH`, removed with the task), exports the
+/// docker labels that make the task's containers part of its footprint (`$AV_DOCKER_LABELS`)
+/// and, task or not, takes the footprint snapshot the Stop hook compares against (Plan 11).
+pub fn session_start(
+    client: &Client,
+    agent: &str,
+    budget: u32,
+    code: &str,
+    map: bool,
+    max_code: Option<usize>,
+) {
     let input = hook_input();
     let found = start_dir(&input).and_then(|d| taskfile::find(&d));
     let session = input["session_id"]
@@ -64,9 +73,11 @@ pub fn session_start(client: &Client, budget: u32, code: &str, map: bool, max_co
         .as_ref()
         .and_then(|(dir, _)| dir.parent()?.parent().map(Path::to_path_buf));
     if let Some((dir, tf)) = found {
+        let task = tf.task.clone();
         print_pack(client, &input, &dir, tf, budget, code, map, max_code);
         if let Some(scratch) = scratch_dir(client, &dir) {
             announce_scratch(&scratch);
+            announce_labels(&task, agent);
             // in the task's own workspace (the check the scratch dir passed), cargo or not: the
             // snippet finds a cargo workspace per command, and the Stop hook may hand this
             // session a Rust task after a Python one
@@ -210,6 +221,42 @@ fn announce_scratch(scratch: &Path) {
             scratch.display()
         );
     }
+}
+
+/// Exports `AV_DOCKER_LABELS` (`--label av.task=… --label av.agent=…`) to the session's later
+/// commands, so what the agent starts through docker is counted with the task and removed by
+/// `av gc --containers`. Always exported (a plain assignment, so PowerShell reads it too); said
+/// only when `docker` is on `PATH`, so a session without docker reads nothing about it.
+fn announce_labels(task: &str, agent: &str) {
+    let exported = std::env::var_os("CLAUDE_ENV_FILE")
+        .filter(|f| !f.is_empty())
+        .is_some_and(|file| {
+            let line = format!(
+                "export AV_DOCKER_LABELS={}\n",
+                sh_quote(&containers::labels(task, agent))
+            );
+            let written = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+                .and_then(|mut f| f.write_all(line.as_bytes()));
+            if let Err(e) = &written {
+                eprintln!("av: hook session-start: cannot write CLAUDE_ENV_FILE: {e}");
+            }
+            written.is_ok()
+        });
+    if containers::docker().is_none() {
+        return;
+    }
+    let flags = if exported {
+        "$AV_DOCKER_LABELS".to_owned()
+    } else {
+        containers::labels(task, agent)
+    };
+    println!(
+        "Containers: add {flags} to every docker run/build (counted with the task; stop yours \
+         before you finish, av gc --containers removes them once the task is done)."
+    );
 }
 
 /// `AV_FOOTPRINT=off` (or `0`, `false`, `no`) turns the footprint off.
