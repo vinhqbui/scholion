@@ -196,6 +196,11 @@ enum Cmd {
         /// build output goes with its workspace).
         #[arg(long)]
         build_cache: bool,
+        /// Also remove what merged and abandoned tasks left in docker on this host: stopped
+        /// containers, dangling images and volumes labelled av.task=<task id> (the labels
+        /// $AV_DOCKER_LABELS adds). Running containers are listed, never stopped.
+        #[arg(long)]
+        containers: bool,
         /// Print the daemon's answer as JSON.
         #[arg(long)]
         json: bool,
@@ -1729,13 +1734,23 @@ fn run(cli: Cli) -> Result<()> {
             dry_run,
             retain,
             build_cache,
+            containers,
             json,
         } => {
             let mut body = json!({"dry_run": dry_run, "build_cache": build_cache});
             if let Some(r) = retain {
                 body["retain_secs"] = json!(r);
             }
-            let r = client.post("/v1/gc", &body)?;
+            let mut r = client.post("/v1/gc", &body)?;
+            // the daemon never runs docker: the CLI does, for the tasks the daemon says ended
+            if *containers {
+                match containers::docker() {
+                    Some(docker) => r["containers"] = containers::gc(&client, &docker, *dry_run),
+                    None => eprintln!(
+                        "av gc --containers: docker is not on PATH; containers left alone"
+                    ),
+                }
+            }
             if *json {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
             } else {

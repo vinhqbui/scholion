@@ -249,6 +249,69 @@ pub fn render_gc(v: &Value) -> String {
     if kept > 0 {
         let _ = writeln!(o, "kept {kept} (younger than retention)");
     }
+    if v["containers"].is_object() {
+        o.push_str(&render_containers_gc(&v["containers"]));
+    }
+    o
+}
+
+/// The `containers` part of `av gc --containers` (`containers::gc`) for people.
+fn render_containers_gc(c: &Value) -> String {
+    let mut o = String::new();
+    let dry = c["dry_run"].as_bool() == Some(true);
+    let verb = if dry { "would remove" } else { "removed" };
+    let what = |e: &Value| -> String {
+        let name = s(&e["name"]);
+        match e["kind"].as_str() {
+            Some("container") => match e["size"].as_str() {
+                Some(size) if !size.is_empty() => {
+                    format!("{name} ({}, {size})", s(&e["state"]))
+                }
+                _ => format!("{name} ({})", s(&e["state"])),
+            },
+            Some("image") => match e["bytes"].as_u64() {
+                Some(b) => format!("{name} ({})", human(b)),
+                None => name.to_owned(),
+            },
+            _ => name.to_owned(),
+        }
+    };
+    let task = |e: &Value| format!("{}/{}", s(&e["repo"]), s(&e["slug"]));
+    let removed = c["removed"].as_array().cloned().unwrap_or_default();
+    for e in &removed {
+        let _ = writeln!(o, "{verb} {} {}  {}", s(&e["kind"]), task(e), what(e));
+    }
+    for e in c["running"].as_array().into_iter().flatten() {
+        let _ = writeln!(
+            o,
+            "running {}  {} (av never stops a container)",
+            task(e),
+            s(&e["name"])
+        );
+    }
+    for e in c["errors"].as_array().into_iter().flatten() {
+        let _ = writeln!(
+            o,
+            "failed {} {}  {}: {}",
+            s(&e["kind"]),
+            task(e),
+            s(&e["name"]),
+            s(&e["error"])
+        );
+    }
+    if removed.is_empty() && c["running"].as_array().is_none_or(Vec::is_empty) {
+        let _ = writeln!(o, "no containers of finished tasks");
+    }
+    let (open, unknown) = (
+        c["left"]["open"].as_u64().unwrap_or(0),
+        c["left"]["unknown"].as_u64().unwrap_or(0),
+    );
+    if open + unknown > 0 {
+        let _ = writeln!(
+            o,
+            "left alone: {open} of open tasks, {unknown} of tasks the daemon does not know"
+        );
+    }
     o
 }
 
@@ -272,6 +335,54 @@ mod tests {
         assert!(out.contains("nothing to reclaim"), "{out}");
         assert!(out.contains("freed 0 B"), "{out}");
         assert!(!out.contains("kept"), "{out}");
+    }
+
+    #[test]
+    fn a_gc_with_containers_says_what_went_and_what_runs() {
+        let gc = json!({"reclaimed": [], "freed_bytes": 0, "kept": [], "dry_run": true,
+            "containers": {"dry_run": true,
+                "removed": [{"kind": "container", "repo": "demo", "slug": "add-thing",
+                             "name": "b-build", "state": "exited"},
+                            {"kind": "image", "repo": "demo", "slug": "add-thing",
+                             "name": "sha256:b", "bytes": 2048},
+                            {"kind": "volume", "repo": "demo", "slug": "add-thing",
+                             "name": "b-vol"}],
+                "running": [{"repo": "demo", "slug": "add-thing", "name": "b-db"}],
+                "errors": [{"kind": "volume", "repo": "demo", "slug": "x", "name": "v",
+                            "error": "docker volume rm v failed"}],
+                "left": {"open": 0, "unknown": 2}}});
+        let out = render_gc(&gc);
+        assert!(
+            out.contains("would remove container demo/add-thing  b-build (exited)\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("would remove image demo/add-thing  sha256:b (2 KB)\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("would remove volume demo/add-thing  b-vol\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("running demo/add-thing  b-db (av never stops a container)\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("failed volume demo/x  v: docker volume rm v failed\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("left alone: 0 of open tasks, 2 of tasks the daemon does not know\n"),
+            "{out}"
+        );
+        let out = render_gc(
+            &json!({"reclaimed": [], "freed_bytes": 0, "kept": [], "dry_run": false,
+            "containers": {"dry_run": false, "removed": [], "running": [], "errors": [],
+                           "left": {"open": 0, "unknown": 0}}}),
+        );
+        assert!(out.contains("no containers of finished tasks\n"), "{out}");
+        assert!(!out.contains("left alone"), "{out}");
     }
 
     #[test]

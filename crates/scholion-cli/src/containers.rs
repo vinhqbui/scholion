@@ -9,6 +9,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use serde_json::{Value, json};
+
+use crate::client::Client;
 
 /// The label naming the task a container, image or volume belongs to.
 pub const TASK_LABEL: &str = "av.task";
@@ -278,6 +281,94 @@ pub fn scan(docker: &Path, scope: Scope<'_>, deadline: Instant) -> Report {
             .collect();
     }
     report
+}
+
+/// How long `av gc --containers` gives docker in all.
+const GC_SECS: u64 = 120;
+
+/// `av gc --containers`: removes what docker holds for tasks the daemon says are merged or
+/// abandoned (stopped containers, then dangling images, then volumes, each with the task's
+/// label), one `docker rm`/`rmi`/`volume rm` each so a failure names its item. Running
+/// containers are listed under `running` and never stopped; what belongs to open tasks, or to
+/// tasks the daemon does not know, is only counted (`left`). With `dry_run` nothing is removed.
+pub fn gc(client: &Client, docker: &Path, dry_run: bool) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(GC_SECS);
+    let scope = Scope {
+        task: None,
+        dangling_images: true,
+    };
+    let report = scan(docker, scope, deadline);
+    let mut removed = Vec::new();
+    let mut running = Vec::new();
+    let mut errors = Vec::new();
+    let (mut open, mut unknown) = (0usize, 0usize);
+    for task in report.tasks() {
+        let containers: Vec<&Container> = report
+            .containers
+            .iter()
+            .filter(|c| c.task == task)
+            .collect();
+        let images: Vec<&Image> = report.images.iter().filter(|i| i.task == task).collect();
+        let volumes: Vec<&Volume> = report.volumes.iter().filter(|v| v.task == task).collect();
+        let count = containers.len() + images.len() + volumes.len();
+        let Some((repo, slug, finished)) = task_state(client, task) else {
+            unknown += count;
+            continue;
+        };
+        if !finished {
+            open += count;
+            continue;
+        }
+        let item = |kind: &str, name: &str, id: &str| json!({"kind": kind, "task": task, "repo": repo, "slug": slug, "name": name, "id": id});
+        let mut remove = |args: &[&str], mut entry: Value| {
+            if !dry_run && run(docker, args, deadline).is_none() {
+                entry["error"] = json!(format!("docker {} failed", args.join(" ")));
+                errors.push(entry);
+            } else {
+                removed.push(entry);
+            }
+        };
+        for c in &containers {
+            let mut entry = item("container", &c.name, &c.id);
+            entry["state"] = json!(c.state);
+            if !c.size.is_empty() {
+                entry["size"] = json!(c.size);
+            }
+            if c.is_running() {
+                running.push(entry);
+            } else {
+                remove(&["rm", &c.id], entry);
+            }
+        }
+        for i in &images {
+            let mut entry = item("image", &i.id, &i.id);
+            if let Some(b) = i.bytes {
+                entry["bytes"] = json!(b);
+            }
+            remove(&["rmi", &i.id], entry);
+        }
+        for v in &volumes {
+            remove(&["volume", "rm", &v.name], item("volume", &v.name, &v.name));
+        }
+    }
+    json!({
+        "dry_run": dry_run,
+        "removed": removed,
+        "running": running,
+        "errors": errors,
+        "left": {"open": open, "unknown": unknown},
+    })
+}
+
+/// `(repo, slug, finished)` of a task the daemon knows; `None` for one it does not.
+fn task_state(client: &Client, task: &str) -> Option<(String, String, bool)> {
+    let t = client.get(&format!("/v1/tasks/{task}"), &[]).ok()?;
+    let t = &t["task"];
+    Some((
+        t["repo"].as_str()?.to_owned(),
+        t["slug"].as_str()?.to_owned(),
+        matches!(t["status"].as_str(), Some("merged" | "abandoned")),
+    ))
 }
 
 #[cfg(test)]

@@ -2358,6 +2358,137 @@ fn hook_stop_allows_running_containers_up_to_av_footprint_containers() {
     );
 }
 
+/// `av gc --containers`: what merged and abandoned tasks left in docker goes (stopped
+/// containers, dangling images, volumes with their label); open and unknown tasks' things stay;
+/// a running container is listed, never stopped. `--dry-run` only lists.
+#[cfg(unix)]
+#[test]
+fn gc_containers_removes_what_finished_tasks_left_and_lists_what_runs() {
+    let (d, ws_open, scratch) = started();
+    let open = task_id_of(&ws_open);
+    let merged = merge_change(&d, scratch.path(), "Add thing", "README.md", "# thing\n");
+    ok(av(
+        &d,
+        scratch.path(),
+        &[
+            "task", "start", "--repo", "demo", "--title", "Give up", "--goal", "Nothing",
+        ],
+    ));
+    let ws_gone = d.ws.join("demo/give-up");
+    let abandoned = task_id_of(&ws_gone);
+    assert_eq!(ok(av(&d, &ws_gone, &["abandon"])).trim(), "abandoned");
+    let unknown = "00000000-0000-0000-0000-000000000000";
+    let fp = Footprint::new();
+    fp.fake_docker();
+    fp.docker_answers(
+        "ps",
+        &format!(
+            "c1\tb-build\texited\t0B (virtual 1GB)\t{merged}\n\
+             c2\tb-db\trunning\t\t{merged}\n\
+             c3\ta-build\texited\t\t{open}\n\
+             c4\tc-db\tcreated\t\t{abandoned}\n\
+             c5\tghost\texited\t\t{unknown}\n"
+        ),
+    );
+    fp.docker_answers("images", "sha256:b\nsha256:a\n");
+    fp.docker_answers(
+        "inspect",
+        &format!("sha256:b\t{merged}\t1000\t\nsha256:a\t{open}\t2000\t\n"),
+    );
+    fp.docker_answers("volumes", &format!("b-vol\t{merged}\na-vol\t{open}\n"));
+
+    // dry run: the plan as JSON, nothing removed
+    let o = ok(av_env(
+        &d.url,
+        scratch.path(),
+        &fp.env("off"),
+        &["gc", "--dry-run", "--containers", "--json"],
+    ));
+    let v: serde_json::Value = serde_json::from_str(&o).unwrap_or_else(|_| panic!("{o}"));
+    let c = &v["containers"];
+    assert_eq!(c["dry_run"], true, "{o}");
+    let removed: Vec<(&str, &str)> = c["removed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["kind"].as_str().unwrap(), r["name"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        removed,
+        [
+            ("container", "b-build"),
+            ("image", "sha256:b"),
+            ("volume", "b-vol"),
+            ("container", "c-db"),
+        ],
+        "{o}"
+    );
+    assert_eq!(c["removed"][0]["slug"], "add-thing", "{o}");
+    assert_eq!(c["removed"][3]["slug"], "give-up", "{o}");
+    assert_eq!(c["running"][0]["name"], "b-db", "{o}");
+    assert_eq!(
+        c["left"],
+        serde_json::json!({"open": 3, "unknown": 1}),
+        "{o}"
+    );
+    let log = fp.docker_log();
+    assert!(
+        log.contains("images -q --no-trunc --filter label=av.task --filter dangling=true"),
+        "{log}"
+    );
+    for verb in [" rm ", "rmi", "kill", "stop", "prune"] {
+        assert!(!log.contains(verb), "a dry run removes nothing: {log}");
+    }
+
+    // the real thing
+    let text = ok(av_env(
+        &d.url,
+        scratch.path(),
+        &fp.env("off"),
+        &["gc", "--containers"],
+    ));
+    for line in [
+        "removed container demo/add-thing  b-build (exited, 0B (virtual 1GB))",
+        "removed image demo/add-thing  sha256:b (1000 B)",
+        "removed volume demo/add-thing  b-vol",
+        "removed container demo/give-up  c-db (created)",
+        "running demo/add-thing  b-db (av never stops a container)",
+        "left alone: 3 of open tasks, 1 of tasks the daemon does not know",
+    ] {
+        assert!(text.contains(line), "{line:?} not in\n{text}");
+    }
+    assert!(
+        !text.contains("a-build") && !text.contains("ghost"),
+        "{text}"
+    );
+    let log = fp.docker_log();
+    for call in ["rm c1\n", "rmi sha256:b\n", "volume rm b-vol\n", "rm c4\n"] {
+        assert!(log.contains(call), "{call:?} not in\n{log}");
+    }
+    for never in [
+        "rm c2",
+        "rm c3",
+        "rm c5",
+        "rmi sha256:a",
+        "rm a-vol",
+        "kill",
+        "stop",
+    ] {
+        assert!(!log.contains(never), "{never:?} in\n{log}");
+    }
+    // without docker on PATH the flag says so and the rest of gc still runs
+    let fp2 = Footprint::new();
+    let o = av_env(
+        &d.url,
+        scratch.path(),
+        &fp2.env("off"),
+        &["gc", "--containers"],
+    );
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(err(&o).contains("docker is not on PATH"), "{}", err(&o));
+    assert!(out(&o).contains("freed"), "{}", out(&o));
+}
+
 #[test]
 fn hook_footprint_off_writes_and_says_nothing() {
     let (d, ws, _scratch) = started();
