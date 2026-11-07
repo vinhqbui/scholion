@@ -1631,7 +1631,11 @@ async fn a_recent_target_survives_even_over_the_budget_and_the_deps_cache_goes_l
     // target/ being built keeps the repo over
     e.state.set_build_budget(8 * KIB);
     let out = gc(&e, json!({})).await;
-    assert_eq!(removals(&out), vec![("deps_cache".to_owned(), None)], "{out}");
+    assert_eq!(
+        removals(&out),
+        vec![("deps_cache".to_owned(), None)],
+        "{out}"
+    );
     assert!(!deps.exists());
     assert!(
         live_target.exists(),
