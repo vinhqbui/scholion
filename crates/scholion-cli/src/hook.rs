@@ -378,9 +378,12 @@ fn snapshot_footprint(client: &Client, session: &str, task_ws_root: Option<PathB
     }
 }
 
-/// Stop: what the session added since its snapshot. Blocks once per session (the snapshot's
-/// `warned`) when that is at least `AV_FOOTPRINT_WARN_MB`, and reports any addition to the
-/// daemon (`GET /v1/disk` shows it under `outside`). Returns whether it blocked.
+/// Stop: what the session added since its snapshot and, in a task with `docker` on `PATH`, the
+/// containers, images and volumes carrying the task's label. Blocks once per session (the
+/// snapshot's `warned`) when the additions reach `AV_FOOTPRINT_WARN_MB`, and once
+/// (`containers_warned`) when more than `AV_FOOTPRINT_CONTAINERS` (default 0) labelled
+/// containers still run, naming them, never stopping them. Reports both to the daemon
+/// (`GET /v1/disk` shows them under `outside`). Returns whether it blocked.
 fn footprint_stop(
     client: &Client,
     agent: &str,
@@ -403,36 +406,95 @@ fn footprint_stop(
         footprint_deadline(),
     );
     let added = footprint::diff(&dirs_of(&snap["dirs"]), &after.dirs);
-    if added.is_empty() {
+    // in a task, with docker on PATH: what carries the task's label (containers are footprint)
+    let containers = task
+        .zip(containers::docker())
+        .map(|((_, tf), docker)| {
+            let scope = containers::Scope {
+                task: Some(tf.task.as_str()),
+                dangling_images: false,
+            };
+            containers::scan(&docker, scope, footprint_deadline())
+        })
+        .filter(|r| !r.is_empty());
+    if added.is_empty() && containers.is_none() {
         return false;
     }
     let partial = after.partial || snap["partial"] == true;
     let total: u64 = added.iter().map(|(_, b)| b).sum();
     let warn_at = env_number("AV_FOOTPRINT_WARN_MB", 512u64).saturating_mul(1024 * 1024);
-    let mut blocked = false;
-    if total >= warn_at && snap["warned"] != true {
+    // at most one block per stop: both reasons go into it, each once per session
+    let mut reasons = Vec::new();
+    if !added.is_empty() && total >= warn_at && snap["warned"] != true {
         snap["warned"] = json!(true);
+        reasons.push(footprint_reason(
+            &added,
+            total,
+            task.map(|(dir, _)| dir.as_path()),
+        ));
+    }
+    let may_run = env_number("AV_FOOTPRINT_CONTAINERS", 0usize);
+    if let Some(report) = &containers {
+        let running: Vec<&containers::Container> = report.running().collect();
+        if running.len() > may_run && snap["containers_warned"] != true {
+            snap["containers_warned"] = json!(true);
+            reasons.push(containers_reason(&running));
+        }
+    }
+    let mut blocked = false;
+    if !reasons.is_empty() {
         // without the mark this would block every stop, so no mark, no block
         match std::fs::write(&file, snap.to_string()) {
             Ok(()) => {
-                let reason = footprint_reason(&added, total, task.map(|(dir, _)| dir.as_path()));
-                println!("{}", json!({"decision": "block", "reason": reason}));
+                println!(
+                    "{}",
+                    json!({"decision": "block", "reason": reasons.join(" ")})
+                );
                 blocked = true;
             }
             Err(e) => eprintln!("av: hook stop: cannot update {}: {e}", file.display()),
         }
     }
-    let body = json!({
+    let mut body = json!({
         "session": session,
         "agent": agent,
         "task": task.map(|(_, tf)| tf.task.clone()),
         "added": dirs_json(&added),
         "partial": partial,
     });
+    if let Some(report) = &containers {
+        body["containers"] = json!(report);
+    }
     if let Err(e) = client.post("/v1/footprint", &body) {
         eprintln!("av: hook stop: footprint not reported: {e}");
     }
     blocked
+}
+
+/// The block for containers of the task still running at a stop. Names up to `FOOTPRINT_PATHS`
+/// of them; av never stops them itself.
+fn containers_reason(running: &[&containers::Container]) -> String {
+    let mut names: Vec<&str> = running
+        .iter()
+        .take(FOOTPRINT_PATHS)
+        .map(|c| c.name.as_str())
+        .collect();
+    let more = running.len().saturating_sub(FOOTPRINT_PATHS);
+    let and_more = (more > 0).then(|| format!(" and {more} more"));
+    if let Some(m) = &and_more {
+        names.push(m);
+    }
+    let (n, verb) = match running.len() {
+        1 => ("1 container".to_owned(), "is"),
+        n => (format!("{n} containers"), "are"),
+    };
+    format!(
+        "av: {n} of this task {verb} still running: {}. Stop what you are done with \
+         (`docker stop NAME`) or say why it stays; av never stops a container. Stopped ones, \
+         images and volumes with the task's label are removed by `av gc --containers` once the \
+         task is merged or abandoned.",
+        names.join(", ")
+    )
 }
 
 /// Most paths the footprint block names.

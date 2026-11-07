@@ -128,6 +128,9 @@ pub fn render_disk(v: &Value) -> String {
             if added.len() > TOP_PATHS {
                 let _ = writeln!(o, "    and {} more", added.len() - TOP_PATHS);
             }
+            for line in containers_lines(&f["containers"]) {
+                let _ = writeln!(o, "    {line}");
+            }
         }
     }
     if let Some(pg) = v["pg_dir"].as_str() {
@@ -144,6 +147,38 @@ pub fn render_disk(v: &Value) -> String {
         bytes(&t["store_bytes"])
     );
     o
+}
+
+/// A footprint's `containers` section (what carried the task's label when the session stopped),
+/// one line each for containers, images and volumes; none when it has none.
+fn containers_lines(c: &Value) -> Vec<String> {
+    let list = |key: &str, show: &dyn Fn(&Value) -> String| -> Option<String> {
+        let items: Vec<String> = c[key].as_array()?.iter().map(show).collect();
+        (!items.is_empty()).then(|| format!("{key:11} {}", items.join(", ")))
+    };
+    let container = |v: &Value| match v["size"].as_str() {
+        Some(size) if !size.is_empty() => format!("{} ({}, {size})", s(&v["name"]), s(&v["state"])),
+        _ => format!("{} ({})", s(&v["name"]), s(&v["state"])),
+    };
+    let image = |v: &Value| {
+        let name = v["tags"][0]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| s(&v["id"]).chars().take(19).collect());
+        match v["bytes"].as_u64() {
+            Some(b) => format!("{name} ({})", human(b)),
+            None => name,
+        }
+    };
+    let volume = |v: &Value| s(&v["name"]).to_owned();
+    [
+        list("containers", &container),
+        list("images", &image),
+        list("volumes", &volume),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// The filesystem under the workspaces and the free-space floor; `None` from a daemon that does
@@ -252,6 +287,47 @@ mod tests {
         assert!(!out.contains("postgres"), "{out}");
         // a daemon that does not report the filesystem gets no disk line
         assert!(!out.contains("disk:"), "{out}");
+    }
+
+    #[test]
+    fn a_footprints_containers_are_listed_under_its_session() {
+        let out = render_disk(&json!({"ws_root": "/w", "retain_secs": 3600, "repos": [],
+            "totals": {},
+            "outside": [{"session": "cc-1", "agent": "claude", "task": null, "added": [],
+                         "total_bytes": 0, "at": "2026-11-07T10:00:00Z",
+                         "containers": {
+                             "containers": [{"id": "abc", "name": "av-build", "state": "running",
+                                             "size": "12MB (virtual 1.2GB)"},
+                                            {"id": "def", "name": "av-db", "state": "exited"}],
+                             "images": [{"id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaa", "bytes": 1234567,
+                                         "tags": ["demo/build:latest"]},
+                                        {"id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbb"}],
+                             "volumes": [{"name": "av-pgdata"}]}}]}));
+        assert!(
+            out.contains(
+                "    containers  av-build (running, 12MB (virtual 1.2GB)), av-db (exited)
+"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "    images      demo/build:latest (1 MB), sha256:bbbbbbbbbbbb
+"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "    volumes     av-pgdata
+"
+            ),
+            "{out}"
+        );
+        // a report without the section (an older av) prints none of these
+        let out = render_disk(&json!({"ws_root": "/w", "repos": [], "totals": {},
+            "outside": [{"session": "cc-2", "added": [], "total_bytes": 0, "at": "x"}]}));
+        assert!(!out.contains("containers"), "{out}");
     }
 
     const GIB: u64 = 1 << 30;

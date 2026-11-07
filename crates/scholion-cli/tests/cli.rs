@@ -1922,7 +1922,7 @@ impl Footprint {
         write_script(
             &self.bin.path().join("docker"),
             &format!(
-                "#!/bin/sh\necho \"$*\" >> '{bin}/docker.log'\n\
+                "#!/bin/sh\nPATH=/usr/bin:/bin\necho \"$*\" >> '{bin}/docker.log'\n\
                  case \"$1 $2\" in\n\
                  \"ps \"*) cat '{bin}/ps' 2>/dev/null ;;\n\
                  \"images \"*) cat '{bin}/images' 2>/dev/null ;;\n\
@@ -2198,6 +2198,163 @@ fn hook_stop_blocks_once_when_a_session_left_a_big_build_outside_the_workspace()
     assert!(
         junk.exists(),
         "the daemon never deletes outside its workspaces"
+    );
+}
+
+/// Canned docker answers for the task of `ws`: one running and one exited container, one
+/// image and one volume, all labelled `av.task=<its id>`, in the formats `av` asks for.
+#[cfg(unix)]
+fn fake_task_containers(fp: &Footprint, ws: &Path) {
+    let task = task_id_of(ws);
+    fp.docker_answers(
+        "ps",
+        &format!(
+            "abc123\tav-build\trunning\t12MB (virtual 1.2GB)\t{task}\n\
+             def456\tav-db\texited\t0B (virtual 400MB)\t{task}\n"
+        ),
+    );
+    fp.docker_answers("images", "sha256:aaa\n");
+    fp.docker_answers(
+        "inspect",
+        &format!("sha256:aaa\t{task}\t1234567\tdemo/build:latest\n"),
+    );
+    fp.docker_answers("volumes", &format!("av-pgdata\t{task}\n"));
+}
+
+/// With docker on PATH, the Stop hook counts what carries the task's label and blocks once per
+/// session while any of it still runs. It names the running ones and never stops them itself;
+/// everything found goes to the daemon with the footprint.
+#[cfg(unix)]
+#[test]
+fn hook_stop_blocks_once_while_the_tasks_containers_run_and_reports_them() {
+    let (d, ws, _scratch) = started();
+    let fp = Footprint::new();
+    fp.fake_docker();
+    ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &fp.env("on"),
+        &["hook", "session-start"],
+        &hook_input(&ws, "SessionStart", "cc-ctr"),
+    ));
+    fake_task_containers(&fp, &ws);
+    let o = ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &fp.env("on"),
+        &["hook", "stop"],
+        &hook_input(&ws, "Stop", "cc-ctr"),
+    ));
+    let v: serde_json::Value = serde_json::from_str(&o).unwrap_or_else(|_| panic!("{o}"));
+    assert_eq!(v["decision"], "block", "{o}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("av: 1 container of this task is still running: av-build"),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("av-db"),
+        "stopped ones are not the block: {reason}"
+    );
+    assert!(reason.contains("docker stop"), "{reason}");
+    assert!(reason.contains("av gc --containers"), "{reason}");
+    let task = task_id_of(&ws);
+    let log = fp.docker_log();
+    assert!(
+        log.contains(&format!("ps -a --size --filter label=av.task={task}")),
+        "{log}"
+    );
+    for verb in ["kill", "stop", " rm", "rmi", "prune"] {
+        assert!(
+            !log.contains(verb),
+            "the hook never removes anything: {log}"
+        );
+    }
+    // once per session
+    let o = ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &fp.env("on"),
+        &["hook", "stop"],
+        &hook_input(&ws, "Stop", "cc-ctr"),
+    ));
+    assert_eq!(o, "");
+    // and the daemon has the whole list
+    let disk: serde_json::Value = ureq::get(&format!("{}/v1/disk", d.url))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let outside = &disk["outside"][0];
+    assert_eq!(outside["session"], "cc-ctr", "{disk}");
+    assert_eq!(outside["added"], serde_json::json!([]), "{disk}");
+    let c = &outside["containers"];
+    assert_eq!(
+        c["containers"],
+        serde_json::json!([
+            {"id": "abc123", "name": "av-build", "state": "running", "size": "12MB (virtual 1.2GB)"},
+            {"id": "def456", "name": "av-db", "state": "exited", "size": "0B (virtual 400MB)"},
+        ]),
+        "{disk}"
+    );
+    assert_eq!(
+        c["images"],
+        serde_json::json!([{"id": "sha256:aaa", "bytes": 1234567, "tags": ["demo/build:latest"]}]),
+        "{disk}"
+    );
+    assert_eq!(
+        c["volumes"],
+        serde_json::json!([{"name": "av-pgdata"}]),
+        "{disk}"
+    );
+    // `av disk` shows them under the session
+    let text = ok(av(&d, &ws, &["disk"]));
+    assert!(
+        text.contains("containers  av-build (running, 12MB (virtual 1.2GB)), av-db (exited, 0B (virtual 400MB))"),
+        "{text}"
+    );
+    assert!(
+        text.contains("images      demo/build:latest (1 MB)"),
+        "{text}"
+    );
+    assert!(text.contains("volumes     av-pgdata"), "{text}");
+}
+
+/// `AV_FOOTPRINT_CONTAINERS` is how many labelled containers may still run at a stop (default
+/// 0). Under it nothing blocks, but the daemon is still told what runs.
+#[cfg(unix)]
+#[test]
+fn hook_stop_allows_running_containers_up_to_av_footprint_containers() {
+    let (d, ws, _scratch) = started();
+    let fp = Footprint::new();
+    fp.fake_docker();
+    let mut env = fp.env("on");
+    env.push(("AV_FOOTPRINT_CONTAINERS", "1"));
+    ok(av_stdin_env(
+        &d.url,
+        &ws,
+        &env,
+        &["hook", "session-start"],
+        &hook_input(&ws, "SessionStart", "cc-one"),
+    ));
+    fake_task_containers(&fp, &ws);
+    let o = av_stdin_env(
+        &d.url,
+        &ws,
+        &env,
+        &["hook", "stop"],
+        &hook_input(&ws, "Stop", "cc-one"),
+    );
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!((out(&o).as_str(), err(&o).as_str()), ("", ""));
+    let disk: serde_json::Value = ureq::get(&format!("{}/v1/disk", d.url))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    assert_eq!(
+        disk["outside"][0]["containers"]["containers"][0]["name"], "av-build",
+        "{disk}"
     );
 }
 
