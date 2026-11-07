@@ -876,7 +876,7 @@ scratch dirs and anything outside `ws_root` are never touched; a removed `target
 rebuilds. `av gc` (`POST /v1/gc`) answers what it removed under `build_budget` (`removed`: `what`
 `finished`, `idle` or `deps_cache`, with `repo`, `slug`, `status`, `bytes`; `freed_bytes`; `over`:
 the repos still over), and `--dry-run` only says it. `GET /v1/disk` gives each repo `build_bytes`
-(its workspaces' `target/`; the budget counts these plus `build_cache_bytes`),
+(its workspaces' `target/`; the budget counts these plus `build_cache_bytes`, less what is on its way out in `.cache/reclaim/`),
 `build_budget_bytes` (0 = off) and `over_budget`, and the answer `build_budget_bytes` and
 `totals.over_budget`; `av disk` prints `build 12.3 GB of 20.0 GB (AV_BUILD_CACHE_MAX_GB)` under
 each repo. A repo still over after all that (only recent builds are left) is listed by
