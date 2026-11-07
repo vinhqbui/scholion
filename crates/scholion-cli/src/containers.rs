@@ -45,7 +45,8 @@ pub fn run(docker: &Path, args: &[&str], deadline: Instant) -> Option<String> {
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        // nothing reads it, and an unread pipe would stall a chatty docker until the deadline
+        .stderr(Stdio::null())
         .spawn()
         .ok()?;
     let mut stdout = child.stdout.take()?;
