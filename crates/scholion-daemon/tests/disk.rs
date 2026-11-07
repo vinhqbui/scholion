@@ -820,8 +820,10 @@ async fn start_raw(e: &Env, title: &str) -> (StatusCode, Value) {
         &e.app,
         "POST",
         "/v1/tasks",
-        Some(json!({"repo": "demo", "title": title, "goal": "Make hello louder",
-                    "agent": "claude", "session": "s-1"})),
+        Some(
+            json!({"repo": "demo", "title": title, "goal": "Make hello louder",
+                    "agent": "claude", "session": "s-1"}),
+        ),
     )
     .await
 }
@@ -863,8 +865,14 @@ async fn below_the_floor_a_new_task_is_refused_with_507_and_open_ones_keep_worki
     let (status, body) = start_raw(&e, "Shout hello").await;
     assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE, "{body}");
     let why = body["error"].as_str().unwrap();
-    assert!(why.contains("AV_DISK_MIN_FREE_GB"), "names the floor: {why}");
-    assert!(why.contains(&FAR_ABOVE.to_string()), "the floor's bytes: {why}");
+    assert!(
+        why.contains("AV_DISK_MIN_FREE_GB"),
+        "names the floor: {why}"
+    );
+    assert!(
+        why.contains(&FAR_ABOVE.to_string()),
+        "the floor's bytes: {why}"
+    );
     assert!(why.contains(" bytes) free"), "the free bytes: {why}");
     // nothing was made: no task row, no workspace
     let (_, tasks) = call(&e.app, "GET", "/v1/tasks?repo=demo", None).await;
@@ -875,15 +883,20 @@ async fn below_the_floor_a_new_task_is_refused_with_507_and_open_ones_keep_worki
         .filter_map(|t| t["title"].as_str())
         .collect();
     assert!(titles.contains(&"Wave hello"), "{tasks}");
-    assert!(!titles.contains(&"Shout hello"), "no task row for the refused start: {tasks}");
+    assert!(
+        !titles.contains(&"Shout hello"),
+        "no task row for the refused start: {tasks}"
+    );
 
     // `next` refuses a backlog task the same way and leaves the item queued
     let (status, body) = call(
         &e.app,
         "POST",
         "/v1/backlog",
-        Some(json!({"repo": "demo", "title": "Whisper hello", "goal": "Make hello softer",
-                    "reserve_secs": 0})),
+        Some(
+            json!({"repo": "demo", "title": "Whisper hello", "goal": "Make hello softer",
+                    "reserve_secs": 0}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -976,13 +989,17 @@ async fn the_reclaim_tick_reclaims_below_the_floor_even_with_retention_never() {
         },
     );
     let client = async move {
+        // the listener is bound before serve_with runs the extension closure, so a connect
+        // alone does not mean the state is held yet
+        let mut state = None;
         for _ in 0..200 {
-            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            state = held.lock().unwrap().clone();
+            if state.is_some() && tokio::net::TcpStream::connect(addr).await.is_ok() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        let state = held.lock().unwrap().clone().unwrap();
+        let state = state.expect("serve_with handed the state to the extension within 5 s");
         let (code, out) = raw(
             addr,
             "POST",
@@ -1044,7 +1061,10 @@ async fn the_reclaim_tick_reclaims_below_the_floor_even_with_retention_never() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         stop.send(()).unwrap();
-        assert!(gone, "the tick reclaimed {wdir:?} below the floor within 4 s");
+        assert!(
+            gone,
+            "the tick reclaimed {wdir:?} below the floor within 4 s"
+        );
     };
     let (served, ()) = tokio::time::timeout(Duration::from_secs(60), async {
         tokio::join!(server, client)

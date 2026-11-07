@@ -277,7 +277,10 @@ mod tests {
         v["min_free_bytes"] = json!(0);
         v["below_floor"] = json!(false);
         let out = render_disk(&v);
-        assert!(out.contains("no free-space floor (AV_DISK_MIN_FREE_GB=0)"), "{out}");
+        assert!(
+            out.contains("no free-space floor (AV_DISK_MIN_FREE_GB=0)"),
+            "{out}"
+        );
 
         v["fs_free_bytes"] = Value::Null;
         v["fs_total_bytes"] = Value::Null;
