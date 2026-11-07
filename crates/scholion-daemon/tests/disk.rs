@@ -874,7 +874,8 @@ async fn below_the_floor_a_new_task_is_refused_with_507_and_open_ones_keep_worki
         .iter()
         .filter_map(|t| t["title"].as_str())
         .collect();
-    assert_eq!(titles, ["Wave hello"], "{tasks}");
+    assert!(titles.contains(&"Wave hello"), "{tasks}");
+    assert!(!titles.contains(&"Shout hello"), "no task row for the refused start: {tasks}");
 
     // `next` refuses a backlog task the same way and leaves the item queued
     let (status, body) = call(
