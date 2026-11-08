@@ -828,6 +828,7 @@ scratch files. Nothing used to own their lifetime. One machine filled 333 GB thi
 ```bash
 av disk                     # workspaces (build output apart), scratch, caches and store per repo, and what sessions left outside
 av disk --json              # the same, as GET /v1/disk returns it
+av disk --fs                # only free and total space, the floor and the build budget (GET /v1/disk?fs=1: no walk)
 av gc --dry-run             # what would be removed now
 av gc                       # remove workspaces past the retention (POST /v1/gc)
 av gc --retain 0            # every merged or abandoned task's workspace, whatever its age
@@ -856,7 +857,11 @@ while it is still below, refuse to start a task with HTTP 507 and a reason namin
 the free bytes; `GET /v1/attention` lists `disk_low`. Tasks already started keep working, and
 reviews, handoffs and merges are still offered. `GET /v1/disk` reports `fs_free_bytes` and
 `fs_total_bytes` of that filesystem (null where not measured: the check then never refuses),
-`min_free_bytes` and `below_floor`; `av disk` prints them on its second line.
+`min_free_bytes` and `below_floor`; `av disk` prints them on its second line. `GET /v1/disk?fs=1`
+(or `fs=true`) answers only those four and `build_budget_bytes`, measured the same way, without
+listing repos, workspaces or footprints and without walking a directory, so a monitor can poll it
+cheaply (the full answer measures every workspace and `target/`); `av disk --fs` prints that line
+and `av disk --fs --json` the object.
 
 **The build budget.** `AV_BUILD_CACHE_MAX_GB` (default `0`, off) caps each repo's build output:
 every task workspace's own `target/` plus the repo's `.cache/` (the deps cache and the build

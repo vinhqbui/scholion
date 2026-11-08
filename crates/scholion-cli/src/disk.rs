@@ -164,6 +164,22 @@ pub fn render_disk(v: &Value) -> String {
     o
 }
 
+/// `GET /v1/disk?fs=1` (`av disk --fs`) for people: the free-space line and, when a budget is
+/// set, the build budget.
+pub fn render_disk_fs(v: &Value) -> String {
+    let mut o =
+        free_space(v).unwrap_or_else(|| "disk: this daemon does not report free space".into());
+    o.push('\n');
+    if let Some(budget) = v["build_budget_bytes"].as_u64().filter(|b| *b > 0) {
+        let _ = writeln!(
+            o,
+            "build budget {} per repo (AV_BUILD_CACHE_MAX_GB)",
+            human(budget)
+        );
+    }
+    o
+}
+
 /// A footprint's `containers` section (what carried the task's label when the session stopped),
 /// one line each for containers, images and volumes; none when it has none.
 fn containers_lines(c: &Value) -> Vec<String> {
@@ -560,5 +576,31 @@ mod tests {
         v["fs_total_bytes"] = Value::Null;
         let out = render_disk(&v);
         assert!(out.contains("free space not measured"), "{out}");
+    }
+
+    #[test]
+    fn disk_fs_prints_only_the_free_space_and_the_budget() {
+        let mut v = json!({"fs_free_bytes": 50 * GIB, "fs_total_bytes": 200 * GIB,
+                           "min_free_bytes": 20 * GIB, "below_floor": false,
+                           "build_budget_bytes": 0});
+        assert_eq!(
+            render_disk_fs(&v),
+            "disk: 50.0 GB free of 200.0 GB, floor 20.0 GB (AV_DISK_MIN_FREE_GB)\n"
+        );
+        v["build_budget_bytes"] = json!(30 * GIB);
+        v["below_floor"] = json!(true);
+        let out = render_disk_fs(&v);
+        assert!(
+            out.contains("\nBELOW THE FLOOR: no new task starts"),
+            "{out}"
+        );
+        assert!(
+            out.ends_with("\nbuild budget 30.0 GB per repo (AV_BUILD_CACHE_MAX_GB)\n"),
+            "{out}"
+        );
+        assert_eq!(
+            render_disk_fs(&json!({})),
+            "disk: this daemon does not report free space\n"
+        );
     }
 }

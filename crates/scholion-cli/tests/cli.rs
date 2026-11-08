@@ -4535,6 +4535,30 @@ fn disk_shows_workspaces_caches_and_what_sessions_left_outside() {
     assert_eq!(v, serde_json::from_str::<serde_json::Value>(DISK).unwrap());
 }
 
+const DISK_FS: &str = r#"{"fs_free_bytes": 53687091200, "fs_total_bytes": 214748364800,
+ "min_free_bytes": 21474836480, "below_floor": false, "build_budget_bytes": 0}"#;
+
+/// `av disk --fs` asks for the filesystem numbers only (`?fs=1`, no walk on the daemon) and
+/// prints the one line; `--json` passes the answer through.
+#[test]
+fn disk_fs_prints_only_the_filesystem_line() {
+    let c = canned(DISK_FS);
+    let dir = TempDir::new().unwrap();
+    let o = ok(av_with(&c.url, dir.path(), &["disk", "--fs"]));
+    assert_eq!(
+        o,
+        "disk: 50.0 GB free of 200.0 GB, floor 20.0 GB (AV_DISK_MIN_FREE_GB)\n"
+    );
+    assert_eq!(c.seen.lock().unwrap()[0].trim(), "GET /v1/disk?fs=1");
+    let o = ok(av_with(&c.url, dir.path(), &["disk", "--fs", "--json"]));
+    let v: serde_json::Value = serde_json::from_str(&o).unwrap();
+    assert_eq!(
+        v,
+        serde_json::from_str::<serde_json::Value>(DISK_FS).unwrap()
+    );
+    assert_eq!(c.seen.lock().unwrap()[1].trim(), "GET /v1/disk?fs=1");
+}
+
 const GC: &str = r#"{"reclaimed": [{"repo": "demo", "slug": "improve-greeting", "status": "merged",
    "path": "/home/u/ws/demo/improve-greeting", "bytes": 12582912, "build_bytes": 10485760}],
  "freed_bytes": 1301073100,
