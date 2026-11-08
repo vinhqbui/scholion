@@ -180,8 +180,9 @@ pub fn render_disk_fs(v: &Value) -> String {
     o
 }
 
-/// A footprint's `containers` section (what carried the task's label when the session stopped),
-/// one line each for containers, images and volumes; none when it has none.
+/// A footprint's `containers` section (what carried the task's label when the session stopped,
+/// and the containers it started without one), one line each for containers, images, volumes and
+/// unlabelled containers; none when it has none.
 fn containers_lines(c: &Value) -> Vec<String> {
     let list = |key: &str, show: &dyn Fn(&Value) -> String| -> Option<String> {
         let items: Vec<String> = c[key].as_array()?.iter().map(show).collect();
@@ -206,6 +207,7 @@ fn containers_lines(c: &Value) -> Vec<String> {
         list("containers", &container),
         list("images", &image),
         list("volumes", &volume),
+        list("unlabelled", &container),
     ]
     .into_iter()
     .flatten()
@@ -474,7 +476,9 @@ mod tests {
                              "images": [{"id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaa", "bytes": 1234567,
                                          "tags": ["demo/build:latest"]},
                                         {"id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbb"}],
-                             "volumes": [{"name": "av-pgdata"}]}}]}));
+                             "volumes": [{"name": "av-pgdata"}],
+                             "unlabelled": [{"id": "fff", "name": "stray-redis",
+                                             "state": "running"}]}}]}));
         assert!(
             out.contains(
                 "    containers  av-build (running, 12MB (virtual 1.2GB)), av-db (exited)
@@ -494,6 +498,10 @@ mod tests {
                 "    volumes     av-pgdata
 "
             ),
+            "{out}"
+        );
+        assert!(
+            out.contains("    unlabelled  stray-redis (running)\n"),
             "{out}"
         );
         // a report without the section (an older av) prints none of these
