@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **No open address without a token.** `AV_LISTEN` now defaults to `127.0.0.1:7420` (was
+  `0.0.0.0:7420`), and the daemon refuses to start on a non-loopback address unless `AV_TOKEN` is
+  set or `AV_LISTEN_OPEN=1` says something else limits who can reach it. The compose file sets
+  `AV_LISTEN_OPEN=1`, since it publishes the port on the host's `127.0.0.1` only. A deployment that
+  sets `AV_LISTEN=0.0.0.0:...` with no token must add one of the two.
 - **Containers started without the labels are footprint too.** With `docker` on `PATH`, the
   session-start snapshot also keeps the id of every container then (`docker ps -aq --no-trunc`),
   and in a task the Stop hook reports the containers that are new since and carry no `av.task`
