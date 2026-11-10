@@ -133,3 +133,18 @@ in the transcript, `smoke/README.md`, so that channel cannot be checked).
   is reported as partial (its `skipped_budget` rows show in the report), never extrapolated.
 - If the balance drops below $0.50, the sweep stops.
 - The balance is read before the sweep and a few minutes after it (billing lags).
+
+## Amendment 1 (2026-11-10, written before any N = 200 session ran)
+
+On the owner's instruction, passed on by the director while the `n500` level was running
+(`cold` complete, `n500` in progress, no `n0`, `n50` or `n200` session started): **the N = 200
+level is dropped**, both its `notes` and its `av` cell (60 sessions). The reason is budget: the
+DeepSeek balance is kept for other pre-registered benchmarks. The decision was made before any
+N = 200 session ran and without looking at any result of this sweep beyond the harness's progress
+lines and running cost.
+
+- Levels are now N = 0, 50, 500; `cold` once. 1 + 2 × 3 = **7 cells, 210 sessions**, every cell
+  still 3 reps × 10 tasks = 30 sessions.
+- The commands are unchanged except that the loop is `for N in 500 0 50` (no `n200` directory).
+- Hypotheses, metrics, statistics, decision rule (N = 0 against N = 500), validity and stopping
+  rules are otherwise unchanged. N = 50 alone now shows the trend between the two ends.
