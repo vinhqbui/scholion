@@ -10,8 +10,8 @@ against the files in the run container).
 ## Answer
 
 **As N grew from 0 to 500, the flat `NOTES.md` did not lose solved tasks, but it got more
-expensive: cost per accepted task rose 88 % ($0.0126 → $0.0237) and the median session cost moved
-outside its N = 0 interval. The anchored records held: av's cost per accepted task rose 14 %
+expensive: cost per accepted task rose 87.7 % ($0.0126 → $0.0237) and the median session cost moved
+outside its N = 0 interval. The anchored records held: av's cost per accepted task rose 14.0 %
 ($0.0125 → $0.0143), and its N = 500 median session cost stayed inside its N = 0 interval. By the
 pre-registered rule, the thesis holds on cost. It does not hold on solved tasks: both arms solved
 30/30 at every level, so this task set cannot show a loss of solved tasks.**
@@ -47,7 +47,7 @@ Other measures, from the reports:
 |---|---|---|---|---|
 | 0 | −1.1 % | −2.4 % | −10.8 % | 18 / 18 |
 | 50 | −6.4 % | −14.2 % | −20.0 % | 17 / 17 |
-| 500 | −39.9 % | −52.1 % | −61.3 % | 18.5 / 19 |
+| 500 | −39.9 % | −52.1 % | −61.3 % | 19 / 19 |
 
 `notes`' median tokens to first edit went from 18,538 (N = 0) to 45,180 (N = 500): the agent reads the
 27k-token file before it edits. av's went from 16,542 to 17,496. No session in any cell repeated a dead end.
@@ -65,27 +65,30 @@ N = 0 against N = 500, within each arm (`PREREG.md`, "Decision rule"):
 
 H1 holds: `notes` costs more and `av` holds. The stricter check also passes. `notes`' two
 median-cost intervals do not overlap ($0.010–$0.013 at N = 0, $0.018–$0.025 at N = 500), so that
-rise is the one difference called significant. av's intervals overlap ($0.009–$0.013 and
-$0.010–$0.016), so no change is claimed for av. The rise in cost per accepted task (+88 % notes,
-+14 % av) has no interval in the harness and is reported as a number only. No paired or
+rise is the one difference called significant. The bootstrap treats the 30 sessions of a cell as
+independent, though they are 10 tasks × 3 reps, so the intervals are somewhat narrower than a
+task-clustered bootstrap would give. av's intervals overlap ($0.009–$0.013 and $0.010–$0.016), so
+no change is claimed for av. The rise in cost per accepted task (+87.7 % notes, +14.0 % av) has no interval in the harness and is reported as a number only. No paired or
 task-stratified test was run.
 
 ## Caveats
 
 - **Ceiling on solved tasks.** Both channels solved every task at every level, so the solved-task
   half of the thesis was not tested. The lessons also reach `notes` and `av` as commit messages,
-  the same at every N (DESIGN), and `cold` solved 18/30 without them. To test whether the flat
-  file loses solved tasks, a later run needs harder tasks, or N well past 500, where `NOTES.md`
-  exceeds the `Read` window more often.
+  the same at every N (DESIGN), and `cold` solved 18/30 without them. At N = 500 `NOTES.md` (about
+  3,060 lines) is already past the 2,000 lines Claude Code's `Read` returns by default, and `notes`
+  still solved 30/30. Testing whether a flat file loses solved tasks needs harder tasks or larger N.
 - **Cache reads are cheap on DeepSeek** (2 % of input), as DESIGN warned, so dollars understate the
   context difference. In input tokens with cache reads, `notes` grew from 186,767 to 439,830 per
-  session (×2.35), and av stayed at 228,843 (240,737 at N = 0). With a model that caches less
+  session (×2.35), and av's went from 240,737 to 228,843. At N = 0 av read more input tokens than
+  `notes` (240,737 vs 186,767) at the same cost per accepted task. With a model that caches less
   cheaply, the same token counts cost more.
 - **The lesson is often not in av's first pack.** The pack (budget 800 tokens) had a "Decisions &
-  dead ends" section in 18 of 30 sessions at each level. The task's own lesson was in it in 12/30
-  at N = 0, 12/30 at N = 50 and 6/30 at N = 500 (summary text matched in `pack.md`). Noise
-  displaces the lesson, the ordering weakness DESIGN predicted. The agent then gets it from the
-  pre-read hook or the commit messages. The hook's output is not in the transcript
+  dead ends" section in 18 of 30 sessions at each level. The task's own lesson was in `pack.md` in
+  12/30 sessions at N = 0, 12/30 at N = 50 and 6/30 at N = 500. The measure is the first 50
+  characters of the lesson's summary found anywhere in `pack.md`; it would miss a summary the pack
+  cut to fewer than 50 characters. Otherwise the agent gets the lesson from the pre-read hook or
+  the commit messages. The hook's output is not in the transcript
   (`smoke/README.md`), so which of the two it was cannot be told.
 - **One repo, one model, ten tasks**: tallyho, `deepseek-flash`, Claude Code 2.1.318, seeded noise
   templates (DESIGN, "The noise notes").
@@ -98,12 +101,13 @@ task-stratified test was run.
   After the second, the half-imported av repo of the session in flight had to be removed by hand,
   with the daemon stopped. Scholion has no way to remove a repo. The rows and Qdrant ids of that
   repo are in `n0/stale-repo-removed.json`. The Postgres and Qdrant counts fell by exactly that
-  repo's 12 records and 166 code chunks. Because of that, the level order was 500, 50, 0 instead of
-  500, 0, 50.
+  repo's 12 records and 166 code chunks. Because of that, `n50` ran (complete) between `n0`'s
+  first 23 sessions and its last 37, instead of after `n0`.
 - **`meta.json`'s `date`** is the start of the last resume of that cell. The harness rewrites
   `meta.json` on every run of a command, so `n500`'s says 12:07 UTC and `n0`'s 15:08 UTC.
-- One `n0` av session's events are flagged `truncated`. It is valid and accepted, and counted as
-  the harness wrote it.
+- One `n0` av session (`relay-coupon-remove`, rep 3) is flagged `truncated`: its stream has no
+  `result` event. It is valid and accepted. Its cost ($0.0054) is priced from the summed message
+  usage, not the cap, and it is counted as the harness wrote it.
 
 ## Spend
 
@@ -116,8 +120,7 @@ task-stratified test was run.
 
 The balance endpoint reports whole cents and lags by a few minutes. The delta includes the two
 sessions cut off by the interruptions, which have no row. It may also include other use of the
-same key in the same hours: other benchmark containers were running on this host during the
-sweep. That makes $2.34 an upper bound on this sweep's bill. The bill is lower than the harness
+same key in the same hours. That makes $2.34 an upper bound on this sweep's bill. The bill is lower than the harness
 figure even though every session ran at peak hours (03:43–04:29 and 12:07–15:33 UTC; the off-peak
 window is 16:30–00:30 UTC). So the harness's peak-price figure is an upper bound too, not the
 bill. Possible reasons, not investigated: DeepSeek may count more cache hits than Claude Code
@@ -142,7 +145,7 @@ OUT=bench/results/2026-11-e4-scale
 COMMON="--av-url http://e4-daemon:7450 --work-root /root/bench-work --import-dir /root/bench-work/src --import-mount /root/bench-work/src"
 scholion-bench run bench/tasks-relay --arms cold --jit-hooks --reps 3 $P \
   --session-cap-usd 0.08 --budget-usd 0.60 --out $OUT/cold $COMMON --confirm
-for N in 500 50 0; do      # run order; PREREG listed 500 0 50 (see Caveats)
+for N in 500 0 50; do      # as pre-registered; n0 was finished after n50 (see Caveats)
   scholion-bench run bench/tasks-relay --arms notes,av --noise $N --jit-hooks --reps 3 $P \
     --session-cap-usd 0.08 --budget-usd 1.50 --out $OUT/n$N $COMMON --confirm
 done
@@ -186,5 +189,5 @@ WSL distro. Five containers ran on the network `e4-bench`, with no published por
 - Versions: Claude Code 2.1.318, Node 22, rustc 1.97.1, jj 0.46.0, model `deepseek-flash`.
 - Check of the first av session at N = 500, before the rest of that cell ran: `status=ok`; the
   hook-count was session-start 1, pre-read 3, post-edit 1, stop 2; a `pack.md` (651 of 800 tokens)
-  was written; the earlier task held 511 records (510 notes plus the intent); `notes`'
+  was written; the earlier task held 511 records (166 attempts, 179 decisions, 165 notes: 10 lessons and 500 noise, plus the intent); `notes`'
   `memory_tokens` was 27,487, as DESIGN predicted (27.5k).
