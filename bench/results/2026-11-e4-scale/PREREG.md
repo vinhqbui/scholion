@@ -155,3 +155,27 @@ other change. (`cold` was complete; `n500` had 28 rows written, and the session 
 the cell and runs that session again, as the rule for a session with no row above says. Postgres
 recovered from its WAL; the 14 earlier av tasks still hold 511 records each and Qdrant's
 `records` collection holds all 7,192 records, with an empty outbox.)
+
+Note, 2026-11-10: planned host restart about 13:00–13:10 UTC; stack stopped cleanly; the in-flight
+session was discarded and re-run; no other change. Details:
+
+- `n500` was complete (60/60). `n0` had 23 rows; the session in flight was
+  `relay-customer-region · av · rep 2` (the director's message named `notes · rep 2`, but the log's
+  last line was the `av` session). It wrote no row.
+- Resuming `n0` failed at that session: its av repo `bn0-relay-customer-region-av-2` had already
+  been imported before the stop (`import … failed: repo … already exists`, EXIT 1). Scholion at
+  `fbc5bb0` has no way to remove a repo (no `DELETE` route, no `av` subcommand) and
+  `scholion-bench run` has no flag for a half-imported repo.
+- On the director's instruction, `n50` was run next (60/60, unaffected; the level order became
+  500, 50, 0) and the stale repo was then removed by hand, with `e4-harness` idle and
+  `e4-daemon` stopped. Its rows and Qdrant point ids were first dumped to
+  `n0/stale-repo-removed.json`. Removed: in Postgres, in one transaction, its `repos` row, 2 tasks
+  (with their 12 records, 10 anchors and 2 context receipts by cascade), 3 events, 166 symbols
+  (with their symbol refs and code chunks), 32 index files, 1 index scope, 2 scope overlays; in
+  Qdrant, its 12 `records` points and 166 `code_chunks` points (filter `repo`); its jj store
+  directory, workspace and import copy. Nothing else was touched.
+- Counts before → after: Postgres `records` 17,495 → 17,483 and Qdrant `records` 17,495 → 17,483
+  (−12 each), Postgres and Qdrant `code_chunks` 11,952 → 11,786 (−166 each), outbox empty before
+  and after, collections green. The daemon was started again on the same binary (still
+  `fbc5bb0`), answered `/healthz`, and no longer lists the repo. `n0` was then resumed with the same
+  command and re-ran the interrupted session first.
