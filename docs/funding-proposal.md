@@ -27,6 +27,23 @@ models as tracker arms has no budget today.
 
 Open: the total amount to request per program. It needs the three uncosted hosting lines above.
 
+## Why this is worth funding
+
+Every dollar here buys a public, reproducible number, not a promise. The product already works, is
+measured, and costs almost nothing per unit of work. What it lacks is hosting.
+
+- **Measured, not claimed.** In a pre-registered run, handing one agent's lessons to the next
+  halved cost per accepted task ($0.012 → $0.006) and took acceptance from 16/30 to 30/30.
+- **The neutral layer under every agent.** Scholion sits beneath Claude Code, Codex, Gemini and
+  Grok at once, through MCP and hooks, without forking any of them. No single vendor will build a
+  memory its competitors' agents can read.
+- **Capital efficient by construction.** One founder shipped three releases in under two weeks.
+  The product now builds itself: agents work the backlog through Scholion at $0.0122 per merged
+  feature, with a human approving each merge.
+- **Open by rule.** The evaluation code is Apache-2.0 and the data CC BY 4.0, with a
+  pre-registration before every paid comparison. Funders can check every number in this proposal
+  against the raw rows.
+
 ## The problem
 
 Coding agents start every session from zero. Each one re-reads the repository and retries what the
