@@ -3,7 +3,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::common::*;
-use scholion_bench::runner::{Arm, RunConfig, run_session};
+use scholion_bench::runner::{
+    Arm, RunConfig, first_pack, first_pack_dir, first_packs_report, run_session,
+};
 use scholion_bench::spec::{TaskSpec, load_spec};
 use tempfile::TempDir;
 
@@ -916,4 +918,60 @@ fn noise_reaches_the_av_arm_as_n_more_records_with_the_notes_arms_text() {
         in_av, in_notes,
         "both arms carry the same notes, word for word"
     );
+}
+
+#[test]
+fn first_pack_says_where_the_lesson_stands_without_running_an_agent() {
+    let _g = serial();
+    let d = start_daemon(None);
+    let mut f = relay_fixture("fix");
+    f.cfg.av_url = Some(d.url.clone());
+    let _ = std::fs::remove_file(&f.marker);
+
+    let r = first_pack(&f.spec, "fp1", &f.cfg).unwrap();
+    assert!(!f.marker.exists(), "no agent was started");
+    assert_eq!(r.task, "calc-add");
+    assert_eq!(r.seeded, 2);
+    assert!(
+        r.lesson.starts_with("rec:") && r.lesson.len() == 12,
+        "{r:?}"
+    );
+    // the lesson is the note of the task's own pair, not the other lesson and not noise
+    let hits = get(&format!(
+        "{}/v1/repos/bfp1-calc-add-av-1/search?q=swapping",
+        d.url
+    ));
+    let id = hits["records"][0]["id"].as_str().unwrap().replace('-', "");
+    assert_eq!(r.lesson, format!("rec:{}", &id[..8]), "{hits}");
+    assert_eq!(r.pre_read.len(), 1, "one relevant file: {r:?}");
+    assert_eq!(r.pre_read[0].path, "calc.py");
+    assert!(
+        r.at_hook.shown() || r.pre_read[0].lesson,
+        "without noise the lesson arrives when calc.py is opened, if not before: {r:?}"
+    );
+    assert!(r.at_hook.tokens > 0 && r.at_hook.tokens <= 800, "{r:?}");
+
+    let dir = first_pack_dir(&f.cfg, "fp1", "calc-add");
+    for kept in ["pack.md", "hook-pack.md", "first-pack.json"] {
+        assert!(dir.join(kept).exists(), "{kept}");
+    }
+    let hook = std::fs::read_to_string(dir.join("hook-pack.md")).unwrap();
+    assert!(hook.contains("## Task"), "{hook}");
+    assert_eq!(
+        hook.contains(&r.lesson),
+        r.at_hook.shown() || r.at_hook.omitted_at.is_some(),
+        "the receipt and the markdown agree: {r:?}\n{hook}"
+    );
+
+    let report = first_packs_report(std::slice::from_ref(&r), 0);
+    assert!(report.contains("| calc-add | 2 |"), "{report}");
+    assert!(report.contains("of 1."), "{report}");
+}
+
+#[test]
+fn first_pack_refuses_a_task_without_a_relay_pair() {
+    let _g = serial();
+    let f = fixture("fix");
+    let e = first_pack(&f.spec, "fp2", &f.cfg).unwrap_err();
+    assert!(e.contains("relay_pair"), "{e}");
 }
