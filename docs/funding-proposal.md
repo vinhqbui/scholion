@@ -18,7 +18,8 @@ models as tracker arms has no budget today.
 | What the funding pays for | Known cost | Basis |
 | --- | --- | --- |
 | Weekly tracker, 4 agent CLIs on Harbor | $0.57 per run (measured 2026-11-04); $10 per run cap | openevaluations #8 |
-| E4 at scale: full sweep at N = 50, 200, 500 noise notes | about $2.20 to $3.00 (estimate at peak prices) | scholion #103, smoke run $0.027 |
+| Model tiers at n = 30 per cell (DeepSeek Flash vs Pro, easy and hard) | about $5.90 at peak prices | openevaluations #13 (pilot $1.45) |
+| Cross-vendor handoff (Claude Sonnet ↔ DeepSeek) on a harder task set | under $20 Claude + $1 DeepSeek per run | openevaluations #14 (first attempt $1.15) |
 | E5-lite: paired eval against plain git + NOTES.md | about $25 (budget) | Plan 15 |
 | Handoff benchmark at n ≥ 30 per cell, several models | not yet costed | |
 | Hosted Scholion Cloud cell (daemon, runner, 2× Postgres, Qdrant, embedder) | not yet costed | runs locally today |
@@ -32,8 +33,10 @@ Open: the total amount to request per program. It needs the three uncosted hosti
 Every dollar here buys a public, reproducible number, not a promise. The product already works, is
 measured, and costs almost nothing per unit of work. What it lacks is hosting.
 
-- **Measured, not claimed.** In a pre-registered run, handing one agent's lessons to the next
-  halved cost per accepted task ($0.012 → $0.006) and took acceptance from 16/30 to 30/30.
+- **Measured, not claimed.** In a pre-registered run of 210 sessions (30 per cell), handing one
+  agent's lessons to the next took acceptance from 18/30 to 30/30 and cut cost per accepted task
+  from $0.0216 to $0.0125. With 500 unrelated records in memory, Scholion's cost per accepted task
+  rose 14 % while a plain notes file's rose 88 %: Scholion was 40 % cheaper.
 - **The neutral layer under every agent.** Scholion sits beneath Claude Code, Codex, Gemini and
   Grok at once, through MCP and hooks, without forking any of them. No single vendor will build a
   memory its competitors' agents can read.
@@ -96,12 +99,14 @@ made worse to sell Cloud: no agent caps, seat checks or cost tracking in the fre
 
 ## Evidence so far
 
-The strongest result: when one agent's lessons are handed to the next, cost per accepted task
-halves and every task is accepted. Each number below carries its sample size; nothing below 30
-sessions per cell is called significant.
+The strongest result: when one agent's lessons are handed to the next, every task is accepted, and
+as memory grows Scholion's cost stays nearly flat while a notes file's almost doubles. Each number
+below carries its sample size; nothing below 30 sessions per cell is called significant.
 
 | Run (date) | Sample | Result | Source |
 | --- | --- | --- | --- |
+| E4 at scale (2026-11-10) | 210 sessions, DeepSeek Flash, 30 per cell, pre-registered | No handoff 18/30 at $0.0216 per accepted task; Scholion 30/30 at $0.0125. From 0 to 500 unrelated records, a notes file's cost per accepted task rose 87.7 % (the one significant difference), Scholion's 14.0 %; at 500 records Scholion is 39.9 % cheaper. $3.09 | scholion #140 |
+| Model tiers, pilot (2026-11-10) | 40 trials, Claude Code on DeepSeek Flash vs Pro | Hard tier: Flash 12/12 at $0.017 per solved task, Pro 8/8 at $0.100; easy: Flash 13/14, Pro 4/6. Pro solved no more at 6–9× the cost; the hard tier needs harder tasks | openevaluations #13 |
 | E4 relay, lessons handed on (2026-10-31) | 90 sessions, DeepSeek Flash, pre-registered | Cost per accepted task $0.012 cold → $0.006 with Scholion; accepted 16/30 → 30/30. Ties a hand-written NOTES.md (−2.5 %). Descriptive at this n. | [report](../bench/results/2026-10-31-relay-image) |
 | E3, solo agent (2026-10-27) | 160 sessions, Claude Haiku | 12.9 % fewer turns, 95 % CI [−18.3, −7.0]; about 14 % less wall time | [report](../bench/results/2026-10-27-haiku) |
 | E1, retrieval (2026-11-04/05) | 42 tasks on 6 repos | A 271M embedder (EmbeddingGemma 2) scores level with a 7.6B one, so it became the default | [results](../bench/retrieval/results) |
@@ -111,8 +116,11 @@ sessions per cell is called significant.
 | Dogfood: the product builds itself (2026-11-03) | 5 backlog items | 5/5 merged in 2 h, 0 reverts, 0 merge conflicts. Cross-vendor review caught 2 real defects | internal report |
 | Teams v0, first hosted-style run (2026-11-04) | 2 features | $0.0122 per merged feature, backlog-to-merge median 496 s, human gate on each | internal note |
 
-**What the numbers do not show yet.** E4 at scale (hundreds of irrelevant notes, where a flat file
-should fail) is built and smoke-tested but not run. E2 shows the system breaks beyond 8 agents per
+**What the numbers do not show yet.** In E4 at scale both the notes file and Scholion solved every
+task, so it separates them on cost, not on solving; the task's own lesson reached Scholion's first
+pack in only 6–12 of 30 sessions, a retrieval gap to close. The first cross-vendor handoff run
+(Sonnet ↔ DeepSeek, openevaluations #14) produced no valid mid-task handoff: the tasks were solved
+inside the cut, so it needs the harder task set. E2 shows the system breaks beyond 8 agents per
 repo. Stemma's metrics are fixture tests, not production data. There are no external users yet.
 
 ## Business model
@@ -140,7 +148,7 @@ that turn Scholion into a hosted product with public proof wait on compute.
 | Phase | What | Exit | Status |
 | --- | --- | --- | --- |
 | 0 · Name and ground truth | One brand, clean IP split, provider terms read | both PRs green | **Done** |
-| 1 · The public number | E4 at scale, n ≥ 30 per arm; tracker weekly, 3+ CLIs | cost per solved task published | **Waits on compute** |
+| 1 · The public number | E4 at scale, n ≥ 30 per arm; tracker weekly, 3+ CLIs | cost per solved task published | **First n = 30 result (E4)**; tracker at n = 30 waits on compute |
 | 2 · Pull | Homebrew, cargo, image; PR bot; cold start from git | installs, stars per week | Shipped, measuring |
 | 3 · Remote workspaces | Agent on a laptop, daemon on another host | 1.5× vs a 2× target, met | **Done** |
 | 4 · Teams, hosted | Hosted cell, 3 design partners; one run done at $0.0122/feature | cost per merged feature from a real run | **Waits on compute** |
@@ -150,9 +158,9 @@ Phases 1 and 2 run side by side; phase 4 needs phase 3's remote workspaces for a
 
 **What the funding unlocks.**
 
-1. **Phase 1, first.** Run E4 at scale (about $2.20 to $3.00) and the weekly tracker in CI on a
-   harder task set. That gives the public cost-per-solved-task number, or tells us to re-word the
-   pitch.
+1. **Phase 1, first.** E4 at scale is done (scholion #140, $3.09). Next: a harder task set, then the
+   model tiers at n = 30 per cell (about $5.90), the cross-vendor handoff on it, and the weekly
+   tracker in CI. That gives the public cost-per-solved-task number across vendors and open models.
 2. **Phase 4, next.** Move the hosted cell (now on one local machine, with Stemma about to start a
    two-week shadow run) to cloud hosting with a GPU embedder. Then onboard three design partners
    on Teams.
