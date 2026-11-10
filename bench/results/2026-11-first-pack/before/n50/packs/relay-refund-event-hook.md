@@ -21,37 +21,36 @@
 - tallyho/cli.py
 
 ## Decisions & dead ends
-- rec:64da4aa2 attempt: Tried calling `Repository.order` twice to force a refresh; the second…
-- rec:08ce0042 attempt: Replacing the loop in `Workflow.ship` with a comprehension made it sho…
-- rec:11ce0b3a decision: New optional parameters of `Repository.save_order` are keyword-only (a…
-- rec:c6c78f1e decision: Errors about customer data must not echo the rejected value: they are…
+- rec:a3a46b47 attempt: Tried calling `Repository.order` twice to force a refresh; the second…
+- rec:39f77be3 attempt: Replacing the loop in `Workflow.ship` with a comprehension made it sho…
+- rec:626bda0d decision: New optional parameters of `Repository.save_order` are keyword-only (a…
+- rec:a15194f5 decision: Errors about customer data must not echo the rejected value: they are…
 
 ## Code
-- sym:3020 Order (tallyho/models.py:64-109)
+- sym:8000 Order (tallyho/models.py:64-109)
   class Order:
-- sym:3126 Workflow._move (tallyho/workflow.py:29-33)
+- sym:8106 Workflow._move (tallyho/workflow.py:29-33)
   def _move(self, order: Order, to: OrderStatus) -> None:
-- sym:3128 Workflow.pay (tallyho/workflow.py:41-44)
+- sym:8108 Workflow.pay (tallyho/workflow.py:41-44)
   def pay(self, order: Order, on: date) -> None:
-- sym:3127 Workflow.place (tallyho/workflow.py:35-39)
-- sym:3124 Workflow (tallyho/workflow.py:23-50)
-  class Workflow:
-- sym:3123 _ALLOWED (tallyho/workflow.py:14-20)
-  _ALLOWED = {
-- sym:3130 Workflow.cancel (tallyho/workflow.py:49-50)
-- sym:3022 Order.add (tallyho/models.py:76-84)
-- sym:3023 Order.remove (tallyho/models.py:86-89)
-- sym:2996 ValidationError (tallyho/errors.py:8-17)
-- sym:3012 OrderStatus (tallyho/models.py:14-19)
-- sym:2995 TallyError (tallyho/errors.py:4-5)
+- sym:8107 Workflow.place (tallyho/workflow.py:35-39)
+  def place(self, order: Order, on: date) -> None:
+- sym:8104 Workflow (tallyho/workflow.py:23-50)
+- sym:8103 _ALLOWED (tallyho/workflow.py:14-20)
+- sym:8110 Workflow.cancel (tallyho/workflow.py:49-50)
+- sym:8002 Order.add (tallyho/models.py:76-84)
+- sym:8003 Order.remove (tallyho/models.py:86-89)
+- sym:7976 ValidationError (tallyho/errors.py:8-17)
+- sym:7992 OrderStatus (tallyho/models.py:14-19)
+- sym:7975 TallyError (tallyho/errors.py:4-5)
 
 ---
-tokens: 710/800
+tokens: 707/800
 omitted 52 lower-ranked items (expand an id for detail):
 - repo map: .gitignore README.md pyproject.toml tallyho/ tests/ (35 files)
-- rec:355c5e41 decision: `Workflow.pay` keeps its docstring as the one place its behaviour is d…
-- rec:7d5f00f5 decision: A refund is booked as the exact reverse of the sale: the same three ac…
-- rec:5585bee1 decision: Event payloads carry money as integer minor units plus the currency co…
-- rec:0d84b78d attempt: Moving the imports inside `Ledger.post` to speed up start-up saved und…
-- rec:0fd2e810 attempt: Wrapping `_exponent` in a bare try/except with a retry loop hid the re…
+- rec:717ade97 decision: `Workflow.pay` keeps its docstring as the one place its behaviour is d…
+- rec:7b86822c decision: A refund is booked as the exact reverse of the sale: the same three ac…
+- rec:1094903f decision: Event payloads carry money as integer minor units plus the currency co…
+- rec:2042bff2 attempt: Moving the imports inside `Ledger.post` to speed up start-up saved und…
+- rec:f7747ebc attempt: Wrapping `_exponent` in a bare try/except with a retry loop hid the re…
 - … and 46 more

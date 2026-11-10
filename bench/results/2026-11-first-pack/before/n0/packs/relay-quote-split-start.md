@@ -23,34 +23,32 @@ Goal: Customers want to split a bill evenly between several payers. Add `Quote.s
   tests/ (7 files)
 
 ## Decisions & dead ends
-- rec:4c6d1985 attempt: Splitting Money by multiplying with 1/n (total.times(Decimal(1) / n))…
-- rec:ca794c23 decision: Errors about customer data must not echo the rejected value: they are…
-- rec:23adcf84 attempt: Currencies have different minor units (JPY 0 decimals, KWD 3). A fixed…
+- rec:77f6737d attempt: Splitting Money by multiplying with 1/n (total.times(Decimal(1) / n))…
+- rec:1fb7dc75 decision: Errors about customer data must not echo the rejected value: they are…
+- rec:ce2cc79e attempt: Currencies have different minor units (JPY 0 decimals, KWD 3). A fixed…
 
 ## Code
-- sym:1181 Ledger (tallyho/ledger.py:24-53)
-  class Ledger:
-- sym:1211 Money.allocate (tallyho/money.py:63-68)
-- sym:1182 Ledger.post (tallyho/ledger.py:28-35)
-- sym:1228 PercentDiscount.__post_init__ (tallyho/pricing/discounts.py:30-32)
-- sym:1170 ValidationError (tallyho/errors.py:8-17)
-  class ValidationError(TallyError):
-- sym:1194 Order (tallyho/models.py:64-109)
-- sym:1203 Money (tallyho/money.py:22-83)
-- sym:1173 CurrencyMismatch (tallyho/errors.py:20-21)
-- sym:1187 Product (tallyho/models.py:23-35)
-- sym:1191 OrderLine (tallyho/models.py:51-60)
-- sym:1227 PercentDiscount (tallyho/pricing/discounts.py:27-35)
-- sym:1233 Quote (tallyho/pricing/quote.py:16-27)
+- sym:6191 Money.allocate (tallyho/money.py:63-68)
+- sym:6208 PercentDiscount.__post_init__ (tallyho/pricing/discounts.py:30-32)
+- sym:6150 ValidationError (tallyho/errors.py:8-17)
+- sym:6183 Money (tallyho/money.py:22-83)
+- sym:6161 Ledger (tallyho/ledger.py:24-53)
+- sym:6207 PercentDiscount (tallyho/pricing/discounts.py:27-35)
+- sym:6213 Quote (tallyho/pricing/quote.py:16-27)
+- sym:6214 Quote.lines (tallyho/pricing/quote.py:23-27)
+- sym:6149 TallyError (tallyho/errors.py:4-5)
+- sym:6162 Ledger.post (tallyho/ledger.py:28-35)
+- sym:6168 Product.__post_init__ (tallyho/models.py:30-35)
+- sym:6176 Order.add (tallyho/models.py:76-84)
 
 ---
-tokens: 707/800
-omitted 38 lower-ranked items (expand an id for detail):
-- rec:637e294e decision: A refund is booked as the exact reverse of the sale: the same three ac…
-- rec:c272cb99 decision: Product slugs are the slugified SKU and name together: MUG-1 "Blue mug…
-- sym:1193 OrderLine.subtotal (tallyho/models.py:59-60)
-- sym:1184 Ledger.balances (tallyho/ledger.py:46-50)
-- sym:1234 Quote.lines (tallyho/pricing/quote.py:23-27)
-- sym:1169 TallyError (tallyho/errors.py:4-5)
-- sym:1188 Product.__post_init__ (tallyho/models.py:30-35)
-- … and 31 more
+tokens: 710/800
+omitted 36 lower-ranked items (expand an id for detail):
+- rec:03ab6414 decision: A refund is booked as the exact reverse of the sale: the same three ac…
+- rec:3db793fa decision: Product slugs are the slugified SKU and name together: MUG-1 "Blue mug…
+- sym:6177 Order.remove (tallyho/models.py:86-89)
+- sym:6182 _exponent (tallyho/money.py:14-18)
+- sym:6198 Coupon.discount (tallyho/pricing/coupons.py:23-28)
+- sym:6249 JsonFileStore._path (tallyho/store/jsonfile.py:20-23)
+- sym:6252 JsonFileStore.put (tallyho/store/jsonfile.py:39-45)
+- … and 29 more

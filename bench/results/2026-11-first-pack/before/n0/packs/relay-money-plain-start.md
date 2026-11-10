@@ -1,7 +1,7 @@
 ## Task
 # relay-money-plain · relay-money-plain · open
 Goal: Report tables want amounts without the currency code. Add `Money.format_plain()`, returning the amount as text without the currency code, for example "12.34" for 12.34 USD.
-Workspace: /root/bench-work/ws/bfp703c-relay-money-plain-av-1/relay-money-plain
+Workspace: /root/bench-work/ws/bfp92cd-relay-money-plain-av-1/relay-money-plain
 Changed (0): nothing yet
 
 ## Map
@@ -35,30 +35,30 @@ Changed (0): nothing yet
     test_text.py
 
 ## Code
-- sym:716 Money.format (tallyho/money.py:77-80)
+- sym:5696 Money.format (tallyho/money.py:77-80)
   def format(self) -> str:
-- sym:718 total (tallyho/money.py:86-91)
+- sym:5698 total (tallyho/money.py:86-91)
   def total(amounts, currency: str = "USD") -> Money:
-- sym:705 Money (tallyho/money.py:22-83)
+- sym:5685 Money (tallyho/money.py:22-83)
   class Money:
-- sym:706 Money.of (tallyho/money.py:29-33)
+- sym:5686 Money.of (tallyho/money.py:29-33)
   def of(cls, amount: str | int | Decimal, currency: str = "USD") -> Money:
-- sym:720 Coupon.discount (tallyho/pricing/coupons.py:23-28)
+- sym:5700 Coupon.discount (tallyho/pricing/coupons.py:23-28)
   def discount(self, currency: str = "USD") -> Discount:
-- sym:719 Coupon (tallyho/pricing/coupons.py:15-37)
+- sym:5699 Coupon (tallyho/pricing/coupons.py:15-37)
   class Coupon:
-- sym:734 apply_discounts (tallyho/pricing/discounts.py:46-67)
+- sym:5714 apply_discounts (tallyho/pricing/discounts.py:46-67)
   def apply_discounts(subtotal: Money, discounts: list[Discount]) -> tuple[Money, list[tuple[str, Money]]]:
-- sym:685 Ledger.record_sale (tallyho/ledger.py:37-44)
+- sym:5665 Ledger.record_sale (tallyho/ledger.py:37-44)
   def record_sale(self, on: date, order_id: str, quote: Quote) -> None:
-- sym:697 Order.currency (tallyho/models.py:73-74)
+- sym:5677 Order.currency (tallyho/models.py:73-74)
   def currency(self) -> str:
-- sym:700 Order.subtotal (tallyho/models.py:92-93)
+- sym:5680 Order.subtotal (tallyho/models.py:92-93)
   def subtotal(self) -> Money:
-- sym:704 _exponent (tallyho/money.py:14-18)
+- sym:5684 _exponent (tallyho/money.py:14-18)
   def _exponent(currency: str) -> int:
-- sym:814 test_of_and_format (tests/test_money.py:9-12)
+- sym:5794 test_of_and_format (tests/test_money.py:9-12)
   def test_of_and_format():
 
 ---
-tokens: 630/800
+tokens: 642/800

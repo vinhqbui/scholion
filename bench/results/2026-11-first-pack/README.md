@@ -26,8 +26,8 @@ A pack is deterministic for a given state, so one pass per level stands for the 
 - At the **`handle`** tier the summary is cut to 70 characters.
 - **Listed** means it is only in the pack's list of omitted items (also cut to 70 characters).
 
-Setup: daemon, `scholion-bench` and `av` built from this branch at `19879a8` (the packer is
-`main`'s, `d4f43c5`), Postgres 16, Qdrant v1.13.6, TEI cpu-1.7.2 with `BAAI/bge-small-en-v1.5`,
+Setup: daemon and `av` built from this branch at `19879a8`, `scholion-bench` at the commit that
+adds this file's baseline (the packer is `main`'s, `d4f43c5`), Postgres 16, Qdrant v1.13.6, TEI cpu-1.7.2 with `BAAI/bge-small-en-v1.5`,
 noise seed 1: the same stack and embedder as the sweep.
 
 ```bash
@@ -44,11 +44,20 @@ Tasks out of 10 whose own lesson is in each place:
 
 | noise notes | pack at task start: shown | at task start: shown or listed | hook pack: summary | hook pack: handle | hook pack: listed only | pre-read | shown in full by either hook | shown at all |
 |---|---|---|---|---|---|---|---|---|
-| 0 | 4 | 4 | 2 | 6 | 1 | 7 | 9 | 10 |
+| 0 | 4 | 4 | 3 | 7 | 0 | 6 | 9 | 10 |
 | 50 | 2 | 4 | 3 | 6 | 1 | 6 | 9 | 10 |
 | 500 | 1 | 2 | 1 | 5 | 2 | 0 | 1 | 6 |
 
-Per task: `before/n*/first-packs.md`. The packs themselves: `before/n*/packs/`.
+Per task: `before/n*/first-packs.md`. The packs and their receipts: `before/n*/packs/`.
+
+- **Repeatability.** `before/n500-again` is a second pass at N = 500 on a fresh setup: every
+  task's tier, pre-read answers and named files are the same, and one lesson moved from place 3
+  to place 4 in an omitted list. An earlier pass at N = 0 (not kept: it had no receipts) had two
+  lessons one step lower (summary 2, handle 6, listed 1); shown in full was 9 of 10 both times.
+- **Code.** Every hook pack names all of its task's `relevant_files` (14 of 14 at each level),
+  and none is marked degraded.
+- `before/n500/semantic-rank.txt` is from the first pass at N = 500 (same inputs, other record
+  ids).
 
 ## Findings
 
@@ -59,7 +68,9 @@ Per task: `before/n*/first-packs.md`. The packs themselves: `before/n*/packs/`.
    The agent reads the session-start hook's pack, which is built after the index is ready.
 2. **Without noise, delivery is good.** At N = 0 and N = 50 the lesson is shown in full to 9 of
    10 tasks and in some form to all 10. The tenth, `relay-quote-split`, gets a 70-character
-   handle that stops before the part that matters ("`Money.allocate(n)` splits exactly").
+   handle that stops before the part that matters ("`Money.allocate(n)` splits exactly"), and
+   the pre-read hook does not help: the lesson is anchored in `money.py`, which is not among the
+   task's `relevant_files`.
 3. **At N = 500 it breaks: 1 of 10 in full, 4 of 10 not at all.** Two separate causes:
    - **The pre-read hook ignores the task.** `records_at` orders a file's records by kind, then
      newest first, and stops at 400 tokens (7 or 8 records). With 500 notes spread over the repo's
@@ -71,6 +82,8 @@ Per task: `before/n*/first-packs.md`. The packs themselves: `before/n*/packs/`.
      `SEED_BONUS` 1.0, and similarity is worth at most 0.30. So noise such as "New optional
      parameters of `ValidationError` are keyword-only" takes the summary slots and the lesson gets
      a handle (`relay-customer-region`) or is cut (`relay-quote-split`, `relay-store-count`).
+     The receipts show it: in those three packs the records ahead of the lesson are all
+     `anchored` with scores of 1.58 to 1.70, and the best `semantic` record scores 0.64 to 0.73.
    - The two lessons at rank 14 and 17 (`relay-refund-event`, `relay-order-ids`) are outside the
      8 record hits a pack of 800 tokens asks for, so they are not candidates at all.
 4. **The History section shows 4 records** in most 800-token packs, whatever the number of

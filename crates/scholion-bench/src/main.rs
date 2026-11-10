@@ -638,16 +638,22 @@ fn main() -> ExitCode {
             for spec in &specs {
                 let row = first_pack(spec, &run_id, &cfg)?;
                 let dir = first_pack_dir(&cfg, &run_id, &spec.name);
-                for (from, to) in [("pack.md", "start"), ("hook-pack.md", "hook")] {
-                    let to = packs.join(format!("{}-{to}.md", spec.name));
+                for (from, to) in [
+                    ("pack.md", "start.md"),
+                    ("receipt.json", "start.receipt.json"),
+                    ("hook-pack.md", "hook.md"),
+                    ("hook-receipt.json", "hook.receipt.json"),
+                ] {
+                    let to = packs.join(format!("{}-{to}", spec.name));
                     std::fs::copy(dir.join(from), &to)
                         .map_err(|e| format!("{}: {e}", to.display()))?;
                 }
                 println!(
-                    "{}: at start {}, hook pack {}",
+                    "{}: at start {}, hook pack {}, in full {}",
                     row.task,
                     row.at_start.place(),
-                    row.at_hook.place()
+                    row.at_hook.place(),
+                    row.in_full()
                 );
                 lines.push_str(&serde_json::to_string(&row).map_err(|e| e.to_string())?);
                 lines.push('\n');

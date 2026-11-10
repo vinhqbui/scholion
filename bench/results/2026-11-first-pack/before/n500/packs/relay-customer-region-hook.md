@@ -17,36 +17,36 @@
 - repo map: .gitignore README.md pyproject.toml tallyho/ tests/ (35 files)
 
 ## Decisions & dead ends
-- rec:d9fda090 attempt: Wrapping `ValidationError` in a bare try/except with a retry loop hid the real error and made the suite hang on the second pass.
+- rec:37723df2 attempt: Wrapping `ValidationError` in a bare try/except with a retry loop hid the real error and made the suite hang on the second pass.
   anchors: tallyho/errors.py:ValidationError
-- rec:24c99112 decision: New optional parameters of `ValidationError` are keyword-only (after *), so call sites stay readable when options are added.
+- rec:ec1ee52d decision: New optional parameters of `ValidationError` are keyword-only (after *), so call sites stay readable when options are added.
   anchors: tallyho/errors.py:ValidationError
-- rec:25e24231 note: Benchmarks for `ValidationError` are in a separate, manual job; the unit tests must not depend on timing.
-  anchors: tallyho/errors.py:ValidationError
-- rec:cddabbca decision: Errors about customer data must not echo the rejected value: they are…
+- rec:36bffe1a note: Benchmarks for `ValidationError` are in a separate, manual job; the un…
+- rec:86742451 decision: Errors about customer data must not echo the rejected value: they are…
 
 ## Code
-- sym:3618 check_region (tallyho/validate.py:24-26)
-- sym:3616 check_sku (tallyho/validate.py:14-16)
-- sym:3512 Product.__post_init__ (tallyho/models.py:30-35)
-- sym:3620 parse_quantity (tallyho/validate.py:34-42)
-- sym:3617 check_email (tallyho/validate.py:19-21)
-- sym:3619 require_positive (tallyho/validate.py:29-31)
-- sym:3494 ValidationError (tallyho/errors.py:8-17)
-  class ValidationError(TallyError):
-- sym:3511 Product (tallyho/models.py:23-35)
-- sym:3518 Order (tallyho/models.py:64-109)
-- sym:3615 _REGION (tallyho/validate.py:11-11)
-- sym:3513 Customer (tallyho/models.py:39-47)
-- sym:3591 JsonFileStore (tallyho/store/jsonfile.py:14-72)
+- sym:8598 check_region (tallyho/validate.py:24-26)
+  def check_region(region: str) -> None:
+- sym:8596 check_sku (tallyho/validate.py:14-16)
+  def check_sku(sku: str) -> None:
+- sym:8492 Product.__post_init__ (tallyho/models.py:30-35)
+- sym:8600 parse_quantity (tallyho/validate.py:34-42)
+- sym:8597 check_email (tallyho/validate.py:19-21)
+- sym:8599 require_positive (tallyho/validate.py:29-31)
+- sym:8474 ValidationError (tallyho/errors.py:8-17)
+- sym:8491 Product (tallyho/models.py:23-35)
+- sym:8498 Order (tallyho/models.py:64-109)
+- sym:8595 _REGION (tallyho/validate.py:11-11)
+- sym:8493 Customer (tallyho/models.py:39-47)
+- sym:8571 JsonFileStore (tallyho/store/jsonfile.py:14-72)
 
 ---
-tokens: 703/800
+tokens: 711/800
 omitted 168 lower-ranked items (expand an id for detail):
-- rec:8e2c801a decision: Tests for `check_region` build their inputs with small factory helpers…
-- rec:605f9044 note: The `validate` module reads files as UTF-8 explicitly; the platform de…
-- rec:112ebd60 note: Deprecation warnings from `Customer` are turned into errors in CI (fil…
-- rec:a564ef12 note: `ValidationError.__str__` reads files as UTF-8 explicitly; the platfor…
-- rec:fc8d1239 note: Deprecation warnings from `customer_from_record` are turned into error…
-- rec:696eecab attempt: Adding type: ignore comments around `check_email` to quiet the checker…
+- rec:04022dc3 decision: Tests for `check_region` build their inputs with small factory helpers…
+- rec:976e6312 note: The `validate` module reads files as UTF-8 explicitly; the platform de…
+- rec:d28eaf2b note: Deprecation warnings from `Customer` are turned into errors in CI (fil…
+- rec:5cc5e3da note: `ValidationError.__str__` reads files as UTF-8 explicitly; the platfor…
+- rec:08b6aebf note: Deprecation warnings from `customer_from_record` are turned into error…
+- rec:2fca4c77 attempt: Adding type: ignore comments around `check_email` to quiet the checker…
 - … and 162 more

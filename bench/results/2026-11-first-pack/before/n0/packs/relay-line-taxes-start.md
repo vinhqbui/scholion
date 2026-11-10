@@ -18,39 +18,38 @@
 - tallyho/ledger.py
 
 ## Decisions & dead ends
-- rec:f7c14307 attempt: Taxing each line separately (taxes.tax per line) and rounding per line drifts from Quote.tax by a cent or more. Compute the tax once, then split it across lines by largest remainder.
+- rec:4701242c attempt: Taxing each line separately (taxes.tax per line) and rounding per line drifts from Quote.tax by a cent or more. Compute the tax once, then split it across lines by largest remainder.
   anchors: tallyho/pricing/quote.py:quote_order
-- rec:4d9fa9b8 attempt: CouponBook stores codes as code.upper() and get() looks them up with c…
-- rec:1f2cd74d decision: A refund is booked as the exact reverse of the sale: the same three ac…
-- rec:3e2bdd81 decision: Product slugs are the slugified SKU and name together: MUG-1 "Blue mug…
+- rec:f68886d5 attempt: CouponBook stores codes as code.upper() and get() looks them up with c…
+- rec:78abef5e decision: A refund is booked as the exact reverse of the sale: the same three ac…
+- rec:65b76169 decision: Product slugs are the slugified SKU and name together: MUG-1 "Blue mug…
 
 ## Code
-- sym:530 Order (tallyho/models.py:64-109)
+- sym:5551 quote_order (tallyho/pricing/quote.py:30-53)
+- sym:5510 Order (tallyho/models.py:64-109)
   class Order:
-- sym:571 quote_order (tallyho/pricing/quote.py:30-53)
-- sym:570 Quote.lines (tallyho/pricing/quote.py:23-27)
+- sym:5550 Quote.lines (tallyho/pricing/quote.py:23-27)
   def lines(self) -> list[str]:
-- sym:569 Quote (tallyho/pricing/quote.py:16-27)
+- sym:5549 Quote (tallyho/pricing/quote.py:16-27)
   class Quote:
-- sym:529 OrderLine.subtotal (tallyho/models.py:59-60)
-  def subtotal(self) -> Money:
-- sym:523 Product (tallyho/models.py:23-35)
-- sym:519 Ledger.record_sale (tallyho/ledger.py:37-44)
-- sym:533 Order.remove (tallyho/models.py:86-89)
-- sym:532 Order.add (tallyho/models.py:76-84)
-- sym:500 cmd_products (tallyho/cli.py:20-23)
-- sym:527 OrderLine (tallyho/models.py:51-60)
-- sym:524 Product.__post_init__ (tallyho/models.py:30-35)
+- sym:5513 Order.remove (tallyho/models.py:86-89)
+- sym:5512 Order.add (tallyho/models.py:76-84)
+- sym:5565 Repository (tallyho/repository.py:32-74)
+  class Repository:
+- sym:5509 OrderLine.subtotal (tallyho/models.py:59-60)
+- sym:5511 Order.currency (tallyho/models.py:73-74)
+- sym:5514 Order.subtotal (tallyho/models.py:92-93)
+- sym:5519 Money (tallyho/money.py:22-83)
+- sym:5532 total (tallyho/money.py:86-91)
 
 ---
-tokens: 704/800
-omitted 35 lower-ranked items (expand an id for detail):
+tokens: 710/800
+omitted 31 lower-ranked items (expand an id for detail):
 - repo map: .gitignore README.md pyproject.toml tallyho/ tests/ (35 files)
-- sym:528 OrderLine.__post_init__ (tallyho/models.py:55-56)
-- sym:585 Repository (tallyho/repository.py:32-74)
-- sym:531 Order.currency (tallyho/models.py:73-74)
-- sym:534 Order.subtotal (tallyho/models.py:92-93)
-- sym:539 Money (tallyho/money.py:22-83)
-- sym:552 total (tallyho/money.py:86-91)
-- sym:556 CouponBook (tallyho/pricing/coupons.py:40-63)
-- … and 27 more
+- sym:5536 CouponBook (tallyho/pricing/coupons.py:40-63)
+- sym:5540 CouponBook.discounts_for (tallyho/pricing/coupons.py:52-63)
+- sym:5548 apply_discounts (tallyho/pricing/discounts.py:46-67)
+- sym:5552 TaxTable (tallyho/pricing/tax.py:12-26)
+- sym:5554 TaxTable.tax (tallyho/pricing/tax.py:25-26)
+- sym:5555 default_tax_table (tallyho/pricing/tax.py:29-39)
+- … and 24 more

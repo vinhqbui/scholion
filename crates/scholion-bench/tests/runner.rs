@@ -979,7 +979,15 @@ fn first_pack_says_where_the_lesson_stands_without_running_an_agent() {
     assert!(r.at_hook.tokens > 0 && r.at_hook.tokens <= 800, "{r:?}");
 
     let dir = first_pack_dir(&f.cfg, "fp1", "calc-add");
-    for kept in ["pack.md", "hook-pack.md", "first-pack.json"] {
+    assert_eq!((r.files_named, r.files), (1, 1), "calc.py is named: {r:?}");
+    assert!(r.in_full(), "{r:?}");
+    for kept in [
+        "pack.md",
+        "receipt.json",
+        "hook-pack.md",
+        "hook-receipt.json",
+        "first-pack.json",
+    ] {
         assert!(dir.join(kept).exists(), "{kept}");
     }
     let hook = std::fs::read_to_string(dir.join("hook-pack.md")).unwrap();
@@ -992,7 +1000,12 @@ fn first_pack_says_where_the_lesson_stands_without_running_an_agent() {
 
     let report = first_packs_report(std::slice::from_ref(&r), 0);
     assert!(report.contains("| calc-add | 2 |"), "{report}");
-    assert!(report.contains("of 1."), "{report}");
+    assert!(
+        report.contains(
+            "or a pre-read answer): 1 of 1. Relevant files named in the hook pack: 1 of 1."
+        ),
+        "{report}"
+    );
 }
 
 #[test]

@@ -1,7 +1,7 @@
 ## Task
 # relay-order-ids · relay-order-ids · open
 Goal: Add `Repository.next_order_id()`, which returns the id to give a new order.
-Workspace: /root/bench-work/ws/bfp703c-relay-order-ids-av-1/relay-order-ids
+Workspace: /root/bench-work/ws/bfp92cd-relay-order-ids-av-1/relay-order-ids
 Changed (0): nothing yet
 
 ## Map
@@ -10,45 +10,55 @@ Changed (0): nothing yet
   README.md
   pyproject.toml
   tallyho/ (25 files)
+    __init__.py
+    cli.py
+    config.py
+    errors.py
+    events.py
+    ledger.py
+    models.py
+    money.py
+    pricing/ (5 files)
+    report/ (3 files)
+    repository.py
+    store/ (5 files)
+    text.py
+    validate.py
+    workflow.py
   tests/ (7 files)
+    conftest.py
+    test_models.py
+    test_money.py
+    test_pricing.py
+    test_report.py
+    test_store.py
+    test_text.py
 
 ## Code
-- sym:862 Order (tallyho/models.py:64-109)
-  class Order:
-- sym:925 Repository.order (tallyho/repository.py:57-59)
+- sym:5905 Repository.order (tallyho/repository.py:57-59)
   def order(self, oid: str) -> Order:
-- sym:860 OrderLine.__post_init__ (tallyho/models.py:55-56)
-  def __post_init__(self) -> None:
-- sym:924 Repository.save_order (tallyho/repository.py:54-55)
+- sym:5904 Repository.save_order (tallyho/repository.py:54-55)
   def save_order(self, o: Order) -> None:
-- sym:854 OrderStatus (tallyho/models.py:14-19)
-  class OrderStatus(str, Enum):
-- sym:928 Page (tallyho/store/base.py:10-14)
+- sym:5908 Page (tallyho/store/base.py:10-14)
   class Page:
-- sym:859 OrderLine (tallyho/models.py:51-60)
-  class OrderLine:
-- sym:927 Repository.orders (tallyho/repository.py:72-74)
+- sym:5907 Repository.orders (tallyho/repository.py:72-74)
   def orders(self, status: OrderStatus | None = None) -> list[Order]:
-- sym:833 cmd_export (tallyho/cli.py:26-28)
-  def cmd_export(repo: Repository, args: argparse.Namespace) -> int:
-- sym:917 Repository (tallyho/repository.py:32-74)
+- sym:5897 Repository (tallyho/repository.py:32-74)
   class Repository:
-- sym:847 EventBus.publish (tallyho/events.py:19-22)
-  def publish(self, event: str, payload: dict) -> None:
-- sym:926 Repository._order_from_record (tallyho/repository.py:61-70)
+- sym:5906 Repository._order_from_record (tallyho/repository.py:61-70)
   def _order_from_record(self, r: dict) -> Order:
-- sym:858 Customer.__post_init__ (tallyho/models.py:46-47)
-  def __post_init__(self) -> None:
-- sym:900 apply_discounts (tallyho/pricing/discounts.py:46-67)
+- sym:5880 apply_discounts (tallyho/pricing/discounts.py:46-67)
   def apply_discounts(subtotal: Money, discounts: list[Discount]) -> tuple[Money, list[tuple[str, Money]]]:
-- sym:845 EventBus.__init__ (tallyho/events.py:12-14)
-  def __init__(self) -> None:
-- sym:868 Order.to_dict (tallyho/models.py:98-109)
+- sym:5842 Order (tallyho/models.py:64-109)
+  class Order:
+- sym:5848 Order.to_dict (tallyho/models.py:98-109)
   def to_dict(self) -> dict:
-- sym:891 CouponBook.get (tallyho/pricing/coupons.py:49-50)
-- sym:903 quote_order (tallyho/pricing/quote.py:30-53)
-- sym:930 RecordStore.put (tallyho/store/base.py:24-25)
-- sym:992 test_list_page_cursor (tests/test_store.py:20-25)
+- sym:5871 CouponBook.get (tallyho/pricing/coupons.py:49-50)
+  def get(self, code: str) -> Coupon | None:
+- sym:5883 quote_order (tallyho/pricing/quote.py:30-53)
+  def quote_order( order: Order, coupons: CouponBook | None = None, taxes: TaxTable | None = None, today: date | None = None, ) -> Quote:
+- sym:5972 test_list_page_cursor (tests/test_store.py:20-25)
+  def test_list_page_cursor(store):
 
 ---
-tokens: 674/800
+tokens: 631/800

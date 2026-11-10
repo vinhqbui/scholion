@@ -1094,9 +1094,25 @@ pub struct FirstPack {
     /// The pre-read hook's answer for each of the task's `relevant_files`, in that order, under
     /// the hook pack's session (so a record the pack showed is not repeated).
     pub pre_read: Vec<PreRead>,
+    /// How many of the task's `relevant_files` the hook pack names: records must not be bought
+    /// with the code the agent needs.
+    #[serde(default)]
+    pub files_named: usize,
+    #[serde(default)]
+    pub files: usize,
 }
 
-fn standing(daemon: &Daemon, pack: &Value, lesson: &str) -> Result<Standing> {
+impl FirstPack {
+    /// Whether either hook gives the agent the lesson's whole summary: the pack at the
+    /// `summary` or `full` tier (a handle is cut to 70 characters), or a pre-read answer.
+    pub fn in_full(&self) -> bool {
+        matches!(self.at_hook.tier.as_deref(), Some("summary" | "full"))
+            || self.pre_read.iter().any(|p| p.lesson)
+    }
+}
+
+/// Where `lesson` stands in `pack`, read from the pack's receipt, which is kept as `keep`.
+fn standing(daemon: &Daemon, pack: &Value, lesson: &str, keep: &Path) -> Result<Standing> {
     let md = pack["markdown"].as_str().unwrap_or_default();
     let listed: Vec<&str> = pack["omitted"]
         .as_array()
@@ -1128,6 +1144,7 @@ fn standing(daemon: &Daemon, pack: &Value, lesson: &str) -> Result<Standing> {
         return Err("the pack has no receipt, so its items cannot be read".into());
     };
     let receipt = daemon.get(&format!("/v1/receipts/{receipt}"))?;
+    write_json(keep, &receipt)?;
     for item in receipt["items"].as_array().into_iter().flatten() {
         let id = item["id"].as_str().unwrap_or_default();
         if !id.starts_with("rec:") {
@@ -1191,7 +1208,7 @@ pub fn first_pack(spec: &TaskSpec, run_id: &str, cfg: &RunConfig) -> Result<Firs
         .filter(|id| id.len() >= 8)
         .ok_or_else(|| format!("task {}: no record was seeded for {pair}", spec.name))?;
     let lesson = format!("rec:{}", &id[..8]);
-    let at_start = standing(&daemon, &t.start_pack, &lesson)?;
+    let at_start = standing(&daemon, &t.start_pack, &lesson, &dir.join("receipt.json"))?;
     wait_for_index(&daemon, &t.repo, cfg)?;
 
     let session = uuid::Uuid::new_v4().to_string();
@@ -1205,7 +1222,13 @@ pub fn first_pack(spec: &TaskSpec, run_id: &str, cfg: &RunConfig) -> Result<Firs
         pack["markdown"].as_str().unwrap_or_default(),
     )
     .map_err(|e| e.to_string())?;
-    let at_hook = standing(&daemon, &pack, &lesson)?;
+    let at_hook = standing(&daemon, &pack, &lesson, &dir.join("hook-receipt.json"))?;
+    let hook_md = pack["markdown"].as_str().unwrap_or_default();
+    let files_named = spec
+        .relevant_files
+        .iter()
+        .filter(|f| hook_md.contains(f.as_str()))
+        .count();
     let mut pre_read = vec![];
     for path in &spec.relevant_files {
         let r = daemon.get(&format!(
@@ -1229,6 +1252,8 @@ pub fn first_pack(spec: &TaskSpec, run_id: &str, cfg: &RunConfig) -> Result<Firs
         at_start,
         at_hook,
         pre_read,
+        files_named,
+        files: spec.relevant_files.len(),
     };
     write_json(
         &dir.join("first-pack.json"),
@@ -1253,7 +1278,8 @@ pub fn first_packs_report(rows: &[FirstPack], noise: usize) -> String {
     let mut out = format!(
         "# First packs: is the task's own lesson in them?\n\nNoise notes: {noise}. Tasks: {}. \
          No agent ran.\n\n| task | records seeded | pack at task start | hook pack | records in \
-         hook pack | omitted | pre-read (file: lesson, records) |\n|---|---|---|---|---|---|---|\n",
+         hook pack | omitted | relevant files named | pre-read (file: lesson, records) |\n\
+         |---|---|---|---|---|---|---|---|\n",
         rows.len()
     );
     for r in rows {
@@ -1270,26 +1296,32 @@ pub fn first_packs_report(rows: &[FirstPack], noise: usize) -> String {
             })
             .collect();
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {}/{} | {} |\n",
             r.task,
             r.seeded,
             r.at_start.place(),
             r.at_hook.place(),
             r.at_hook.records_shown,
             r.at_hook.omitted_total,
+            r.files_named,
+            r.files,
             pre.join("; ")
         ));
     }
     let n = |f: &dyn Fn(&FirstPack) -> bool| rows.iter().filter(|r| f(r)).count();
+    let all = rows.len();
     out.push_str(&format!(
-        "\nLesson shown in the pack at task start: {} of {}. In the hook pack: {} of {}. In the \
-         hook pack or a pre-read answer: {} of {}.\n",
+        "\nLesson shown in the pack at task start: {} of {all}. In the hook pack: {} of {all}. \
+         In the hook pack or a pre-read answer: {} of {all}.\n\nLesson shown in full (the hook \
+         pack at the summary or full tier, or a pre-read answer): {} of {all}. Relevant files \
+         named in the hook pack: {} of {}. Packs marked degraded: {}.\n",
         n(&|r| r.at_start.shown()),
-        rows.len(),
         n(&|r| r.at_hook.shown()),
-        rows.len(),
         n(&|r| r.at_hook.shown() || r.pre_read.iter().any(|p| p.lesson)),
-        rows.len()
+        n(&|r| r.in_full()),
+        rows.iter().map(|r| r.files_named).sum::<usize>(),
+        rows.iter().map(|r| r.files).sum::<usize>(),
+        n(&|r| !r.at_hook.degraded.is_empty()),
     ));
     out
 }

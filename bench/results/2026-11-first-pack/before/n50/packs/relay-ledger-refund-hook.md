@@ -17,37 +17,36 @@
 - repo map: .gitignore README.md pyproject.toml tallyho/ tests/ (35 files)
 
 ## Decisions & dead ends
-- rec:743a53ba decision: A refund is booked as the exact reverse of the sale: the same three accounts with debit and credit swapped, memo "refund <order_id>", so reports pair a sale and its refund by id.
+- rec:c9a10580 decision: A refund is booked as the exact reverse of the sale: the same three accounts with debit and credit swapped, memo "refund <order_id>", so reports pair a sale and its refund by id.
   anchors: tallyho/ledger.py:Ledger.record_sale
-- rec:36e3f442 decision: Constants that `Ledger.record_sale` depends on live at the top of its…
-- rec:70411550 decision: `Ledger.record_sale` keeps its docstring as the one place its behaviou…
-- rec:3337cb80 attempt: Moving the imports inside `Money.zero` to speed up start-up saved unde…
+- rec:6db6e901 decision: Constants that `Ledger.record_sale` depends on live at the top of its…
+- rec:b2b5be97 decision: `Ledger.record_sale` keeps its docstring as the one place its behaviou…
+- rec:2340f684 attempt: Replacing the loop in `Money` with a comprehension made it shorter but…
 
 ## Code
-- sym:2013 Ledger.record_sale (tallyho/ledger.py:37-44)
-- sym:2132 Workflow.pay (tallyho/workflow.py:41-44)
-- sym:2011 Ledger (tallyho/ledger.py:24-53)
+- sym:6993 Ledger.record_sale (tallyho/ledger.py:37-44)
+- sym:7112 Workflow.pay (tallyho/workflow.py:41-44)
+- sym:6991 Ledger (tallyho/ledger.py:24-53)
   class Ledger:
-- sym:2065 quote_order (tallyho/pricing/quote.py:30-53)
-- sym:2063 Quote (tallyho/pricing/quote.py:16-27)
+- sym:7045 quote_order (tallyho/pricing/quote.py:30-53)
+- sym:7043 Quote (tallyho/pricing/quote.py:16-27)
   class Quote:
-- sym:2016 OrderStatus (tallyho/models.py:14-19)
+- sym:6996 OrderStatus (tallyho/models.py:14-19)
   class OrderStatus(str, Enum):
-- sym:2128 Workflow (tallyho/workflow.py:23-50)
+- sym:7108 Workflow (tallyho/workflow.py:23-50)
   class Workflow:
-- sym:2093 RecordStore.get (tallyho/store/base.py:28-29)
-- sym:2088 Repository._order_from_record (tallyho/repository.py:61-70)
-- sym:2004 NotFound (tallyho/errors.py:24-25)
-  class NotFound(TallyError):
-- sym:2127 _ALLOWED (tallyho/workflow.py:14-20)
+- sym:7073 RecordStore.get (tallyho/store/base.py:28-29)
+- sym:7068 Repository._order_from_record (tallyho/repository.py:61-70)
+- sym:6984 NotFound (tallyho/errors.py:24-25)
+- sym:7107 _ALLOWED (tallyho/workflow.py:14-20)
 
 ---
-tokens: 720/800
+tokens: 713/800
 omitted 58 lower-ranked items (expand an id for detail):
-- rec:43596dbf note: Benchmarks for `Ledger.record_sale` are in a separate, manual job; the…
-- rec:de48ad3d attempt: Wrapping `RecordStore.get` in a bare try/except with a retry loop hid…
-- rec:b2ecf64e attempt: Wrapping `RecordStore.list_page` in a bare try/except with a retry loo…
-- rec:ba52fced attempt: Wrapping `count_records` in a bare try/except with a retry loop hid th…
-- rec:3d68f208 attempt: Moving the imports inside `Ledger.post` to speed up start-up saved und…
-- rec:98858efa attempt: Taxing each line separately (taxes.tax per line) and rounding per line…
+- rec:55e3561c note: Benchmarks for `Ledger.record_sale` are in a separate, manual job; the…
+- rec:459df446 attempt: Wrapping `RecordStore.get` in a bare try/except with a retry loop hid…
+- rec:1940bb54 attempt: Wrapping `RecordStore.list_page` in a bare try/except with a retry loo…
+- rec:cdd00375 attempt: Wrapping `count_records` in a bare try/except with a retry loop hid th…
+- rec:3340ea8c attempt: Moving the imports inside `Money.zero` to speed up start-up saved unde…
+- rec:7b8df271 attempt: Moving the imports inside `Ledger.post` to speed up start-up saved und…
 - … and 52 more

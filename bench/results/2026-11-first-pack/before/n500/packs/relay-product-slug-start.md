@@ -1,7 +1,7 @@
 ## Task
 # relay-product-slug · relay-product-slug · open
 Goal: The web shop needs URL slugs for products. Add a read-only `Product.slug` property.
-Workspace: /root/bench-work/ws/bfp7924-relay-product-slug-av-1/relay-product-slug
+Workspace: /root/bench-work/ws/bfp9ba0-relay-product-slug-av-1/relay-product-slug
 Changed (0): nothing yet
 
 ## Map
@@ -35,30 +35,30 @@ Changed (0): nothing yet
     test_text.py
 
 ## Code
-- sym:4322 load_config (tallyho/config.py:23-47)
+- sym:9302 load_config (tallyho/config.py:23-47)
   def load_config(path: str | Path) -> Config:
-- sym:4403 Repository (tallyho/repository.py:32-74)
+- sym:9383 Repository (tallyho/repository.py:32-74)
   class Repository:
-- sym:4407 Repository.products (tallyho/repository.py:44-46)
+- sym:9387 Repository.products (tallyho/repository.py:44-46)
   def products(self, category: str | None = None) -> list[Product]:
-- sym:4345 OrderLine (tallyho/models.py:51-60)
+- sym:9325 OrderLine (tallyho/models.py:51-60)
   class OrderLine:
-- sym:4405 Repository.save_product (tallyho/repository.py:38-39)
+- sym:9385 Repository.save_product (tallyho/repository.py:38-39)
   def save_product(self, p: Product) -> None:
-- sym:4406 Repository.product (tallyho/repository.py:41-42)
+- sym:9386 Repository.product (tallyho/repository.py:41-42)
   def product(self, sku: str) -> Product:
-- sym:4348 Order (tallyho/models.py:64-109)
+- sym:9328 Order (tallyho/models.py:64-109)
   class Order:
-- sym:4321 Config (tallyho/config.py:15-20)
+- sym:9301 Config (tallyho/config.py:15-20)
   class Config:
-- sym:4318 cmd_products (tallyho/cli.py:20-23)
+- sym:9298 cmd_products (tallyho/cli.py:20-23)
   def cmd_products(repo: Repository, args: argparse.Namespace) -> int:
-- sym:4320 main (tallyho/cli.py:31-42)
+- sym:9300 main (tallyho/cli.py:31-42)
   def main(argv: list[str] | None = None) -> int:
-- sym:4329 ConfigError (tallyho/errors.py:28-29)
+- sym:9309 ConfigError (tallyho/errors.py:28-29)
   class ConfigError(TallyError):
-- sym:4341 Product (tallyho/models.py:23-35)
+- sym:9321 Product (tallyho/models.py:23-35)
   class Product:
 
 ---
-tokens: 560/800
+tokens: 561/800
