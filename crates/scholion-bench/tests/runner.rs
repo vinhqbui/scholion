@@ -636,6 +636,33 @@ fn jit_hooks_add_pre_read_and_stop_to_the_av_arms() {
         .as_str()
         .unwrap();
     assert!(pre.contains("hook pre-read"), "{s}");
+    // what the hook tells the agent is kept beside hook-count, and still reaches the agent
+    script(
+        f._tools.path(),
+        "av",
+        "#!/bin/sh
+cat > /dev/null
+echo \"said $2\"
+",
+    );
+    for _ in 0..2 {
+        let out = std::process::Command::new("sh")
+            .args(["-c", pre])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "said pre-read
+"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(o.run_dir.join("pre-read.out")).unwrap(),
+        "said pre-read
+said pre-read
+"
+    );
     assert_eq!(
         v["hooks"]["PreToolUse"][0]["matcher"],
         "Read|Edit|MultiEdit"

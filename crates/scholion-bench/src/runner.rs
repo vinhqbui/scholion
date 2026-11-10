@@ -664,7 +664,10 @@ fn settings(arm: Arm, cfg: &RunConfig, dir: &Path) -> Value {
                          "hooks": [{"type": "command", "command": edit}]}]
     });
     if cfg.jit_hooks {
-        let read = format!("echo pre-read >> {count}; {av} hook pre-read");
+        // Claude Code's transcript keeps a SessionStart hook's output but not a PreToolUse
+        // hook's, so what the agent was told about a file is kept here (`pre-read.out`).
+        let said = sh_quote(&dir.join("pre-read.out").to_string_lossy());
+        let read = format!("echo pre-read >> {count}; {av} hook pre-read | tee -a {said}");
         // The prefix is on the hook command: a bench backlog is empty, and the default
         // wait is 600s. A Stop hook that does not inherit the session environment would
         // otherwise stall the run.
