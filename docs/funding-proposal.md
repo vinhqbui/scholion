@@ -1,13 +1,13 @@
 # Scholion: Funding Proposal
 
-2026-11-09 · Vinh Bui, Tri V Holdings
+2026-11-09 · Vinh Bui, Tri V Holdings Texas
 
 Working copy: [Scholion — Funding Proposal](https://claude.ai/artifact/6j9zZLsGc67gx1bcyEePAC)
 (the editable doc this file was exported from).
 
 ## The ask
 
-Tri V Holdings asks for compute and cloud credits, plus a benchmark grant, to move Scholion from
+Tri V Holdings Texas asks for compute and cloud credits, plus a benchmark grant, to move Scholion from
 one founder's machine to a hosted rollout over 12 months. Every result it pays for is published on
 an open schema.
 
@@ -164,7 +164,7 @@ Open: start dates for each phase.
 ## Team and company
 
 One founder, Vinh Bui ([vinhqbui](https://github.com/vinhqbui)), builds and runs all three products
-under Tri V Holdings. The company is bootstrapped, with no outside investment.
+under Tri V Holdings Texas. The company is bootstrapped, with no outside investment.
 
 Most of the code is written by coding agents (Claude Code, Grok and others) with the founder
 steering, reviewing and approving every merge. That work runs through Scholion itself, so the
@@ -173,9 +173,9 @@ followed in under two weeks.
 
 Open before any form is filed:
 
-- [ ] Country of incorporation and registration date of Tri V Holdings
+- [ ] Country of incorporation and registration date of Tri V Holdings Texas
 - [ ] Registered activity code (it must read as software, not consulting)
-- [ ] Copyright of the repositories assigned or licensed to Tri V Holdings
+- [ ] Copyright of the repositories assigned or licensed to Tri V Holdings Texas
 
 ## Where to apply, in order
 
