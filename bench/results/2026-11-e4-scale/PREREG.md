@@ -148,3 +148,10 @@ lines and running cost.
 - The commands are unchanged except that the loop is `for N in 500 0 50` (no `n200` directory).
 - Hypotheses, metrics, statistics, decision rule (N = 0 against N = 500), validity and stopping
   rules are otherwise unchanged. N = 50 alone now shows the trend between the two ends.
+
+Note, 2026-11-10: host power loss 04:29–12:00 UTC; the in-flight session was discarded and re-run; no
+other change. (`cold` was complete; `n500` had 28 rows written, and the session in flight,
+`relay-money-plain · notes · rep 2`, had written none. Rerunning the same `n500` command resumes
+the cell and runs that session again, as the rule for a session with no row above says. Postgres
+recovered from its WAL; the 14 earlier av tasks still hold 511 records each and Qdrant's
+`records` collection holds all 7,192 records, with an empty outbox.)
