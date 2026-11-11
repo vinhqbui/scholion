@@ -145,7 +145,8 @@ impl Gate {
 /// and the list of what the second sessions will try to read: every route the first sessions
 /// and the bench tree offer, by the names the harness gives them.
 fn gate(agent: Option<AgentUser>, av_bin: Option<&Path>) -> Gate {
-    let closed = TempDir::new().unwrap(); // 0700, root's
+    let closed = TempDir::new().unwrap();
+    chmod(closed.path(), 0o700);
     let open = TempDir::new().unwrap();
     chmod(open.path(), 0o711);
 
