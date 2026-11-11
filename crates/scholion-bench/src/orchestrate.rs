@@ -240,10 +240,19 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "run".into())
         .to_lowercase();
-    check_noise_level(&args.out, &args.meta)?;
+    // from the configuration, not the caller: a result must not be labelled by hand
+    let meta = Meta {
+        agent_isolation: Some(
+            cfg.agent_user
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), |u| u.name.clone()),
+        ),
+        ..args.meta.clone()
+    };
+    check_noise_level(&args.out, &meta)?;
     std::fs::write(
         args.out.join("meta.json"),
-        serde_json::to_vec_pretty(&args.meta).expect("json"),
+        serde_json::to_vec_pretty(&meta).expect("json"),
     )
     .map_err(|e| e.to_string())?;
     let mut over_budget = false;
@@ -306,7 +315,7 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
         append_row(&rows_path, &row)?;
         rows.push(row);
     }
-    std::fs::write(args.out.join("report.md"), render_report(&rows, &args.meta))
+    std::fs::write(args.out.join("report.md"), render_report(&rows, &meta))
         .map_err(|e| e.to_string())?;
     Ok(RunReport {
         rows,

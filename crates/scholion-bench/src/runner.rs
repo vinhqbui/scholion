@@ -16,6 +16,7 @@ use scholion_agentrun::process::{run_with_timeout, shell};
 
 use crate::Result;
 use crate::events::{ParsedSession, ResultEvent, Usage};
+use crate::isolate::AgentUser;
 use crate::spec::{RelayNote, TaskSpec, git_in, resolve_rev};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -147,6 +148,12 @@ pub struct RunConfig {
     /// daemon reclaims its workspace; logs, events, `pack.md` and `outcome.json` stay. An
     /// invalid session keeps everything, for debugging.
     pub keep_work: bool,
+    /// Start the agent CLI as this user, which can read only its own working copy
+    /// (`run --agent-user`, see `isolate`). `None`: as this process's own user, as before.
+    pub agent_user: Option<AgentUser>,
+    /// The bench daemon's workspace root as this process sees it (`AV_WS_ROOT`). Only read with
+    /// `agent_user` and an av arm: the preflight looks at it before the first session.
+    pub av_ws_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

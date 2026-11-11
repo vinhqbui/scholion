@@ -252,6 +252,10 @@ fn run_as_starts_the_child_as_that_user_with_no_other_groups() {
         say("SKIPPED run_as: this host has no user `nobody`; the user switch was NOT tested");
         return;
     };
+    if me == uid {
+        say("SKIPPED run_as: the tests run as `nobody` itself; the user switch was NOT tested");
+        return;
+    }
     if me != 0 {
         let err = sh("id -u", dir.path()).run_as(uid, gid).run();
         assert!(err.is_err(), "only root may switch users: {err:?}");

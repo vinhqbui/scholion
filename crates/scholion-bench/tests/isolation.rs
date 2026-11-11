@@ -1,0 +1,559 @@
+//! The agent-isolation gate: `run --agent-user` starts the agent CLI as a user that can read only
+//! its own working copy. No model: a fake `claude` tries, as the second session of each arm,
+//! every file-system route an earlier paid cell leaked through, and writes what it could read
+//! into its own working copy.
+//!
+//! The isolated half needs root and the user `nobody`. Without them it does not run, and says so
+//! on stderr with a line the test harness does not capture.
+
+use std::io::Write as _;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+
+use crate::common::*;
+use crate::runner::{FAKE_AV, script};
+use scholion_bench::isolate::{AgentUser, harness_uid};
+use scholion_bench::orchestrate::{RunArgs, RunReport, run};
+use scholion_bench::report::{Meta, Status};
+use scholion_bench::runner::{Arm, RunConfig, Vendor};
+use scholion_bench::spec::{TaskSpec, load_spec};
+use tempfile::TempDir;
+
+/// A fake `claude` that behaves like an agent looking for the answer: it runs the hooks from
+/// `--settings`, fixes `calc.py`, then tries every path in `$FAKE_PROBES` (`kind|label|path`)
+/// and writes `label|READ` or `label|denied|<the error>` to `probe-report.txt` in its working
+/// copy. What the hooks printed and how they exited go to `$CLAUDE_CONFIG_DIR`, which is the
+/// session's own in every mode.
+const FAKE_AGENT: &str = r#"#!/bin/sh
+settings=""
+while [ $# -gt 0 ]; do
+  case "$1" in --settings) settings="$2"; shift;; esac
+  shift
+done
+out="$CLAUDE_CONFIG_DIR"
+id -u > "$out/fake-uid" || exit 6
+hook() {
+  python3 -c "import json,sys; h=json.load(open(sys.argv[1])).get('hooks',{}).get(sys.argv[2]); print(h[0]['hooks'][0]['command'] if h else '')" "$settings" "$1"
+}
+cmd=$(hook SessionStart) || exit 6
+if [ -n "$cmd" ]; then
+  echo "{\"source\":\"startup\",\"cwd\":\"$PWD\"}" | sh -c "$cmd" > "$out/hook-start.out" 2> "$out/hook-start.err"
+  echo $? > "$out/hook-start.rc"
+fi
+printf 'def add(a, b):\n    return a + b\n' > calc.py || exit 7
+cmd=$(hook PostToolUse)
+if [ -n "$cmd" ]; then
+  echo "{\"tool_input\":{\"file_path\":\"$PWD/calc.py\"}}" | sh -c "$cmd" > "$out/hook-edit.out" 2> "$out/hook-edit.err"
+  echo $? > "$out/hook-edit.rc"
+fi
+: > probe-report.txt || exit 7
+while IFS='|' read -r kind label path; do
+  case "$kind" in
+    read) if err=$(head -c 1 -- "$path" 2>&1 >/dev/null); then r=READ; else r="denied|$err"; fi;;
+    list) if err=$(ls -- "$path" 2>&1 >/dev/null); then r=READ; else r="denied|$err"; fi;;
+    *) r="denied|bad probe kind $kind";;
+  esac
+  printf '%s|%s\n' "$label" "$r" >> probe-report.txt
+done < "$FAKE_PROBES"
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\"}"
+echo "{\"type\":\"assistant\",\"message\":{\"id\":\"m1\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Edit\",\"input\":{\"file_path\":\"$PWD/calc.py\",\"old_string\":\"a - b\",\"new_string\":\"a + b\"}}],\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":50,\"output_tokens\":20}}}"
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"total_cost_usd\":0.25,\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":50,\"output_tokens\":20}}"
+"#;
+
+const RELAY_NOTES: &str = r#"
+[[note]]
+pair = "calc-add"
+kind = "attempt"
+path = "calc.py"
+symbol = "add"
+summary = "Swapping the operands of the subtraction does not fix add(): b - a is still a subtraction."
+body = "Tried it first; the sign flips but the sum is still wrong."
+"#;
+
+const TASK: &str = "calc-add";
+const RUN: &str = "gate";
+const ARMS: [Arm; 3] = [Arm::Cold, Arm::Notes, Arm::Av];
+
+/// Straight to stderr: the test harness captures `eprintln!` of a passing test, and whether the
+/// gate ran must be seen in a plain `cargo test`.
+fn say(line: &str) {
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+fn chmod(p: &Path, mode: u32) {
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// `nobody`, when this process is root and can start a process as that user; else why not.
+fn agent_user() -> Result<AgentUser, String> {
+    let me = harness_uid()?;
+    if me != 0 {
+        return Err(format!("not root (uid {me})"));
+    }
+    let user = AgentUser::resolve("nobody")?;
+    let switched = std::process::Command::new("true")
+        .uid(user.uid)
+        .gid(user.gid)
+        .status();
+    match switched {
+        Ok(s) if s.success() => Ok(user),
+        other => Err(format!("cannot start a process as nobody: {other:?}")),
+    }
+}
+
+struct Probe {
+    kind: &'static str,
+    label: String,
+    path: PathBuf,
+}
+
+struct Gate {
+    _dirs: Vec<TempDir>,
+    daemon: TestDaemon,
+    specs: Vec<TaskSpec>,
+    cfg: RunConfig,
+    out: PathBuf,
+    probes: Vec<Probe>,
+    probes_file: PathBuf,
+}
+
+impl Gate {
+    fn session_dir(&self, arm: Arm, rep: u32) -> PathBuf {
+        self.cfg
+            .work_root
+            .join("runs")
+            .join(RUN)
+            .join(format!("{TASK}-{}-r{rep}", arm.as_str()))
+    }
+
+    fn av_repo_dir(&self, rep: u32) -> PathBuf {
+        self.daemon.ws_root.join(format!("b{RUN}-{TASK}-av-{rep}"))
+    }
+
+    fn working_copy(&self, arm: Arm, rep: u32) -> PathBuf {
+        if arm.uses_av() {
+            self.av_repo_dir(rep).join(TASK)
+        } else {
+            self.session_dir(arm, rep).join("ws")
+        }
+    }
+}
+
+/// The bench tree and the source repo in a directory only root can enter (as an operator must
+/// keep them), the work root and the tools where the agent user can reach them, a real daemon,
+/// and the list of what the second sessions will try to read: every route the first sessions
+/// and the bench tree offer, by the names the harness gives them.
+fn gate(agent: Option<AgentUser>, av_bin: Option<&Path>) -> Gate {
+    let closed = TempDir::new().unwrap(); // 0700, root's
+    let open = TempDir::new().unwrap();
+    chmod(open.path(), 0o711);
+
+    let repo = closed.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let (base, fix) = fixture_repo(&repo);
+    let tasks = closed.path().join("tasks");
+    std::fs::create_dir_all(tasks.join("files")).unwrap();
+    std::fs::create_dir_all(tasks.join("reference")).unwrap();
+    std::fs::write(
+        tasks.join("files/test_local.py"),
+        "from calc import add\nassert add(-1, 1) == 0\nprint('local ok')\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tasks.join("reference/edits.py"),
+        "# the reference fix: return a + b\n",
+    )
+    .unwrap();
+    std::fs::write(tasks.join("notes.toml"), RELAY_NOTES).unwrap();
+    let spec_path = tasks.join("calc-task.toml");
+    let toml = spec_toml(&repo, &base, &fix)
+        .replace(
+            "verify_cmd = \"python3 test_calc.py\"",
+            "verify_cmd = \"python3 test_calc.py && python3 test_local.py\"",
+        )
+        .replace(
+            "setup_cmd = \"\"\n",
+            "setup_cmd = \"\"\nrelay_pool = \"notes.toml\"\nrelay_pair = \"calc-add\"\n",
+        )
+        + "\n[[local_tests]]\npath = \"test_local.py\"\nsource = \"files/test_local.py\"\n";
+    std::fs::write(&spec_path, toml).unwrap();
+    let spec = load_spec(&spec_path).unwrap();
+    assert_eq!(spec.local_tests.len(), 1);
+    assert_eq!(spec.relay_notes.len(), 1);
+
+    let tools = open.path().join("tools");
+    std::fs::create_dir(&tools).unwrap();
+    chmod(&tools, 0o755);
+    let claude = script(&tools, "claude", FAKE_AGENT);
+    let av = match av_bin {
+        Some(real) => {
+            let to = tools.join("av");
+            std::fs::copy(real, &to).unwrap();
+            chmod(&to, 0o755);
+            to
+        }
+        None => script(&tools, "av", FAKE_AV),
+    };
+
+    let daemon = start_daemon(None);
+    // the daemon's own directory: an operator opens it for traversal, never for listing
+    chmod(&daemon.ws_root, 0o711);
+
+    let work = open.path().join("work");
+    let cfg = RunConfig {
+        work_root: work.clone(),
+        claude_bin: claude.to_string_lossy().into(),
+        grok_bin: "grok".into(),
+        vendor: Vendor::Claude,
+        av_bin: av.to_string_lossy().into(),
+        av_url: Some(daemon.url.clone()),
+        av_token: None,
+        import_dir: work.join("src"),
+        import_mount: work.join("src").to_string_lossy().into(),
+        allowed_tools: vec!["Read".into(), "Edit".into()],
+        permission_mode: "acceptEdits".into(),
+        session_cap_usd: 1.0,
+        claude_home: None,
+        hook_budget: 800,
+        allow_no_semantic: true,
+        index_wait_secs: 60,
+        av_mcp: false,
+        hook_code: None,
+        hook_args: vec![],
+        jit_hooks: false,
+        prices: None,
+        // the worst case: every first session's copy is still on disk for the second
+        keep_work: true,
+        agent_user: agent,
+        av_ws_root: Some(daemon.ws_root.clone()),
+    };
+
+    let mut g = Gate {
+        _dirs: vec![closed, open],
+        daemon,
+        specs: vec![spec],
+        cfg,
+        out: work.join("results").join(RUN),
+        probes: vec![],
+        probes_file: tools.join("probes"),
+    };
+    let mut probes = vec![];
+    let mut add = |kind: &'static str, label: String, path: PathBuf| {
+        probes.push(Probe { kind, label, path });
+    };
+    add(
+        "read",
+        "bench tree: hidden test".into(),
+        tasks.join("files/test_local.py"),
+    );
+    add(
+        "read",
+        "bench tree: reference fix".into(),
+        tasks.join("reference/edits.py"),
+    );
+    add("read", "bench tree: task file".into(), spec_path.clone());
+    add(
+        "read",
+        "bench tree: relay pool".into(),
+        tasks.join("notes.toml"),
+    );
+    add("list", "bench tree: listing".into(), tasks.clone());
+    add(
+        "read",
+        "source repo: hidden test at the fix".into(),
+        repo.join("test_calc.py"),
+    );
+    add("list", "import dir: listing".into(), g.cfg.import_dir.clone());
+    add(
+        "read",
+        "import dir: av r1 source".into(),
+        g.cfg
+            .import_dir
+            .join(format!("b{RUN}-{TASK}-av-1"))
+            .join("calc.py"),
+    );
+    add("list", "runs root: listing".into(), work.join("runs"));
+    add("list", "run dir: listing".into(), work.join("runs").join(RUN));
+    add(
+        "list",
+        "daemon workspace root: listing".into(),
+        g.daemon.ws_root.clone(),
+    );
+    for arm in ARMS {
+        let a = arm.as_str();
+        let s = g.session_dir(arm, 1);
+        add("list", format!("{a} r1: session dir listing"), s.clone());
+        for f in [
+            "events.jsonl",
+            "claude.stderr",
+            "verify.log",
+            "outcome.json",
+            "settings.json",
+            "mcp.json",
+        ] {
+            add("read", format!("{a} r1: {f}"), s.join(f));
+        }
+        let wc = g.working_copy(arm, 1);
+        add("list", format!("{a} r1: working copy listing"), wc.clone());
+        add(
+            "read",
+            format!("{a} r1: working copy file"),
+            wc.join("calc.py"),
+        );
+        add(
+            "read",
+            format!("{a} r1: hidden test verify copied (fix_rev)"),
+            wc.join("test_calc.py"),
+        );
+        add(
+            "read",
+            format!("{a} r1: hidden test verify copied (local)"),
+            wc.join("test_local.py"),
+        );
+        match arm {
+            Arm::Notes => add("read", format!("{a} r1: NOTES.md"), wc.join("NOTES.md")),
+            Arm::Av => {
+                add("read", format!("{a} r1: pack.md"), s.join("pack.md"));
+                add("read", format!("{a} r1: hook-count"), s.join("hook-count"));
+                add(
+                    "list",
+                    format!("{a} r1: daemon repo dir listing"),
+                    g.av_repo_dir(1),
+                );
+            }
+            _ => {}
+        }
+    }
+    let list: String = probes
+        .iter()
+        .map(|p| format!("{}|{}|{}\n", p.kind, p.label, p.path.display()))
+        .collect();
+    std::fs::write(&g.probes_file, list).unwrap();
+    chmod(&g.probes_file, 0o644);
+    g.probes = probes;
+    g
+}
+
+/// Two sessions in a row per arm, through `orchestrate::run` as `scholion-bench run` does it.
+/// The caller holds `SERIAL`.
+fn two_reps(g: &Gate) -> scholion_bench::Result<RunReport> {
+    let args = RunArgs {
+        out: g.out.clone(),
+        arms: ARMS.to_vec(),
+        reps: 2,
+        budget_usd: 100.0,
+        seed: 1,
+        confirm: true,
+        dry_run: false,
+        est_session_usd: None,
+        pilot: None,
+        meta: Meta::default(),
+    };
+    // SAFETY: SERIAL is held.
+    unsafe { std::env::set_var("FAKE_PROBES", &g.probes_file) };
+    let r = run(&g.specs, &args, &g.cfg);
+    unsafe { std::env::remove_var("FAKE_PROBES") };
+    r
+}
+
+/// What a session's fake agent wrote into its working copy: (label, read, the error).
+fn probe_report(g: &Gate, arm: Arm, rep: u32) -> Vec<(String, bool, String)> {
+    let p = g.working_copy(arm, rep).join("probe-report.txt");
+    let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    text.lines()
+        .map(|l| {
+            let mut f = l.splitn(3, '|');
+            let label = f.next().unwrap().to_owned();
+            let read = f.next() == Some("READ");
+            (label, read, f.next().unwrap_or_default().to_owned())
+        })
+        .collect()
+}
+
+fn read(p: &Path) -> String {
+    std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+/// Every session ran as `uid`, edited its own working copy, and passed verify; the av sessions'
+/// hooks fired and the daemon saw the edit.
+fn assert_sessions_worked(g: &Gate, r: &RunReport, uid: u32) {
+    assert_eq!(r.exit_code, 0);
+    assert_eq!(r.rows.len(), 2 * ARMS.len(), "{:?}", r.rows);
+    for row in &r.rows {
+        assert_eq!(row.status, Status::Ok, "{row:?}");
+        assert!(row.success, "verify passed: {row:?}");
+    }
+    for arm in ARMS {
+        for rep in [1, 2] {
+            let s = g.session_dir(arm, rep);
+            let who = format!("{} r{rep}", arm.as_str());
+            assert_eq!(
+                read(&s.join("claude-config/fake-uid")).trim(),
+                uid.to_string(),
+                "{who}: the agent's uid"
+            );
+            let wc = g.working_copy(arm, rep);
+            assert_eq!(
+                read(&wc.join("calc.py")),
+                "def add(a, b):\n    return a + b\n",
+                "{who}: the agent edited its own working copy"
+            );
+            let outcome: serde_json::Value =
+                serde_json::from_str(&read(&s.join("outcome.json"))).unwrap();
+            assert_eq!(outcome["verify_exit"], 0, "{who}: {outcome}");
+            assert!(
+                read(&s.join("verify.log")).contains("local ok"),
+                "{who}: both hidden tests ran"
+            );
+            if !arm.uses_av() {
+                continue;
+            }
+            assert_eq!(
+                read(&s.join("hook-count")).lines().collect::<Vec<_>>(),
+                ["session-start", "post-edit"],
+                "{who}: both hooks fired"
+            );
+            for hook in ["hook-start", "hook-edit"] {
+                assert_eq!(
+                    read(&s.join(format!("claude-config/{hook}.rc"))).trim(),
+                    "0",
+                    "{who}: {hook}: {}",
+                    read(&s.join(format!("claude-config/{hook}.err")))
+                );
+            }
+            assert!(
+                read(&s.join("claude-config/hook-start.out")).contains("## Task"),
+                "{who}: the session-start hook printed a pack"
+            );
+            let tf: serde_json::Value = serde_json::from_str(&read(&wc.join(".av-task"))).unwrap();
+            let t: serde_json::Value = ureq::get(&format!(
+                "{}/v1/tasks/{}",
+                g.daemon.url,
+                tf["task"].as_str().unwrap()
+            ))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+            assert!(
+                t["changed"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p == "calc.py"),
+                "{who}: the daemon snapshotted the agent's edit: {t}"
+            );
+        }
+    }
+}
+
+/// The gate. Control first: without `--agent-user` the same fake agent reads every path, so the
+/// probes are real paths and a leak is detected. Then with `--agent-user nobody`: every attempt
+/// fails with a permission error, and every session still works.
+#[test]
+fn a_session_cannot_read_the_grading_files_or_an_earlier_session() {
+    let _g = serial();
+    let me = harness_uid().unwrap();
+
+    let g = gate(None, None);
+    let r = two_reps(&g).unwrap();
+    assert_sessions_worked(&g, &r, me);
+    let mut control_read = 0;
+    for arm in ARMS {
+        let report = probe_report(&g, arm, 2);
+        assert_eq!(report.len(), g.probes.len());
+        for (label, read, err) in &report {
+            assert!(
+                read,
+                "control, {} r2: `{label}` must be readable without --agent-user, or the gate \
+                 proves nothing about it: {err}",
+                arm.as_str()
+            );
+        }
+        control_read += report.len();
+    }
+    let meta = read(&g.out.join("meta.json"));
+    assert!(meta.contains(r#""agent_isolation": "none""#), "{meta}");
+    assert!(read(&g.out.join("report.md")).contains(" · agent isolation: none · "));
+    say(&format!(
+        "agent-isolation gate: control (no --agent-user, agent uid {me}): the second sessions \
+         read {control_read} of {control_read} probed paths ({} paths x {} arms)",
+        g.probes.len(),
+        ARMS.len()
+    ));
+    drop(g);
+
+    let user = match agent_user() {
+        Ok(u) => u,
+        Err(why) => {
+            say(&format!(
+                "agent-isolation gate: SKIPPED, {why}. The isolated half did NOT run: nothing \
+                 here shows that --agent-user closes a route. Run the tests as root on a host \
+                 with the user `nobody`."
+            ));
+            return;
+        }
+    };
+    let g = gate(Some(user.clone()), None);
+    let r = two_reps(&g).unwrap();
+    let mut leaked = vec![];
+    let mut tried = 0;
+    for arm in ARMS {
+        let report = probe_report(&g, arm, 2);
+        assert_eq!(report.len(), g.probes.len(), "every route was tried");
+        for (label, read, err) in report {
+            tried += 1;
+            if read {
+                leaked.push(format!("{} r2 read `{label}`", arm.as_str()));
+            } else {
+                assert!(
+                    err.contains("Permission denied"),
+                    "{} r2: `{label}` failed for another reason than permissions: {err}",
+                    arm.as_str()
+                );
+            }
+        }
+    }
+    assert!(
+        leaked.is_empty(),
+        "{} of {tried} attempts succeeded as user {}:\n{}",
+        leaked.len(),
+        user.name,
+        leaked.join("\n")
+    );
+    assert_sessions_worked(&g, &r, user.uid);
+    // the failures were refusals, not missing files: root still finds every path
+    for p in &g.probes {
+        assert!(p.path.exists(), "`{}`: {}", p.label, p.path.display());
+    }
+    // what the sessions left is root's alone
+    for arm in ARMS {
+        for rep in [1, 2] {
+            for dir in [g.session_dir(arm, rep), g.working_copy(arm, rep)] {
+                let m = std::fs::metadata(&dir).unwrap();
+                assert_eq!(
+                    (m.uid(), m.mode() & 0o077),
+                    (0, 0),
+                    "{} is root's and closed to others",
+                    dir.display()
+                );
+            }
+        }
+    }
+    let meta = read(&g.out.join("meta.json"));
+    assert!(meta.contains(r#""agent_isolation": "nobody""#), "{meta}");
+    assert!(read(&g.out.join("report.md")).contains(" · agent isolation: user nobody · "));
+    say(&format!(
+        "agent-isolation gate: RAN as root with --agent-user {} (uid {}): the second sessions \
+         read 0 of {tried} probed paths ({} paths x {} arms: cold, notes, av), each refused \
+         with a permission error; {} of {} sessions passed verify; the av hooks fired in both \
+         av sessions",
+        user.name,
+        user.uid,
+        g.probes.len(),
+        ARMS.len(),
+        r.rows.iter().filter(|row| row.success).count(),
+        r.rows.len()
+    ));
+}

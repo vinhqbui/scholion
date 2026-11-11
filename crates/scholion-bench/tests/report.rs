@@ -93,6 +93,7 @@ fn meta() -> Meta {
         hook_args: vec![],
         noise: None,
         noise_seed: None,
+        agent_isolation: None,
     }
 }
 
@@ -236,6 +237,8 @@ fn setup() -> Setup {
         jit_hooks: false,
         prices: None,
         keep_work: true,
+        agent_user: None,
+        av_ws_root: None,
     };
     let out = work.path().join("results");
     Setup {

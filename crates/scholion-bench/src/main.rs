@@ -6,6 +6,7 @@ use std::process::{Command, ExitCode, Stdio};
 use clap::{Args, Parser, Subcommand};
 use scholion_bench::calibrate::{Probe, cl100k_tokens, estimate_error, recommended_factor};
 use scholion_bench::events::parse_stream;
+use scholion_bench::isolate::AgentUser;
 use scholion_bench::mine::{MineArgs, mine};
 use scholion_bench::noise::{add_noise, anchors_at, generate};
 use scholion_bench::orchestrate::{RunArgs, run};
@@ -155,6 +156,17 @@ enum Cmd {
         /// Seed of the noise notes and of where they fall among the lessons.
         #[arg(long, default_value_t = 1)]
         noise_seed: u64,
+        /// Start the agent CLI as this user (Unix; the harness must run as root). The user gets
+        /// its own working copy and nothing else: not the bench tree, not the grading tests,
+        /// not earlier sessions. Before the first session the harness tries those paths as that
+        /// user and refuses to run if one can be read. Use a user nothing else runs as: its
+        /// processes are killed after every session. See bench/README.md, "Agent isolation".
+        #[arg(long)]
+        agent_user: Option<String>,
+        /// The bench daemon's workspace root as the harness sees it; needed with --agent-user
+        /// for the av arms.
+        #[arg(long, env = "AV_WS_ROOT")]
+        av_ws_root: Option<PathBuf>,
     },
     /// Print the noise notes `run --noise N` would add for a repo, as a relay pool (TOML), and
     /// how large they make `NOTES.md`. No daemon, no agent.
@@ -346,6 +358,8 @@ fn config(s: &SessionArgs) -> RunConfig {
         hook_code: s.hook_code.clone(),
         hook_args: s.hook_args.clone(),
         keep_work: s.keep_work,
+        agent_user: None,
+        av_ws_root: None,
     }
 }
 
@@ -382,6 +396,8 @@ fn meta(cfg: &RunConfig, specs: &[TaskSpec], seed: u64) -> Meta {
             .collect(),
         noise: None,
         noise_seed: None,
+        // `orchestrate::run` fills it in from the configuration
+        agent_isolation: None,
     }
 }
 
@@ -546,6 +562,8 @@ fn main() -> ExitCode {
             only,
             noise,
             noise_seed,
+            agent_user,
+            av_ws_root,
         } => (|| {
             let mut specs = load_tasks(&tasks)?;
             if !only.is_empty() {
@@ -561,7 +579,14 @@ fn main() -> ExitCode {
                 .iter()
                 .map(|a| Arm::parse(a))
                 .collect::<Result<Vec<_>, _>>()?;
-            let cfg = config(&session);
+            let cfg = RunConfig {
+                agent_user: agent_user
+                    .as_deref()
+                    .map(AgentUser::resolve)
+                    .transpose()?,
+                av_ws_root: av_ws_root.as_deref().map(expand),
+                ..config(&session)
+            };
             let args = RunArgs {
                 out: expand(&out),
                 arms,
