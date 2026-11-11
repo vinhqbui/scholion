@@ -215,8 +215,8 @@ one works it refuses to run and prints the paths. It also looks in the temp dire
 (`$TMPDIR`, `/tmp`, `/var/tmp`, `/dev/shm`; six levels deep, 200,000 entries at most) for files
 with the same bytes as a hidden test or a local test source, and refuses when that user can
 read one: a copy someone made while looking into a run is a leak like any other. It finds exact
-copies only. It also checks what a session needs: the run directory, the agent CLI, `av`, and
-each `path_prepend` directory.
+copies only, and prints a line when it stopped at the entry limit. It also checks what a
+session needs: the run directory, the agent CLI, `av`, and each `path_prepend` directory.
 
 What you set up:
 

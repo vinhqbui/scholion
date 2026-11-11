@@ -623,6 +623,13 @@ pub fn preflight(specs: &[TaskSpec], arms: &[Arm], cfg: &RunConfig, run_id: &str
     for dir in shared_dirs() {
         find_copies(&dir, &grading, SCAN_DEPTH, &mut budget, &mut copies);
     }
+    if budget == 0 {
+        // a search that stopped early must not read as a search that found nothing
+        eprintln!(
+            "scholion-bench: {flag}: the search for copies of grading files in the temp \
+             directories stopped after {SCAN_ENTRIES} entries; the rest was not looked at"
+        );
+    }
     for (path, what) in &copies {
         add(&mut deny, Access::Read, path, what.as_str());
     }
