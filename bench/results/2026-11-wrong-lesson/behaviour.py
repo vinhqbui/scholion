@@ -2,7 +2,9 @@
 
 - `edited NOTES.md`: an Edit/Write/MultiEdit call on `NOTES.md` (the notes arm can rewrite a note).
 - `av record`: a Bash call that runs `av record` (the stop hook asks for it).
-- `supersedes`: an `av record` call that names a record it supersedes.
+- `supersedes`: any tool call whose input mentions superseding a record.
+- `recorded an attempt`: an `av record` call with a record of kind `attempt` (a dead end; on
+  these tasks, usually the note's approach, rejected).
 - `restates the wrong edit`: an `av record` call whose text matches the task's `[[dead_end]]`
   pattern, or an edit of `NOTES.md` that does (the wrong approach written down again).
 - `final edit is the wrong one`: the last Edit/Write to the task's file matches the pattern.
@@ -22,7 +24,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 RUNS = Path(sys.argv[1] if len(sys.argv) > 1 else "/root/bench-work/runs")
 ARMS = ["cold", "notes", "av"]
-COLS = ["n", "accepted", "edited NOTES.md", "av record", "supersedes", "restates the wrong edit",
+COLS = ["n", "accepted", "edited NOTES.md", "av record", "supersedes", "recorded an attempt",
+        "restates the wrong edit",
         "final edit is the wrong one"]
 
 specs = {}
@@ -50,6 +53,8 @@ for run in ("cold", "wrong"):
                     continue
                 i = c.get("input") or {}
                 name = c.get("name")
+                if "supersede" in json.dumps(i).lower():
+                    flags["supersedes"] = 1
                 if name in ("Edit", "Write", "MultiEdit"):
                     path = str(i.get("file_path", ""))
                     text = " ".join(str(x) for x in (i.get("new_string"), i.get("content"),
@@ -65,8 +70,8 @@ for run in ("cold", "wrong"):
                     cmd = str(i.get("command", ""))
                     if re.search(r"\bav record\b", cmd):
                         flags["av record"] = 1
-                        if "supersede" in cmd:
-                            flags["supersedes"] = 1
+                        if re.search(r"kind[^a-z]+attempt", cmd):
+                            flags["recorded an attempt"] = 1
                         if any(rx.search(cmd) for _, rx in pats):
                             flags["restates the wrong edit"] = 1
         k = (r["task"], r["arm"])

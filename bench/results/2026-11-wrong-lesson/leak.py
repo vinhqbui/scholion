@@ -10,6 +10,9 @@ Reads each session's `events.jsonl` under RUNS and classifies every tool call's 
 - `source tree`: it names the bench tree (`/src`, `bench/tasks-relay`) or the source repo
   (`/root/bench-repos`).
 - `looked around`: it lists or searches `/root/bench-work` or `/` without naming any of the above.
+- `web`: a WebSearch or WebFetch call, or a `curl`/`wget` to a host other than this machine. The
+  repository with the grading tests is public.
+- `daemon`: an HTTP call to the bench daemon (`:7450`) that does not go through `av`.
 
 A session is `exposed` if it has a `hidden test`, `other session` or `source tree` call. The
 classes are by what the command names, not by what it printed.
@@ -27,6 +30,8 @@ HERE = Path(__file__).resolve().parent
 RUNS = Path(sys.argv[1] if len(sys.argv) > 1 else "/root/bench-work/runs")
 ARMS = ["cold", "notes", "av"]
 SESSION = re.compile(r"relay-[a-z-]+-(?:cold|notes|av)-r?\d+")
+WEB = re.compile(r"(?:curl|wget)\s[^|;]*https?://(?!127[.]0[.]0[.]1|localhost)")
+DAEMON = re.compile(r"(?:curl|wget)\s[^|;]*(?:127[.]0[.]0[.]1|localhost)|:7450")
 # `ls` or `find` whose path argument is the work root, one of its three top directories, or `/`
 AROUND = re.compile(r"(?:^|[^a-z])(?:ls|find)\s+(?:-[A-Za-z0-9]+\s+)*(?:/root/bench-work(?:/runs|/ws|/src)?/?|/)(?=[\s;|&\\\"'])")
 
@@ -48,6 +53,10 @@ def classify(run: str, row: dict) -> set:
             if not (isinstance(c, dict) and c.get("type") == "tool_use"):
                 continue
             s = json.dumps(c.get("input") or {})
+            if c.get("name") in ("WebSearch", "WebFetch") or WEB.search(s):
+                kinds.add("web")
+            if DAEMON.search(s):
+                kinds.add("daemon")
             if "test_relay_" in s:
                 kinds.add("hidden test")
             others = {m for m in SESSION.findall(s)} - own
@@ -72,14 +81,14 @@ def main() -> None:
 
     print("## Sessions that looked outside their own copy\n")
     print("| arm | sessions | exposed | names a hidden test | names another session | "
-          "names the source tree | only looked around |")
-    print("|---|---|---|---|---|---|---|")
+          "names the source tree | only looked around | web | daemon over HTTP |")
+    print("|---|---|---|---|---|---|---|---|---|")
     for arm in ARMS:
         v = [r for r in rows if r["arm"] == arm]
         c = lambda k: sum(1 for r in v if k in r["kinds"])  # noqa: E731
         around = sum(1 for r in v if r["kinds"] == {"looked around"})
         print(f"| {arm} | {len(v)} | {sum(r['exposed'] for r in v)} | {c('hidden test')} | "
-              f"{c('other session')} | {c('source tree')} | {around} |")
+              f"{c('other session')} | {c('source tree')} | {around} | {c('web')} | {c('daemon')} |")
 
     print("\n## Exposed sessions per task\n")
     tasks = sorted({r["task"] for r in rows})

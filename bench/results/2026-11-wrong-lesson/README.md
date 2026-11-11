@@ -10,17 +10,20 @@ labelled as such.
 - **By the pre-registered rule, neither arm is hurt, and the arms do not differ.** Accepted:
   `cold` 27 of 30, `notes` 30 of 30, `av` 24 of 30. `av` is above the lower end of `cold`'s
   interval, and the intervals of `notes` and `av` overlap.
-- **The rule hides the one effect that is there.** On one task of five, `relay-quote-split`, the
-  `av` arm failed 6 of 6 and both other arms passed 6 of 6. In every one of those six sessions
-  the agent took the approach the wrong record recommends, said the record was why, and stored
-  the same wrong decision again as a new record. In all six `notes` sessions the agent read the
-  same note, rejected it, and five of them rewrote the note.
-- **One task is contaminated.** On `relay-line-taxes`, 8 of 18 sessions looked outside their
-  working copy and read the grading test or another session's kept files. `--keep-work`, which
-  this run added, put those files there. That task's numbers say nothing about the note.
-- So this cell does not give a clean answer. It gives a specific, repeatable failure to test in a
-  cell with the leak closed, and a difference in how the two memory systems are used that was not
-  predicted: an agent corrects a notes file, and repeats a record.
+- **An observation the rule does not cover (post hoc, six sessions per arm, no claim).** On one
+  task of five, `relay-quote-split`, the `av` arm failed 6 of 6 and both other arms passed 6 of
+  6. In every one of those six `av` sessions the agent took the approach the wrong record
+  recommends, said the record was why, and stored the same wrong decision again as a new record.
+  In all six `notes` sessions the agent read the same note and rejected it, and five of them
+  rewrote the note.
+- **One task is contaminated.** On `relay-line-taxes`, 8 of 18 sessions read the grading test
+  from outside their working copy: 7 from an earlier session's kept copy, which `--keep-work`
+  (added for this run) left on disk, and 1 from the bench source tree in the container, a route
+  that does not need `--keep-work`. That task's numbers say nothing about the note.
+- So this cell does not give a clean answer. It gives one specific failure, seen in six of six
+  sessions on one task, to test in a cell with the leak closed, and a difference in how the two
+  memory systems were used that was not predicted: agents corrected the notes file and repeated
+  the record.
 
 ## Result by the pre-registered rule
 
@@ -62,7 +65,8 @@ contaminated one. In the aggregate the two cancel in part: `av` is 27 − 6 + 3 
 
 `relay-quote-split` asks for `Quote.split(parts)`. The right fix is `Money.allocate`, whose parts
 add up to the total. The wrong note says to use `total.times(Decimal(1) / n)` and not `allocate`.
-No session on this task looked outside its copy (`leak.md`), so this task is clean.
+No session on this task named a grading test, another session's files or the source tree
+(`leak.md`). One `notes` session listed the run directory and read nothing in it.
 
 - **`av`, 0 of 6.** All six sessions wrote `times(Decimal(1) / parts)`. Their closing messages
   say why, for example "per the recorded decision, this divides evenly rather than using
@@ -79,15 +83,28 @@ No session on this task looked outside its copy (`leak.md`), so this task is cle
   replace the wrong note.
 - **`cold`, 6 of 6**, as in E4 at scale.
 
-With 0 of 6 against 6 of 6 the difference on this task is not noise, but it is one task, one
-wording and one model, picked out after seeing the data. It is a finding to test, not a result.
+This is 0 of 6 against 6 of 6 on one task, with one wording and one model, picked out after
+seeing the data. The pre-registered rule makes no claim from six sessions, and none is made here:
+it is an observation to test, not a result.
 
 ### 2. On three tasks the wrong note changed nothing
 
 `relay-coupon-remove`, `relay-money-plain` and `relay-store-count`: 6 of 6 in every arm, and no
-session's last edit to the task's file is the wrong one. On these the code the agent reads
-contradicts the note. The note about `quote-split` is the one whose claim the code and the
-existing tests do not contradict.
+session's last edit to the task's file is the wrong one. What the `av` agents' messages say
+about the record (read after the run, found by a keyword search of each session's messages):
+
+- `relay-store-count`: 5 of 6 say the record is wrong and give the reason from the code:
+  `list_page` clamps to `max_page_size`, so the recommended `len(list_page(...))` undercounts.
+  One says it checked (250 records gave 100). Four wrote an `attempt` record.
+- `relay-money-plain`: 4 of 6 say the record is wrong because the currency table has JPY with 0
+  and KWD with 3 decimals. Two of them say their new record supersedes it.
+- `relay-coupon-remove`: 0 of 6 mention the record. Five say they normalize the code as `get`
+  does.
+
+So on the two tasks where agents explained themselves, the code they read contradicts the note.
+On `relay-quote-split` the six closing messages cite the record, the existing tests pass with the
+wrong code, and no message reports a check of whether the parts add up. That fits "the agent
+follows a record the code does not contradict", but one task of each kind cannot show it.
 
 ### 3. How the two memories were used
 
@@ -95,7 +112,8 @@ From `behaviour.md`, over the 30 sessions of each arm:
 
 | | `notes` | `av` |
 |---|---|---|
-| sessions that changed the stored note | 24 edited `NOTES.md` | 1 recorded with `supersedes` |
+| sessions that changed the stored note | 24 edited `NOTES.md` | 2 with a call that mentions superseding a record |
+| sessions that recorded an `attempt` (a rejected approach) | not applicable | 5 (4 on `relay-store-count`, 1 on `relay-line-taxes`) |
 | sessions that wrote a new record | not applicable | 30 (the stop hook asks for one) |
 | sessions whose new record or note text matches the wrong edit's pattern | 1 | 15 |
 
@@ -111,7 +129,9 @@ possible. The cell cannot say why. Candidates, none tested:
   with nothing that says who wrote it or whether it was checked. A note is a line in a file the
   agent opened itself.
 - A notes file can be edited in place, and agents did. A record can only be superseded by a new
-  one, which takes knowing the option exists; one session of thirty used it.
+  one, which takes knowing the option exists. Two sessions of thirty have a call that mentions
+  it (whether the store holds the link was not checked), and five recorded the rejected approach
+  as an `attempt` beside the wrong record, which stays as it was.
 - The pack shows the note's summary only. The `notes` arm also read the body.
 
 ### 4. One task is contaminated: agents read the grading test
@@ -120,18 +140,32 @@ While reading transcripts, one `av` session on `relay-line-taxes` said: "I found
 grading tests in the bench tree". `leak.py` then classified every tool call of all 90 sessions
 (`leak.md`):
 
-| arm | sessions | exposed | names a hidden test | names another session's files | names the source tree |
-|---|---|---|---|---|---|
-| `cold` | 30 | 1 | 1 | 1 | 1 |
-| `notes` | 30 | 3 | 3 | 2 | 1 |
-| `av` | 30 | 4 | 4 | 4 | 2 |
+| arm | sessions | exposed | names a hidden test | names another session's files | names the source tree | web | daemon over HTTP |
+|---|---|---|---|---|---|---|---|
+| `cold` | 30 | 1 | 1 | 1 | 1 | 1 | 0 |
+| `notes` | 30 | 3 | 3 | 2 | 1 | 0 | 0 |
+| `av` | 30 | 4 | 4 | 4 | 2 | 0 | 0 |
 
 - All 8 exposed sessions are on `relay-line-taxes`, the hardest task of the five, and all 8 were
   accepted. No session on another task is exposed.
+- **Where each of the 8 read the grading test** (from its calls):
+  - 7 from an earlier session's kept copy: `cold` r4 from `cold` r3's copy; `notes` r2 and r4
+    from earlier `notes` copies; `av` r1 from a `cold` copy; `av` r2 from a `notes` copy; `av` r5
+    and r6 from the kept workspace of `av` r2. These files were there because of `--keep-work`.
+  - 1 from the bench tree itself: `notes` r1, the first session of the `wrong` run on this task,
+    read `/src/bench/tasks-relay/files/test_relay_line_taxes.py` and
+    `/src/bench/tasks-relay/reference/edits.py`, the reference fix. This route does not need
+    `--keep-work`.
+- **Other routes.** The repository with the grading tests is public and the container's network
+  is open. One session (`cold` r4) ran a web search and a code-search query for the task's
+  function names; neither call names a test file, and it read the test from a kept copy. No
+  session called the bench daemon over HTTP. `av` subcommands other than `record` and `expand`
+  (`search`, `log`, `task`, `events`, `status`, `list`) were used by two `av` sessions, both
+  among the exposed ones; whether those answers showed another session's task was not checked.
 - **Cause.** Sessions run as root in the harness container, where the work root holds every
-  earlier session's directory and `/src` holds the bench tree with the grading tests. This run
-  added `--keep-work`, so each earlier session's copy stayed on disk with the grading test the
-  verify step had copied into it and with that session's solution.
+  earlier session's directory and `/src` holds the bench tree with the grading tests and the
+  reference fixes. `--keep-work` made it worse: each earlier session's copy stayed on disk with
+  the grading test the verify step had copied into it and with that session's solution.
 - **Effect.** `relay-line-taxes` rose from 3 of 6 in `cold` to 6 of 6 in both note arms. With 7
   of those 12 sessions exposed, that rise cannot be put down to the note. Among sessions that
   were not exposed the task reads `cold` 2 of 5, `notes` 3 of 3, `av` 2 of 2, which is too few to
@@ -145,7 +179,8 @@ container, sessions as root, the source clone with the grading tests on the same
 earlier sessions' event streams under the work root. That sweep did not keep working copies, and
 its volumes are gone, so its transcripts cannot be checked. Its `cold` arm had the same access
 and solved 3 of 15 on the decision tasks, so widespread use of the leak there is unlikely, but it
-is not excluded.
+is not excluded. The route through the bench tree, which one session here used, needs no kept
+copies.
 
 ## Secondary measures as registered
 
@@ -164,10 +199,15 @@ is not excluded.
 ## Deviations from the pre-registration
 
 - **The leak above.** The pre-registration says `--keep-work` "changes nothing a session sees".
-  That was wrong.
+  That was wrong. The pre-registration also did not name the bench tree in the container as
+  something a session can read.
 - The delivery check on the first session of each arm passed as written. The first `av` session's
   hook counts were session-start 1, pre-read 3, post-edit 1, stop 2.
-- `leak.py` and `behaviour.py` were written after the run. `analyze.py` was committed before it.
+- `leak.py` and `behaviour.py` were written after the run, and both were extended once more
+  after the first write-up (`leak.py`: the web and daemon classes; `behaviour.py`: superseding
+  counted in any call, and the `attempt` column). `analyze.py` was committed before the run.
+- The first write-up of this file called the `relay-quote-split` difference "not noise". That
+  was a claim about six sessions, which the rule forbids, and it was taken out.
 - No row was edited, dropped or re-run. `rows.jsonl`, `meta.json` and `report.md` are as the
   harness wrote them. `meta.json`'s `av_rev` reads `unknown`, as the pre-registration said it
   would; the build is the tree of commit `8121f29`.
@@ -217,16 +257,19 @@ Setup: `PREREG.md`, "Differences from the E4-at-scale setup". Session times: smo
 - `analysis.md` from `analyze.py`; `leak.md` from `leak.py`; `behaviour.md` from `behaviour.py`;
   `patterns.py`, the free check of the dead-end patterns.
 - The session directories (event streams, kept copies) are in the build container and are not
-  committed.
+  committed. An archive of all 93 is kept outside the repository.
 
 ## What to do next
 
 1. **Close the leak before any other paid cell.** Run the agent as a user that can read only its
-   own working copy, with the bench tree and earlier sessions out of reach, and check it with a
-   session whose task is to find the grading test.
+   own working copy, with the bench tree, the reference fixes and earlier sessions out of reach,
+   and without `--keep-work`. Check it without a model first: as the agent's user, reading a
+   grading test, listing another session's directory and querying the daemon for another task
+   must all fail. The public repository stays reachable over the network unless the container's
+   egress is limited to the model's API.
 2. **Run this cell again on the closed harness**, pre-registered, with the per-task comparison on
-   `relay-quote-split` named in advance and more tasks of its kind: a wrong note that the code
-   and the visible tests do not contradict.
+   `relay-quote-split` named in advance as the primary measure at 30 sessions per arm, and more
+   tasks of its kind: a wrong note that the code and the visible tests do not contradict.
 3. **Then test a change to how a record is presented**, not a new store feature: say in the pack
    that a record is an earlier agent's claim to check against the code, and tell the agent it can
    supersede one. The same cell measures it, and the true-lesson relay tasks check that it does
