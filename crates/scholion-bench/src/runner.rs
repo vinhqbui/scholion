@@ -834,8 +834,7 @@ pub fn run_session(
             // `av hook session-start` makes the task's scratch directory beside the workspace,
             // in a directory of the daemon's where the agent user cannot: made here for it
             let scratch = repo_dir.join(".scratch").join(slug);
-            std::fs::create_dir_all(&scratch)
-                .map_err(|e| format!("{}: {e}", scratch.display()))?;
+            std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
             lent.trees.push(scratch);
             isolate::set_mode(repo_dir, 0o711)?;
         }

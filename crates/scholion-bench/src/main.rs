@@ -580,10 +580,7 @@ fn main() -> ExitCode {
                 .map(|a| Arm::parse(a))
                 .collect::<Result<Vec<_>, _>>()?;
             let cfg = RunConfig {
-                agent_user: agent_user
-                    .as_deref()
-                    .map(AgentUser::resolve)
-                    .transpose()?,
+                agent_user: agent_user.as_deref().map(AgentUser::resolve).transpose()?,
                 av_ws_root: av_ws_root.as_deref().map(expand),
                 ..config(&session)
             };
@@ -850,6 +847,49 @@ mod tests {
     fn work_is_removed_unless_keep_work() {
         assert!(!run_config(&[]).keep_work);
         assert!(run_config(&["--keep-work"]).keep_work);
+    }
+
+    #[test]
+    fn the_agent_runs_as_the_harness_user_unless_agent_user_is_given() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "scholion-bench",
+                "run",
+                "t",
+                "--out",
+                "o",
+                "--budget-usd",
+                "1",
+            ];
+            args.extend_from_slice(extra);
+            match Cli::try_parse_from(args).unwrap().cmd {
+                Cmd::Run {
+                    agent_user,
+                    av_ws_root,
+                    ..
+                } => (agent_user, av_ws_root),
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!(parse(&[]).0, None);
+        assert!(run_config(&[]).agent_user.is_none());
+        let (user, ws_root) = parse(&["--agent-user", "nobody", "--av-ws-root", "/ws"]);
+        assert_eq!(user.as_deref(), Some("nobody"));
+        assert_eq!(ws_root, Some(PathBuf::from("/ws")));
+        // only `run` has the flag: `calibrate` shares the session options and must not
+        assert!(
+            Cli::try_parse_from([
+                "scholion-bench",
+                "calibrate",
+                "--packs",
+                "p",
+                "--budget-usd",
+                "1",
+                "--agent-user",
+                "nobody"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

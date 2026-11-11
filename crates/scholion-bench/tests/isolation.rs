@@ -277,7 +277,11 @@ fn gate(agent: Option<AgentUser>, av_bin: Option<&Path>) -> Gate {
         "source repo: hidden test at the fix".into(),
         repo.join("test_calc.py"),
     );
-    add("list", "import dir: listing".into(), g.cfg.import_dir.clone());
+    add(
+        "list",
+        "import dir: listing".into(),
+        g.cfg.import_dir.clone(),
+    );
     add(
         "read",
         "import dir: av r1 source".into(),
@@ -287,7 +291,11 @@ fn gate(agent: Option<AgentUser>, av_bin: Option<&Path>) -> Gate {
             .join("calc.py"),
     );
     add("list", "runs root: listing".into(), work.join("runs"));
-    add("list", "run dir: listing".into(), work.join("runs").join(RUN));
+    add(
+        "list",
+        "run dir: listing".into(),
+        work.join("runs").join(RUN),
+    );
     add(
         "list",
         "daemon workspace root: listing".into(),
@@ -733,7 +741,10 @@ fn the_preflight_says_when_the_agent_user_cannot_reach_the_work_root() {
             && err.contains("/root"),
         "{err}"
     );
-    assert!(!g.out.join("rows.jsonl").exists());
+    assert!(
+        !g.cfg.work_root.exists(),
+        "nothing is made under a work root that is then refused"
+    );
 }
 
 #[test]

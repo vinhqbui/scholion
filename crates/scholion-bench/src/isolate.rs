@@ -282,8 +282,14 @@ impl AgentUser {
             .stderr(Stdio::null());
         if !path.is_empty() {
             let inherited = std::env::var_os("PATH").unwrap_or_default();
-            let dirs = path.iter().cloned().chain(std::env::split_paths(&inherited));
-            cmd.env("PATH", std::env::join_paths(dirs).map_err(|e| e.to_string())?);
+            let dirs = path
+                .iter()
+                .cloned()
+                .chain(std::env::split_paths(&inherited));
+            cmd.env(
+                "PATH",
+                std::env::join_paths(dirs).map_err(|e| e.to_string())?,
+            );
         }
         let mut child = cmd
             .spawn()
@@ -302,7 +308,12 @@ impl AgentUser {
         }
         let mut worked = vec![false; probes.len()];
         for n in String::from_utf8_lossy(&out.stdout).lines() {
-            if let Some(slot) = n.trim().parse::<usize>().ok().and_then(|i| worked.get_mut(i)) {
+            if let Some(slot) = n
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| worked.get_mut(i))
+            {
                 *slot = true;
             }
         }
@@ -399,6 +410,26 @@ pub fn preflight(specs: &[TaskSpec], arms: &[Arm], cfg: &RunConfig, run_id: &str
     let work_root = absolute(&cfg.work_root)?;
     let runs = work_root.join("runs");
     let run_dir = runs.join(run_id);
+    // Can the user get there at all? Asked of the directories that exist, before anything is
+    // made or changed under the work root.
+    let mut way: Vec<Check> = vec![];
+    let mut up: Vec<&Path> = run_dir.ancestors().filter(|d| d.is_dir()).collect();
+    up.reverse();
+    for dir in up {
+        add(&mut way, Access::Enter, dir, "");
+    }
+    if let Some(at) = failing(user, &way, &[], true)?.first() {
+        let mode = std::fs::metadata(&at.path).map_or(0, |m| m.mode() & 0o7777);
+        return Err(format!(
+            "{flag}: user {} cannot reach the work root {}: it may not enter {} (mode {mode:o}). \
+             A work root under a directory closed to other users, such as /root, cannot be used \
+             with --agent-user. Pass a --work-root (and --import-dir) that user can enter; the \
+             existing one is not moved or changed.",
+            user.name,
+            work_root.display(),
+            at.path.display()
+        ));
+    }
     std::fs::create_dir_all(&run_dir).map_err(|e| io_err(&run_dir, e))?;
     for d in [&runs, &run_dir] {
         set_mode(d, 0o711)?;
@@ -434,45 +465,25 @@ pub fn preflight(specs: &[TaskSpec], arms: &[Arm], cfg: &RunConfig, run_id: &str
     add(&mut need, Access::Execute, Path::new(cli), "the agent CLI");
     if av {
         let av_bin = Path::new(&cfg.av_bin);
-        add(&mut need, Access::Execute, av_bin, "the av CLI the hooks run");
+        add(
+            &mut need,
+            Access::Execute,
+            av_bin,
+            "the av CLI the hooks run",
+        );
     }
     if let Some(root) = &ws_root {
-        add(&mut need, Access::Enter, root, "the daemon's workspace root");
+        add(
+            &mut need,
+            Access::Enter,
+            root,
+            "the daemon's workspace root",
+        );
     }
     for dir in path.iter().filter(|d| d.is_dir()) {
         add(&mut need, Access::Enter, dir, "a path_prepend directory");
     }
     let missing = failing(user, &need, &path, true)?;
-    if missing.iter().any(|c| c.path == run_dir) {
-        // which directory on the way stops it
-        let mut way: Vec<Check> = vec![];
-        let mut up: Vec<&Path> = run_dir.ancestors().collect();
-        up.reverse();
-        for dir in up {
-            add(&mut way, Access::Enter, dir, "");
-        }
-        let blocked = failing(user, &way, &[], true)?;
-        let at = blocked.first().map_or(run_dir.as_path(), |c| &c.path);
-        let mode = std::fs::metadata(at).map_or(0, |m| m.mode() & 0o7777);
-        return Err(format!(
-            "{flag}: user {} cannot reach the work root {}: it may not enter {} (mode {mode:o}). \
-             A work root under a directory closed to other users, such as /root, cannot be used \
-             with --agent-user. Pass a --work-root (and --import-dir) that user can enter; the \
-             existing one is not moved.",
-            user.name,
-            work_root.display(),
-            at.display()
-        ));
-    }
-    if !missing.is_empty() {
-        let lines: Vec<String> = missing.iter().map(|c| c.line()).collect();
-        return Err(format!(
-            "{flag}: user {} (uid {}) cannot do what a session needs:\n{}",
-            user.name,
-            user.uid,
-            lines.join("\n")
-        ));
-    }
 
     // what a session must not reach
     let mut deny = vec![];
@@ -488,7 +499,12 @@ pub fn preflight(specs: &[TaskSpec], arms: &[Arm], cfg: &RunConfig, run_id: &str
         }
         if let Some(pool) = &s.relay_pool {
             let pool = absolute(&s.spec_dir.join(pool))?;
-            add(&mut deny, Access::Read, &pool, "the relay notes of every arm");
+            add(
+                &mut deny,
+                Access::Read,
+                &pool,
+                "the relay notes of every arm",
+            );
         }
         let repo = absolute(&s.repo_path)?;
         let what = format!("the source repo of {}, which holds the fix", s.name);
@@ -511,25 +527,89 @@ pub fn preflight(specs: &[TaskSpec], arms: &[Arm], cfg: &RunConfig, run_id: &str
     if let Some(root) = &ws_root {
         add(&mut deny, Access::List, root, "the daemon's workspace root");
         for repo in entries(root) {
-            add(&mut deny, Access::Enter, &repo, "workspaces the daemon kept");
+            add(
+                &mut deny,
+                Access::Enter,
+                &repo,
+                "workspaces the daemon kept",
+            );
         }
     }
     let open = failing(user, &deny, &[], false)?;
+    if open.is_empty() && missing.is_empty() {
+        return Ok(());
+    }
+    // everything at once, so one look at the message is enough to fix the set-up
+    let who = format!("user {} (uid {})", user.name, user.uid);
+    let mut msg = format!("{flag}: refusing to run.");
     if !open.is_empty() {
         let shown: Vec<String> = open.iter().take(40).map(|c| c.line()).collect();
         let more = match open.len() - shown.len() {
             0 => String::new(),
             n => format!("\n  and {n} more"),
         };
-        return Err(format!(
-            "{flag}: refusing to run. As user {} (uid {}) a session could:\n{}{more}\nClose each \
-             of them to that user and run again. For a directory only the harness needs, \
-             `chmod 700` on it (or on the top of a mounted bench tree) is enough: root still \
-             reads it. The daemon's workspace root needs `chmod 711`.",
-            user.name,
-            user.uid,
+        msg.push_str(&format!(
+            "\nAs {who} a session could:\n{}{more}\nClose each of them to that user. For a \
+             directory only the harness needs, `chmod 700` on it (or on the top of a mounted \
+             bench tree) is enough: root still reads it. The daemon's workspace root needs \
+             `chmod 711`.",
             shown.join("\n")
         ));
     }
-    Ok(())
+    if !missing.is_empty() {
+        let lines: Vec<String> = missing.iter().map(|c| c.line()).collect();
+        msg.push_str(&format!(
+            "\nAs {who} a session could not, and must:\n{}\nPut what the sessions run (the \
+             agent CLI, av, the tasks' path_prepend directories) where that user can reach it.",
+            lines.join("\n")
+        ));
+    }
+    Err(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_and_unknown_users_are_refused_as_the_agent_user() {
+        let err = AgentUser::resolve("root").unwrap_err();
+        assert!(err.contains("is root"), "{err}");
+        let err = AgentUser::resolve("no-such-user-here").unwrap_err();
+        assert!(err.contains("no such user"), "{err}");
+    }
+
+    #[test]
+    fn a_hidden_test_never_goes_through_a_link_or_into_a_file_the_agent_left() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(ws.join("real")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("kept"), "agent's").unwrap();
+        // a directory on the way is a link out of the working copy
+        std::os::unix::fs::symlink(&elsewhere, ws.join("tests")).unwrap();
+        let dest = fresh_dest(&ws, "tests/test_a.py").unwrap();
+        assert_eq!(dest, ws.join("tests/test_a.py"));
+        assert!(std::fs::symlink_metadata(ws.join("tests")).is_err());
+        // the file itself is a link, or a file the agent made
+        std::os::unix::fs::symlink(elsewhere.join("kept"), ws.join("real/test_b.py")).unwrap();
+        std::fs::write(ws.join("real/test_c.py"), "agent's").unwrap();
+        for f in ["real/test_b.py", "real/test_c.py"] {
+            let dest = fresh_dest(&ws, f).unwrap();
+            assert_eq!(dest, ws.join(f));
+            assert!(std::fs::symlink_metadata(&dest).is_err(), "{f} is gone");
+        }
+        assert_eq!(
+            std::fs::read_to_string(elsewhere.join("kept")).unwrap(),
+            "agent's",
+            "what the links pointed at is untouched"
+        );
+        // a path that is free is just the path
+        assert_eq!(
+            fresh_dest(&ws, "new/dir/test_d.py").unwrap(),
+            ws.join("new/dir/test_d.py")
+        );
+        assert!(fresh_dest(&ws, "real").is_err(), "a directory in the way");
+    }
 }
