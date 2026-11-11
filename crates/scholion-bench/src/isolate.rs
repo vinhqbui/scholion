@@ -368,6 +368,85 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
+/// How far down a shared directory the preflight looks for copies of grading files, and how
+/// many entries it looks at in all.
+const SCAN_DEPTH: usize = 6;
+const SCAN_ENTRIES: usize = 200_000;
+
+/// Directories every user can write and read (the temp dirs), where an earlier session, or a
+/// person looking into one, may have left a copy of a grading file.
+fn shared_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = vec![];
+    for d in [
+        std::env::temp_dir(),
+        "/tmp".into(),
+        "/var/tmp".into(),
+        "/dev/shm".into(),
+    ] {
+        if let Ok(d) = d.canonicalize()
+            && d.is_dir()
+            && !dirs.contains(&d)
+        {
+            dirs.push(d);
+        }
+    }
+    dirs
+}
+
+/// The files a session must never see, with their bytes: each task's hidden tests (the ones
+/// taken from `fix_rev` and the ones written for the benchmark).
+fn grading_files(specs: &[TaskSpec]) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut files = vec![];
+    for s in specs {
+        let what = format!("a copy of a hidden test of {}", s.name);
+        if let Some(fix) = s.fix_rev.as_deref() {
+            for f in &s.hidden_tests {
+                let rev = format!("{fix}:{f}");
+                let bytes = crate::spec::git_in(&s.repo_path, &["show", "--end-of-options", &rev])?;
+                files.push((what.clone(), bytes));
+            }
+        }
+        for t in &s.local_tests {
+            let src = s.spec_dir.join(&t.source);
+            let bytes = std::fs::read(&src).map_err(|e| io_err(&src, e))?;
+            files.push((what.clone(), bytes));
+        }
+    }
+    files.retain(|(_, bytes)| !bytes.is_empty());
+    Ok(files)
+}
+
+/// Adds to `found` every regular file under `dir` whose bytes are exactly those of a grading
+/// file, whatever its name. Symlinks are not followed.
+fn find_copies(
+    dir: &Path,
+    grading: &[(String, Vec<u8>)],
+    depth: usize,
+    budget: &mut usize,
+    found: &mut Vec<(PathBuf, String)>,
+) {
+    for path in entries(dir) {
+        if *budget == 0 {
+            return;
+        }
+        *budget -= 1;
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            if depth > 1 {
+                find_copies(&path, grading, depth - 1, budget, found);
+            }
+        } else if meta.is_file()
+            && grading.iter().any(|(_, b)| b.len() as u64 == meta.len())
+            && let Ok(bytes) = std::fs::read(&path)
+            && let Some((what, _)) = grading.iter().find(|(_, b)| *b == bytes)
+        {
+            found.push((path, what.clone()));
+        }
+    }
+}
+
 /// The checks the agent user did not get the `want`ed answer on.
 fn failing<'a>(
     user: &AgentUser,
@@ -534,6 +613,18 @@ pub fn preflight(specs: &[TaskSpec], arms: &[Arm], cfg: &RunConfig, run_id: &str
                 "workspaces the daemon kept",
             );
         }
+    }
+    // A copy of a grading file where every user reads: a session of an earlier, open run (or
+    // someone looking into it) may have left one in a temp dir, and no permission of the
+    // harness's own directories covers that.
+    let grading = grading_files(specs)?;
+    let mut copies = vec![];
+    let mut budget = SCAN_ENTRIES;
+    for dir in shared_dirs() {
+        find_copies(&dir, &grading, SCAN_DEPTH, &mut budget, &mut copies);
+    }
+    for (path, what) in &copies {
+        add(&mut deny, Access::Read, path, what.as_str());
     }
     let open = failing(user, &deny, &[], false)?;
     if open.is_empty() && missing.is_empty() {

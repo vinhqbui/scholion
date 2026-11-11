@@ -162,13 +162,26 @@ fn gate(agent: Option<AgentUser>, av_bin: Option<&Path>) -> Gate {
 
     let repo = closed.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
-    let (base, fix) = fixture_repo(&repo);
+    let (base, _) = fixture_repo(&repo);
+    // This fixture's hidden tests are its own, byte for byte: the preflight looks under the temp
+    // dir for copies of them, and other tests keep working copies of the shared fixture there.
+    let nonce = uuid::Uuid::new_v4();
+    std::fs::write(
+        repo.join("test_calc.py"),
+        format!("from calc import add\nassert add(2, 3) == 5\nprint('ok')  # {nonce}\n"),
+    )
+    .unwrap();
+    git(
+        &repo,
+        &["commit", "-q", "-am", "the hidden test of this fixture"],
+    );
+    let fix = git(&repo, &["rev-parse", "HEAD"]);
     let tasks = closed.path().join("tasks");
     std::fs::create_dir_all(tasks.join("files")).unwrap();
     std::fs::create_dir_all(tasks.join("reference")).unwrap();
     std::fs::write(
         tasks.join("files/test_local.py"),
-        "from calc import add\nassert add(-1, 1) == 0\nprint('local ok')\n",
+        format!("from calc import add\nassert add(-1, 1) == 0\nprint('local ok')  # {nonce}\n"),
     )
     .unwrap();
     std::fs::write(
@@ -576,16 +589,28 @@ fn a_session_cannot_read_the_grading_files_or_an_earlier_session() {
             );
         }
     }
-    // what the sessions left is root's alone
+    // what the sessions left is root's alone: the directories, and the transcript by itself
     for arm in ARMS {
         for rep in [1, 2] {
-            for dir in [g.session_dir(arm, rep), g.working_copy(arm, rep)] {
-                let m = std::fs::metadata(&dir).unwrap();
+            let s = g.session_dir(arm, rep);
+            let mut mine = vec![
+                s.clone(),
+                g.working_copy(arm, rep),
+                s.join("events.jsonl"),
+                s.join("claude.stderr"),
+                s.join("home"),
+                s.join("claude-config"),
+            ];
+            if arm.uses_av() {
+                mine.extend([s.join("pack.md"), g.av_repo_dir(rep)]);
+            }
+            for path in mine {
+                let m = std::fs::metadata(&path).unwrap();
                 assert_eq!(
                     (m.uid(), m.mode() & 0o077),
                     (0, 0),
                     "{} is root's and closed to others",
-                    dir.display()
+                    path.display()
                 );
             }
         }
@@ -785,6 +810,39 @@ fn the_preflight_refuses_workspaces_and_sessions_left_open_to_the_agent_user() {
     // and the git arms do not need it
     for d in [&earlier, &session] {
         chmod(d, 0o700);
+    }
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+}
+
+/// A grading file copied to where every user reads (a temp dir) is found by its bytes, whatever
+/// it is called there. An open run leaves such copies behind: the harness container that leaked
+/// had the hidden test of one task in `/tmp`.
+#[test]
+fn the_preflight_refuses_a_copy_of_a_hidden_test_in_a_shared_directory() {
+    let _g = serial();
+    let Some(g) = isolated_gate("preflight, a hidden test copied to a temp dir") else {
+        return;
+    };
+    // the tools directory is under the temp dir and open to the agent user
+    let tools = g.open.join("tools");
+    let from_fix = tools.join("test_calc.py");
+    let renamed = tools.join("notes-to-self.txt");
+    std::fs::copy(g.closed.join("repo/test_calc.py"), &from_fix).unwrap();
+    std::fs::copy(g.closed.join("tasks/files/test_local.py"), &renamed).unwrap();
+    for f in [&from_fix, &renamed] {
+        chmod(f, 0o644);
+    }
+    let err = two_reps(&g).err().expect("the run must be refused");
+    for f in [&from_fix, &renamed] {
+        let line = format!("read {} (a copy of a hidden test of calc-add)", f.display());
+        assert!(err.contains(&line), "`{line}` is named in: {err}");
+    }
+    assert_nothing_launched(&g);
+
+    // closed to that user, they are no route
+    for f in [&from_fix, &renamed] {
+        chmod(f, 0o600);
     }
     let r = sessions(&g, &[Arm::Cold], 1).unwrap();
     assert!(r.rows[0].success, "{:?}", r.rows);

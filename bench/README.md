@@ -211,8 +211,12 @@ harness's user.
 task directory (enter, list), each hidden test source and relay pool (read), each source repo
 (enter), the import dir (enter), the runs root and the run's directory (list), every other
 entry in them (enter), and the daemon's workspace root (list) and every entry in it (enter). If
-one works it refuses to run and prints the paths. It also checks what a session needs: the run
-directory, the agent CLI, `av`, and each `path_prepend` directory.
+one works it refuses to run and prints the paths. It also looks in the temp directories
+(`$TMPDIR`, `/tmp`, `/var/tmp`, `/dev/shm`; six levels deep, 200,000 entries at most) for files
+with the same bytes as a hidden test or a local test source, and refuses when that user can
+read one: a copy someone made while looking into a run is a leak like any other. It finds exact
+copies only. It also checks what a session needs: the run directory, the agent CLI, `av`, and
+each `path_prepend` directory.
 
 What you set up:
 
@@ -242,8 +246,11 @@ results directory holds one setting. Results from before the option have no valu
 - **The network.** The repository the tasks come from may be public, and nothing limits the
   container's egress to the model's API.
 - **Directories every user can write** (`/tmp`, `/dev/shm`, a shared `CARGO_HOME`). One user
-  serves all sessions, so a session can leave its own work there for a later one. Grading
-  files never get there by themselves.
+  serves all sessions, so a session can leave its own work there for a later one. The harness
+  puts no grading file there, and the preflight refuses an exact copy it finds in the temp
+  directories; an edited copy, or one somewhere else, it does not find.
+- **Vendors other than Claude Code.** `--vendor grok` keeps its login in the harness user's
+  home, which the agent user cannot read; the option is untested with it.
 - **`verify_cmd` runs what the agent wrote, as the harness's user.** A session that plants code
   the tests import runs it as root at verify time.
 - The agent inherits the harness's environment (API keys, `AV_TOKEN`), as before.
