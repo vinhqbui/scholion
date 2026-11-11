@@ -17,13 +17,15 @@ labelled as such.
   In all six `notes` sessions the agent read the same note and rejected it, and five of them
   rewrote the note.
 - **One task is contaminated.** On `relay-line-taxes`, 8 of 18 sessions read the grading test
-  from outside their working copy: 7 from an earlier session's kept copy, which `--keep-work`
-  (added for this run) left on disk, and 1 from the bench source tree in the container, a route
-  that does not need `--keep-work`. That task's numbers say nothing about the note.
+  from outside their working copy: 5 from an earlier session's kept copy, which `--keep-work`
+  (added for this run) left on disk; 2 from an earlier `av` session's workspace, which the
+  daemon keeps for an hour with or without `--keep-work`; and 1 from the bench source tree in
+  the container. The last two routes do not need `--keep-work`. That task's numbers say nothing
+  about the note.
 - So this cell does not give a clean answer. It gives one specific failure, seen in six of six
-  sessions on one task, to test in a cell with the leak closed, and a difference in how the two
-  memory systems were used that was not predicted: agents corrected the notes file and repeated
-  the record.
+  sessions on one task, to test in a cell with the leak closed, and on that task a difference in
+  how the two memory systems were used that was not predicted: the `notes` agents corrected the
+  file and the `av` agents repeated the record.
 
 ## Result by the pre-registered rule
 
@@ -44,7 +46,7 @@ The Wilson intervals are computed by `analyze.py` with the formula of
   work is not justified by solved tasks on this result.
 
 Thirty sessions per arm cannot show a small effect, and six repetitions of five tasks are not
-thirty independent tasks. The next section is why the aggregate is the wrong place to look.
+thirty independent tasks. The next section shows what the aggregate is made of.
 
 ## Accepted per task
 
@@ -122,8 +124,8 @@ endorse the approach. For the other tasks a record may name the approach in orde
 those were not read one by one.
 
 This was not predicted. `DESIGN.md` expected the `notes` arm to be the more obedient one, since
-its `CLAUDE.md` says to follow the notes. The reverse happened on the one task where obeying was
-possible. The cell cannot say why. Candidates, none tested:
+its `CLAUDE.md` says to follow the notes. On `relay-quote-split` the reverse happened. The cell
+cannot say why. Candidates, none tested:
 
 - A record arrives in the session-start hook's output under the heading "Decisions & dead ends"
   with nothing that says who wrote it or whether it was checked. A note is a line in a file the
@@ -149,23 +151,32 @@ grading tests in the bench tree". `leak.py` then classified every tool call of a
 - All 8 exposed sessions are on `relay-line-taxes`, the hardest task of the five, and all 8 were
   accepted. No session on another task is exposed.
 - **Where each of the 8 read the grading test** (from its calls):
-  - 7 from an earlier session's kept copy: `cold` r4 from `cold` r3's copy; `notes` r2 and r4
-    from earlier `notes` copies; `av` r1 from a `cold` copy; `av` r2 from a `notes` copy; `av` r5
-    and r6 from the kept workspace of `av` r2. These files were there because of `--keep-work`.
+  - 5 from an earlier session's kept copy under `runs/`: `cold` r4 from `cold` r3's copy; `notes`
+    r2 and r4 from earlier `notes` copies; `av` r1 from a `cold` copy; `av` r2 from a `notes`
+    copy. These copies were there because of `--keep-work`.
+  - 2 from an earlier `av` session's workspace under the daemon's workspace root: `av` r5 and r6
+    read it in the workspace of `av` r2. This route does not need `--keep-work`: without the
+    flag the harness abandons the task and the daemon removes the workspace after its retention
+    time, which was the default of one hour here, and the whole `wrong` run took 49 minutes. The
+    grading test is in that workspace because the verify step copies it there.
   - 1 from the bench tree itself: `notes` r1, the first session of the `wrong` run on this task,
     read `/src/bench/tasks-relay/files/test_relay_line_taxes.py` and
     `/src/bench/tasks-relay/reference/edits.py`, the reference fix. This route does not need
-    `--keep-work`.
+    `--keep-work` either.
 - **Other routes.** The repository with the grading tests is public and the container's network
   is open. One session (`cold` r4) ran a web search and a code-search query for the task's
   function names; neither call names a test file, and it read the test from a kept copy. No
   session called the bench daemon over HTTP. `av` subcommands other than `record` and `expand`
-  (`search`, `log`, `task`, `events`, `status`, `list`) were used by two `av` sessions, both
-  among the exposed ones; whether those answers showed another session's task was not checked.
+  (`search`, `log`, `task`, `events`, `status`) were used by two `av` sessions, both among the
+  exposed ones. Their answers, read in the event streams, show only the session's own repository:
+  its own intent, the seeded records and the base history. Each `av` session has a repository of
+  its own on the daemon, but the daemon is one process with no per-session access, so a session
+  that asked for another repository by name would get it. None did.
 - **Cause.** Sessions run as root in the harness container, where the work root holds every
-  earlier session's directory and `/src` holds the bench tree with the grading tests and the
-  reference fixes. `--keep-work` made it worse: each earlier session's copy stayed on disk with
-  the grading test the verify step had copied into it and with that session's solution.
+  earlier session's directory, the daemon's workspace root holds earlier `av` sessions'
+  workspaces, and `/src` holds the bench tree with the grading tests and the reference fixes.
+  `--keep-work` made it worse: each earlier `cold` and `notes` session's copy stayed on disk
+  with the grading test the verify step had copied into it and with that session's solution.
 - **Effect.** `relay-line-taxes` rose from 3 of 6 in `cold` to 6 of 6 in both note arms. With 7
   of those 12 sessions exposed, that rise cannot be put down to the note. Among sessions that
   were not exposed the task reads `cold` 2 of 5, `notes` 3 of 3, `av` 2 of 2, which is too few to
@@ -179,8 +190,9 @@ container, sessions as root, the source clone with the grading tests on the same
 earlier sessions' event streams under the work root. That sweep did not keep working copies, and
 its volumes are gone, so its transcripts cannot be checked. Its `cold` arm had the same access
 and solved 3 of 15 on the decision tasks, so widespread use of the leak there is unlikely, but it
-is not excluded. The route through the bench tree, which one session here used, needs no kept
-copies.
+is not excluded. Two of the three routes used here need no kept copies: the bench tree, and an
+earlier `av` session's workspace within the daemon's retention time (what that sweep's daemon
+had set is not known).
 
 ## Secondary measures as registered
 
@@ -199,8 +211,8 @@ copies.
 ## Deviations from the pre-registration
 
 - **The leak above.** The pre-registration says `--keep-work` "changes nothing a session sees".
-  That was wrong. The pre-registration also did not name the bench tree in the container as
-  something a session can read.
+  That was wrong. The pre-registration also did not name the bench tree in the container, or
+  the daemon's workspaces of earlier sessions, as things a session can read.
 - The delivery check on the first session of each arm passed as written. The first `av` session's
   hook counts were session-start 1, pre-read 3, post-edit 1, stop 2.
 - `leak.py` and `behaviour.py` were written after the run, and both were extended once more
@@ -263,10 +275,12 @@ Setup: `PREREG.md`, "Differences from the E4-at-scale setup". Session times: smo
 
 1. **Close the leak before any other paid cell.** Run the agent as a user that can read only its
    own working copy, with the bench tree, the reference fixes and earlier sessions out of reach,
-   and without `--keep-work`. Check it without a model first: as the agent's user, reading a
-   grading test, listing another session's directory and querying the daemon for another task
-   must all fail. The public repository stays reachable over the network unless the container's
-   egress is limited to the model's API.
+   and without `--keep-work`. Check it without a model first, with two sessions in a row: as
+   the second session's user, reading a grading test, the reference fixes, the first session's
+   directory and the first session's daemon workspace must all fail. Two routes stay open after
+   that and have to be named in any later result: the daemon answers any session about any
+   repository (closing it takes a daemon or a token per session), and the public repository is
+   reachable over the network unless the container's egress is limited to the model's API.
 2. **Run this cell again on the closed harness**, pre-registered, with the per-task comparison on
    `relay-quote-split` named in advance as the primary measure at 30 sessions per arm, and more
    tasks of its kind: a wrong note that the code and the visible tests do not contradict.
