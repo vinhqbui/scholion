@@ -108,9 +108,49 @@ pub(crate) fn fuse(words: &[f32], similarity: &[Option<f32>]) -> Vec<f32> {
     out
 }
 
+/// The at most `n` items that match best by `fuse(words, similarity)`, best first, each with its
+/// fused score. An item that matches neither way is never one of them, and neither is a tie
+/// that the cut would split: of thirty records equally good, none is the best.
+pub(crate) fn leads(words: &[f32], similarity: &[Option<f32>], n: usize) -> Vec<(usize, f32)> {
+    let fused = fuse(words, similarity);
+    let mut ranked: Vec<(usize, f32)> = fused
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, f)| *f > 0.0)
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if ranked.len() > n {
+        let cut = ranked[n].1;
+        ranked.truncate(n);
+        ranked.retain(|(_, f)| *f != cut);
+    }
+    ranked
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leads_are_the_few_best_matches_and_never_a_split_tie() {
+        // words and similarity agree on 2, then 0; 1 matches by words only; 3 not at all
+        let l = leads(
+            &[2.0, 1.0, 3.0, 0.0],
+            &[Some(0.8), None, Some(0.9), None],
+            2,
+        );
+        assert_eq!(l.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![2, 0]);
+        assert!(l[0].1 > l[1].1);
+        // fewer matches than places: only those that match
+        let l = leads(&[0.0, 1.0, 0.0], &[None, None, None], 2);
+        assert_eq!(l.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![1]);
+        // three equally good for two places: none leads; one better than the tie still does
+        assert!(leads(&[1.0, 1.0, 1.0], &[None, None, None], 2).is_empty());
+        let l = leads(&[3.0, 1.0, 1.0], &[None, None, None], 2);
+        assert_eq!(l.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0]);
+        assert!(leads(&[], &[], 2).is_empty());
+    }
 
     fn texts(t: &[&str]) -> Vec<String> {
         t.iter().map(|s| (*s).to_owned()).collect()

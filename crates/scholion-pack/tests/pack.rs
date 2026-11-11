@@ -8,7 +8,8 @@ use scholion_core::*;
 use scholion_index::{CodeIndex, ScopeView};
 use scholion_pack::{CodeDetail, PackRequest, Packer, estimate_tokens};
 
-/// Scripted `Semantic`. `calls` counts `search` invocations.
+/// Scripted `Semantic`. `calls` counts `search` invocations. Like the real one, each kind of hit
+/// answers at most `limit`, best first.
 struct FakeSemantic {
     hits: Vec<SemanticHit>,
     fail: bool,
@@ -18,16 +19,23 @@ struct FakeSemantic {
 
 #[async_trait]
 impl Semantic for FakeSemantic {
-    async fn search(&self, _repo: &str, _query: &str, _limit: usize) -> Result<Vec<SemanticHit>> {
+    async fn search(&self, _repo: &str, _query: &str, limit: usize) -> Result<Vec<SemanticHit>> {
         let _ = self.calls.fetch_add(1, Ordering::SeqCst);
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }
         if self.fail {
-            Err(AvError::Semantic("down".into()))
-        } else {
-            Ok(self.hits.clone())
+            return Err(AvError::Semantic("down".into()));
         }
+        let mut hits = self.hits.clone();
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        let mut per_kind: std::collections::HashMap<String, usize> = Default::default();
+        hits.retain(|h| {
+            let n = per_kind.entry(format!("{:?}", h.kind)).or_default();
+            *n += 1;
+            *n <= limit
+        });
+        Ok(hits)
     }
 }
 
@@ -1787,4 +1795,195 @@ async fn records_at_does_not_wait_for_a_slow_semantic_layer() {
         "it answered late"
     );
     assert!(!at.records.is_empty(), "and still answers: {}", at.markdown);
+}
+
+/// `score::RECORD_HITS`: record hits a pack of up to 8,000 tokens asks for.
+const RECORD_HITS: usize = 32;
+
+/// The lines of one `## ` section of a pack.
+fn section<'a>(md: &'a str, heading: &str) -> &'a str {
+    let start = pos(md, heading) + heading.len();
+    let rest = &md[start..];
+    &rest[..rest.find("\n## ").unwrap_or(rest.len())]
+}
+
+/// The `rec:` ids of a section's record lines, in order.
+fn record_ids(section: &str) -> Vec<String> {
+    section
+        .lines()
+        .filter_map(|l| l.strip_prefix("- "))
+        .filter(|l| l.starts_with("rec:"))
+        .map(|l| l[..12].to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_pack_asks_for_more_record_hits_than_code_hits_and_its_own_intent_takes_none() {
+    let fx = fixture().await;
+    let own = fx
+        .store
+        .task_records(fx.task.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.kind == RecordKind::Intent)
+        .unwrap();
+    let other = fx
+        .store
+        .create_task(new_task("Earlier work"))
+        .await
+        .unwrap();
+    // semantic search puts the task's own intent first: it restates the goal
+    let mut hits = vec![record_hit(&own, 0.99)];
+    for i in 0..RECORD_HITS {
+        let rec = fx
+            .store
+            .add_record(record(
+                other.id,
+                RecordKind::Note,
+                &format!("Cabbage note {i:02} about the cellar"),
+                "",
+                vec![],
+            ))
+            .await
+            .unwrap();
+        hits.push(record_hit(&rec, 0.9 - i as f32 * 0.01));
+    }
+    let sem = Arc::new(FakeSemantic {
+        hits,
+        fail: false,
+        delay: Duration::ZERO,
+        calls: AtomicUsize::new(0),
+    });
+    // 6000 tokens: 24 code hits, and room to show every record
+    let pack = packer_with(&fx, sem)
+        .build(req(&fx.task, 6000, "record-hits"))
+        .await
+        .unwrap();
+    for i in 0..RECORD_HITS {
+        assert!(
+            pack.markdown.contains(&format!("Cabbage note {i:02}")),
+            "record hit {i} is not a candidate:\n{}",
+            pack.markdown
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_record_whose_words_match_the_goal_leads_the_records_anchored_on_the_seed() {
+    let fx = fixture().await;
+    // thirty attempts on the changed symbol, newer and of a stronger kind than the lesson
+    let lesson = crowded_greeter(
+        &fx,
+        "A louder hello ends in one exclamation mark; capitals read as shouting to screen readers.",
+    )
+    .await;
+    let pack = fx
+        .packer
+        .build(req(&fx.task, 800, "lead-words"))
+        .await
+        .unwrap();
+    let md = &pack.markdown;
+    let history = section(md, "## Decisions & dead ends");
+    assert_eq!(
+        record_ids(history).first(),
+        Some(&short(&lesson)),
+        "no semantic layer: the goal's words pick it\n{md}"
+    );
+    assert!(md.contains(&lesson.summary), "and it is not clipped:\n{md}");
+}
+
+#[tokio::test]
+async fn the_record_most_similar_to_the_goal_leads_the_records_anchored_on_the_seed() {
+    let fx = fixture().await;
+    crowded_greeter(&fx, "Greeter.hello keeps its signature.").await;
+    let other = fx.store.create_task(new_task("Side quest")).await.unwrap();
+    // not one word of the goal, on a neighbour of the changed symbol, and the weakest kind
+    let lesson = fx
+        .store
+        .add_record(record(
+            other.id,
+            RecordKind::Note,
+            "Greetings gain volume by punctuation only; capitals read as shouting to screen readers.",
+            "",
+            vec![anchor("app/util.py", Some("format_name"))],
+        ))
+        .await
+        .unwrap();
+    let plain = fx
+        .packer
+        .build(req(&fx.task, 800, "lead-plain"))
+        .await
+        .unwrap();
+    assert_ne!(
+        record_ids(section(&plain.markdown, "## Decisions & dead ends")).first(),
+        Some(&short(&lesson)),
+        "without similarity the anchored attempts come first:\n{}",
+        plain.markdown
+    );
+    let sem = Arc::new(FakeSemantic {
+        hits: vec![record_hit(&lesson, 0.8)],
+        fail: false,
+        delay: Duration::ZERO,
+        calls: AtomicUsize::new(0),
+    });
+    let pack = packer_with(&fx, sem)
+        .build(req(&fx.task, 800, "lead-similar"))
+        .await
+        .unwrap();
+    let md = &pack.markdown;
+    assert_eq!(
+        record_ids(section(md, "## Decisions & dead ends")).first(),
+        Some(&short(&lesson)),
+        "{md}"
+    );
+    assert!(md.contains(&lesson.summary), "and it is not clipped:\n{md}");
+}
+
+#[tokio::test]
+async fn a_record_mined_from_git_history_does_not_lead_even_when_it_matches_best() {
+    let fx = fixture().await;
+    let other = fx
+        .store
+        .create_task(new_task("Earlier work"))
+        .await
+        .unwrap();
+    let attempt = fx
+        .store
+        .add_record(record(
+            other.id,
+            RecordKind::Attempt,
+            "Wrapping format_name in a retry loop hid the real error.",
+            "",
+            vec![anchor("app/util.py", Some("format_name"))],
+        ))
+        .await
+        .unwrap();
+    let mut mined = record(
+        other.id,
+        RecordKind::Note,
+        "Make hello louder with one exclamation mark",
+        "",
+        vec![anchor("app/util.py", Some("format_name"))],
+    );
+    mined.author_agent = history::MINED_AUTHOR.into();
+    mined.change_id = Some(ChangeId("1a2b3c4d5e6f7a8b".into()));
+    let mined = fx.store.add_record(mined).await.unwrap();
+    let sem = Arc::new(FakeSemantic {
+        hits: vec![record_hit(&mined, 0.95)],
+        fail: false,
+        delay: Duration::ZERO,
+        calls: AtomicUsize::new(0),
+    });
+    let pack = packer_with(&fx, sem)
+        .build(req(&fx.task, 2000, "mined"))
+        .await
+        .unwrap();
+    let ids = record_ids(section(&pack.markdown, "## Decisions & dead ends"));
+    assert_eq!(
+        ids,
+        vec![short(&attempt), short(&mined)],
+        "{}",
+        pack.markdown
+    );
 }
