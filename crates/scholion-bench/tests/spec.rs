@@ -304,10 +304,7 @@ fn the_wrong_lesson_pool_swaps_the_five_dead_end_lessons_and_nothing_else() {
         assert_eq!(wrong.relay_notes.len(), right.relay_notes.len());
         for (w, r) in wrong.relay_notes.iter().zip(&right.relay_notes) {
             // same place in the pool, same anchor: delivery is held constant
-            assert_eq!(
-                (&w.pair, &w.path, &w.symbol),
-                (&r.pair, &r.path, &r.symbol)
-            );
+            assert_eq!((&w.pair, &w.path, &w.symbol), (&r.pair, &r.path, &r.symbol));
             if pairs.contains(&w.pair.as_str()) {
                 assert_eq!(r.kind, "attempt", "{}: a dead-end lesson", r.pair);
                 assert_eq!(w.kind, "decision", "{}: stated as a decision", w.pair);
@@ -315,7 +312,10 @@ fn the_wrong_lesson_pool_swaps_the_five_dead_end_lessons_and_nothing_else() {
                 assert!(w.no_commit && !w.noise, "{}: memory channel only", w.pair);
                 assert!(w.summary.chars().count() <= 200, "{}", w.pair);
             } else {
-                assert_eq!((&w.kind, &w.summary, &w.body), (&r.kind, &r.summary, &r.body));
+                assert_eq!(
+                    (&w.kind, &w.summary, &w.body),
+                    (&r.kind, &r.summary, &r.body)
+                );
                 assert!(!w.no_commit && !w.noise, "{}: unchanged", w.pair);
             }
         }
