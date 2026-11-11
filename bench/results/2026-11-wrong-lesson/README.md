@@ -172,6 +172,10 @@ grading tests in the bench tree". `leak.py` then classified every tool call of a
   its own intent, the seeded records and the base history. Each `av` session has a repository of
   its own on the daemon, but the daemon is one process with no per-session access, so a session
   that asked for another repository by name would get it. None did.
+- **A route left open by the sessions themselves.** Two exposed sessions (`notes` r4 and `av`
+  r6) copied the grading test into `/tmp` to run it, and the copies stayed there, readable by
+  every later session. No other session's calls name them. Found afterwards, when the work on
+  the harness looked for copies of grading files in shared directories.
 - **Cause.** Sessions run as root in the harness container, where the work root holds every
   earlier session's directory, the daemon's workspace root holds earlier `av` sessions'
   workspaces, and `/src` holds the bench tree with the grading tests and the reference fixes.
