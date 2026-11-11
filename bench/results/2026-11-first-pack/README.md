@@ -30,6 +30,20 @@ Setup: daemon and `av` built from this branch at `19879a8`, `scholion-bench` at 
 adds this file's baseline (the packer is `main`'s, `d4f43c5`), Postgres 16, Qdrant v1.13.6, TEI cpu-1.7.2 with `BAAI/bge-small-en-v1.5`,
 noise seed 1: the same stack and embedder as the sweep.
 
+The daemon is the release build, run inside the `lp-harness` container (rust:1.97.1, this
+worktree at `/src`) on the Docker network that also holds Postgres (`lp-pg`), Qdrant (`lp-qdrant`)
+and TEI (`lp-tei`). This environment was not written down for the baseline and change A; it was
+rebuilt for change B from the daemon's start-up log, and checked by replaying the after-A state at
+N = 500, which gave the same tier for every task as `after-a/n500`:
+
+```bash
+# AV_DATABASE_URL=postgres://av:<password>@lp-pg:5432/bench, the password from lp-pg's environment
+cd /root
+AV_LISTEN=127.0.0.1:7450 AV_STORE_ROOT=/root/store AV_WS_ROOT=/root/bench-work/ws \
+AV_QDRANT_URL=http://lp-qdrant:6334 AV_EMBED_URL=http://lp-tei:80 \
+nohup /target/release/scholion-daemon >> /root/daemon.log 2>&1 &
+```
+
 ```bash
 COMMON="--av-url http://127.0.0.1:7450 --work-root /root/bench-work --import-dir /root/bench-work/src --import-mount /root/bench-work/src"
 for N in 0 50 500; do
@@ -98,3 +112,158 @@ Per task: `before/n*/first-packs.md`. The packs and their receipts: `before/n*/p
 - What the agents of the sweep were given by the pre-read hook: that output was not kept, and the
   run's volumes are gone. This replays the same inputs on the same stack, with new record ids and
   timestamps.
+
+## Results of the two changes (2026-11-11)
+
+`PREREG.md` states both changes, the measures, the guards and the decision rule. Nothing was paid
+and no model was called: every number below is `scholion-bench first-packs` or `scholion-bench
+retrieval` on the stack of "Setup" above.
+
+- **A** (`b35dad0`): the pre-read hook orders a file's records by how well they match the reading
+  task's goal. Replay: `after-a/` (`a5325d5`).
+- **B** (`bd9cef5`): a pack asks for 32 record hits (`score::record_hit_limit`: up to 4,000
+  tokens; from 4,250 tokens, twice the code cap, so 48 at 6,000, 64 at 8,000 and 80 from 10,000)
+  plus one for the task's own intent, which no longer takes the place of a
+  record, while code hits stay as they were. The 2 History records that match the pack's goal best
+  (`score::GOAL_LEADS`: BM25 over the goal's words fused by rank with embedding similarity, as in
+  A) lead "Decisions & dead ends" with a score above any anchored record's. Mined records and
+  other tasks' intents never lead. Replay: `after-b/` (`4bffcf0`), held-out set
+  `after-b/held-out/`.
+
+### Design set (noise seed 1)
+
+Tasks out of 10. "Summary/full" is the hook pack at the `summary` or `full` tier. "Pre-read"
+counts a lesson in a pre-read answer; after B it falls because a record the pack already showed at
+the summary tier is not repeated there.
+
+| noise | state | hook pack: summary/full | hook pack: handle | hook pack: listed only | pre-read | shown in full by either hook | shown at all | relevant files named | degraded hook packs |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | before | 3 | 7 | 0 | 6 | 9 | 10 | 14 of 14 | 0 |
+| 0 | after A | 3 | 6 | 1 | 6 | 9 | 10 | 14 of 14 | 0 |
+| 0 | after B | 9 | 1 | 0 | 1 | 10 | 10 | 14 of 14 | 0 |
+| 50 | before | 3 | 6 | 1 | 6 | 9 | 10 | 14 of 14 | 0 |
+| 50 | after A | 3 | 6 | 1 | 6 | 9 | 10 | 14 of 14 | 0 |
+| 50 | after B | 6 | 3 | 0 | 4 | 10 | 10 | 14 of 14 | 0 |
+| 500 | before | 1 | 5 | 2 | 0 | 1 | 6 | 14 of 14 | 0 |
+| 500 | after A | 1 | 5 | 2 | 8 | 9 | 9 | 14 of 14 | 0 |
+| 500 | after B | 8 | 0 | 0 | 2 | 10 | 10 | 14 of 14 | 0 |
+
+Per task: `after-b/n*/first-packs.md`; packs and receipts in `after-b/n*/packs/` (a lead's receipt
+reason is `goal-lead`). At N = 500 after B the two tasks whose lesson is not in the hook pack,
+`relay-order-ids` and `relay-refund-event`, are the two whose lesson ranked 17th and 14th by
+similarity in `before/n500/semantic-rank.txt`; both get it from the pre-read hook.
+
+**For agents without a pre-read hook** (MCP-only CLIs, which read only the pack), the column that
+counts is the first one: at N = 500 the lesson reaches them whole in 8 of 10 tasks instead of 1.
+
+### Tuning on the design set
+
+One constant set was tried: `GOAL_LEADS` = 2 and `RECORD_HITS` = 32 unchanged from A. An
+800-token pack upgrades about two History records to the summary tier, so a third lead would only
+push an anchored record down to a handle. On the working tree before the commit, this set gave
+summary/full 10, 9 and 8 of 10 and shown in full 10 of 10 at each level, with 14 of 14 files
+named. That pass had one hook pack marked degraded (`semantic`, `relay-line-taxes` at N = 50); the
+same task run alone three times, and a second whole N = 50 pass, had none, and so has the
+committed replay above. The summary column varies by pass: at N = 50 it was 9, then 7, then the 6
+above. The receipts of the three passes show why. In the tasks that flipped (`relay-money-plain`,
+`relay-coupon-remove`, `relay-refund-event`), the lesson is one of the two goal leads in every
+pass, with the same score as the other lead: one is first by its words and second by similarity,
+the other the reverse, so both fuse to 1/61 + 1/62. Which of the two gets the one summary upgrade
+is then decided by record id, and ids are new on every setup. Shown in full was 10 of 10 in every
+pass. The replays are all 800-token packs, so the larger record cap above 4,000 tokens (up to 81
+record fetches a pack) is not measured here.
+
+### Guards
+
+1. **N = 0 and N = 50: shown in full stays 9 of 10 or better, shown at all stays 10 of 10.**
+   Holds: 10 and 10 of 10 in full, 10 and 10 of 10 at all.
+2. **Relevant files named is not lower than the baseline at any level.** Holds: 14 of 14 at
+   N = 0, 50 and 500, as before; on the held-out set too (below).
+3. **No hook pack is marked degraded.** Holds in the committed replays (0 of 30 on the design
+   set, 0 of 30 on the held-out set). One tuning pass had one (see above).
+4. **`cargo test --workspace` passes, with the retrieval gate's floors unchanged.** Holds. The
+   floors are unchanged and `retrieval_gate` passes. At `bd9cef5`'s code (unchanged since) the
+   whole workspace passes in `lp-harness`: 1,062 passed, 0 failed, 2 ignored, run under a child
+   subreaper that reaps orphans (a few lines of Python with `prctl(PR_SET_CHILD_SUBREAPER)`). Run
+   plainly in that container, two tests fail (`scholion-agentrun`
+   `process::a_child_past_its_deadline_is_killed_with_everything_it_started` and `scholion-cli`
+   `up_starts_a_background_daemon_and_down_stops_it`; 1,060 passed, 2 failed): its PID 1 is
+   `sleep infinity`, which never reaps, so a killed process stays a zombie and `kill -0` still
+   finds it. `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings`
+   pass. Qdrant tests were skipped (no `AV_TEST_QDRANT_URL`).
+5. **`scholion-bench retrieval` on `bench/retrieval/ci`, semantic layer on: no metric at 300, 450
+   or 600 tokens falls by more than 0.03.** Holds: no metric moved. `before/` had no retrieval
+   number, so "before" was measured with the packer of `cc8e8e3` (built in a temporary
+   `git worktree`, since removed) and "after" with `bd9cef5`'s, each on a fresh import of the
+   fixture (`make-repo.sh`), budgets 300, 450, 600, 0 of 27 packs degraded both times:
+
+   | budget | method | before: files_code / symbols_sig / symbols_body / files_named / gold_share | after |
+   |---|---|---|---|
+   | 300 | pack | 0.22 / 0.22 / 0.00 / 1.00 / 0.02 | the same |
+   | 450 | pack | 0.61 / 0.44 / 0.11 / 1.00 / 0.10 | the same |
+   | 600 | pack | 1.00 / 0.89 / 0.56 / 1.00 / 0.21 | the same |
+   | 300 | pack_sig | 0.22 / 0.22 / 0.00 / 1.00 / 0.02 | the same |
+   | 450 | pack_sig | 0.44 / 0.44 / 0.00 / 1.00 / 0.03 | the same |
+   | 600 | pack_sig | 0.67 / 0.67 / 0.00 / 1.00 / 0.04 | the same |
+
+   The subset whose goals name no gold file or symbol (n = 7) is the same before and after too.
+   Only mean tokens at 600 moved, by one (`pack_sig` 453 to 454 over all tasks; on the subset
+   `pack` 503 to 504 and `pack_sig` 462 to 463).
+
+   **`--reuse-run` is not a fair "after" here.** A first "after" measured with `--reuse-run` on the
+   before run's repos fell to 0.00 files_code at 300 tokens. Re-posting the same nine goals makes
+   each earlier task's intent, word for word the new goal, a foreign record the pack shows. The
+   `cc8e8e3` packer does the same: run with `--reuse-run` on the fresh "after" import, it also
+   gives 0.00 at 300 tokens (0.56 / 0.56 at 450). So the drop comes from the procedure, not from
+   change B, and before and after are compared on fresh imports. `bench/retrieval/README.md`
+   recommends `--reuse-run` for re-measuring a packer without saying this.
+
+### Held-out set
+
+Run after `bd9cef5` was committed, with no change to the packer since then. The baselines in
+`before/held-out/` were run before either change.
+
+| set | state | hook pack: summary/full | hook pack: handle | hook pack: listed only | pre-read | shown in full by either hook | shown at all | relevant files named | degraded hook packs |
+|---|---|---|---|---|---|---|---|---|---|
+| N = 200, seed 1 | before | 2 | 7 | 1 | 7 | 9 | 10 | 14 of 14 | 0 |
+| N = 200, seed 1 | after B | 7 | 2 | 0 | 3 | 10 | 10 | 14 of 14 | 0 |
+| N = 500, seed 2 | before | 2 | 3 | 3 | 3 | 5 | 6 | 14 of 14 | 0 |
+| N = 500, seed 2 | after B | 8 | 1 | 0 | 2 | 10 | 10 | 14 of 14 | 0 |
+| N = 500, seed 3 | before | 2 | 3 | 2 | 2 | 4 | 5 | 14 of 14 | 0 |
+| N = 500, seed 3 | after B | 8 | 1 | 0 | 2 | 10 | 10 | 14 of 14 | 0 |
+
+Per task: `after-b/held-out/*/first-packs.md`. The held-out set shows what the design set showed.
+At N = 500 the hook pack shows the lesson at the summary tier for 8 of 10 tasks on both seeds. The
+lesson of `relay-order-ids` is not in the hook pack at any noise level from 50 up, and that of
+`relay-refund-event` is a handle there or, at N = 500 with seed 1, absent (both reach the summary
+tier at N = 0). The pre-read hook gives both of them the lesson.
+
+### Decision rule
+
+**Fixed, with a semantic layer.** The primary measure (shown in full by either hook at N = 500,
+seed 1) is 10 of 10 (baseline 1, after A 9). Each held-out N = 500 seed is 10 of 10 (baselines 5
+and 4). Every guard holds.
+
+What it does not show is unchanged from "What this does not show" and the PREREG's limits: one
+repository, one embedder, template noise, and no agent runs. Without a semantic layer, change B
+works from the goal's words alone (the unit and pack tests), and a record still becomes a
+candidate only through an anchor.
+
+### Protocol notes
+
+- The held-out baselines were not opened before `bd9cef5` was committed, but one recursive search
+  (`grep -rl retrieval bench/results/2026-11-first-pack/`, looking for a guard 5 number) walked
+  `before/held-out/`. Its output was filtered to exclude that directory, so no held-out file name
+  or content was shown.
+- Building `cc8e8e3` with the same `CARGO_TARGET_DIR` overwrote this branch's release artifacts
+  (cargo hashes path crates by workspace-relative path), and the next build of this branch
+  thought them fresh. This was caught before any replay, by checking the binary, and the branch's
+  crates were cleaned and rebuilt. Every after-B replay and the after-B retrieval run used a
+  binary checked to contain change B.
+- A gap in the tests of change B: the test that record hits past the code cap are candidates runs
+  at 6,000 tokens, where the cap is 48, so its 32 records and the task's own intent fit whether or
+  not the intent counts toward the cap. The rule that the intent does not count is in
+  `merge_hits` and every replay above runs through it, but no test pins it. `bd9cef5`'s message
+  says the test covers it, and that commit and the test's comment also say the record cap grows
+  "past 8,000 tokens", where it is from 4,250. The packer is frozen on this branch, so both are
+  left for a follow-up.
