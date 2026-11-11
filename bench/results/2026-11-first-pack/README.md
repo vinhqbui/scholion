@@ -260,10 +260,14 @@ candidate only through an anchor.
   thought them fresh. This was caught before any replay, by checking the binary, and the branch's
   crates were cleaned and rebuilt. Every after-B replay and the after-B retrieval run used a
   binary checked to contain change B.
-- A gap in the tests of change B: the test that record hits past the code cap are candidates runs
-  at 6,000 tokens, where the cap is 48, so its 32 records and the task's own intent fit whether or
-  not the intent counts toward the cap. The rule that the intent does not count is in
-  `merge_hits` and every replay above runs through it, but no test pins it. `bd9cef5`'s message
-  says the test covers it, and that commit and the test's comment also say the record cap grows
-  "past 8,000 tokens", where it is from 4,250. The packer is frozen on this branch, so both are
-  left for a follow-up.
+- A gap in the tests of change B as committed in `bd9cef5`: the test that record hits past the
+  code cap are candidates runs at 6,000 tokens, where the cap is 48, so its 32 records and the
+  task's own intent fit whether or not the intent counts toward the cap. `bd9cef5`'s message says
+  the test covers it, and that commit and the test's comment also say the record cap grows "past
+  8,000 tokens", where it is from 4,250. The packer was frozen on this branch by then, so a later
+  commit that touches tests and this file only closes both: the comment is corrected, and
+  `the_tasks_own_intent_does_not_count_toward_the_record_hit_cap` runs at 4,000 tokens, where the
+  cap is 32, with the task's own intent and 33 other records as hits, and expects the 32nd shown
+  and the 33rd not. It was checked to fail when the intent is made to count toward the cap in
+  `merge_hits`, and when the search stops asking for one record more; both edits were reverted,
+  and `crates/*/src` is unchanged since `46c221f`.

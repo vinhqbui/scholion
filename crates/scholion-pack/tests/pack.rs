@@ -1797,7 +1797,8 @@ async fn records_at_does_not_wait_for_a_slow_semantic_layer() {
     assert!(!at.records.is_empty(), "and still answers: {}", at.markdown);
 }
 
-/// `score::RECORD_HITS`: record hits a pack of up to 8,000 tokens asks for.
+/// `score::RECORD_HITS`: record hits a pack of up to 4,000 tokens asks for. From 4,250 tokens the
+/// cap is twice the code cap (`score::record_hit_limit`): 48 at 6,000, 64 at 8,000.
 const RECORD_HITS: usize = 32;
 
 /// The lines of one `## ` section of a pack.
@@ -1817,9 +1818,9 @@ fn record_ids(section: &str) -> Vec<String> {
         .collect()
 }
 
-#[tokio::test]
-async fn a_pack_asks_for_more_record_hits_than_code_hits_and_its_own_intent_takes_none() {
-    let fx = fixture().await;
+/// The task's own intent as the best semantic hit, then `n` notes of another task that nothing
+/// but a semantic hit brings into a pack, best first.
+async fn own_intent_then_cabbage_notes(fx: &Fx, n: usize) -> Vec<SemanticHit> {
     let own = fx
         .store
         .task_records(fx.task.id)
@@ -1833,9 +1834,8 @@ async fn a_pack_asks_for_more_record_hits_than_code_hits_and_its_own_intent_take
         .create_task(new_task("Earlier work"))
         .await
         .unwrap();
-    // semantic search puts the task's own intent first: it restates the goal
     let mut hits = vec![record_hit(&own, 0.99)];
-    for i in 0..RECORD_HITS {
+    for i in 0..n {
         let rec = fx
             .store
             .add_record(record(
@@ -1849,6 +1849,14 @@ async fn a_pack_asks_for_more_record_hits_than_code_hits_and_its_own_intent_take
             .unwrap();
         hits.push(record_hit(&rec, 0.9 - i as f32 * 0.01));
     }
+    hits
+}
+
+#[tokio::test]
+async fn a_pack_asks_for_more_record_hits_than_code_hits_and_its_own_intent_takes_none() {
+    let fx = fixture().await;
+    // semantic search puts the task's own intent first: it restates the goal
+    let hits = own_intent_then_cabbage_notes(&fx, RECORD_HITS).await;
     let sem = Arc::new(FakeSemantic {
         hits,
         fail: false,
@@ -1867,6 +1875,35 @@ async fn a_pack_asks_for_more_record_hits_than_code_hits_and_its_own_intent_take
             pack.markdown
         );
     }
+}
+
+#[tokio::test]
+async fn the_tasks_own_intent_does_not_count_toward_the_record_hit_cap() {
+    let fx = fixture().await;
+    // one more note than the cap, behind the task's own intent
+    let hits = own_intent_then_cabbage_notes(&fx, RECORD_HITS + 1).await;
+    let sem = Arc::new(FakeSemantic {
+        hits,
+        fail: false,
+        delay: Duration::ZERO,
+        calls: AtomicUsize::new(0),
+    });
+    // 4000 tokens: 16 code hits, so the record cap is RECORD_HITS itself, and every candidate
+    // is at least named
+    let pack = packer_with(&fx, sem)
+        .build(req(&fx.task, 4000, "record-hits-own-intent"))
+        .await
+        .unwrap();
+    let md = &pack.markdown;
+    let last = RECORD_HITS - 1;
+    assert!(
+        md.contains(&format!("Cabbage note {last:02}")),
+        "the task's own intent took the last record hit's place:\n{md}"
+    );
+    assert!(
+        !md.contains(&format!("Cabbage note {RECORD_HITS:02}")),
+        "the cap is RECORD_HITS other records, not one more:\n{md}"
+    );
 }
 
 #[tokio::test]
