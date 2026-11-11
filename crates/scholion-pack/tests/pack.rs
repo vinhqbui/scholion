@@ -1663,3 +1663,128 @@ async fn a_change_that_uses_another_modules_constant_gets_that_modules_records()
          away:\n{md}"
     );
 }
+
+/// Thirty records on `app/greeter.py` that have nothing to do with the task's goal ("Make hello
+/// louder"), each newer and of a stronger kind than `lesson`, which is about it.
+async fn crowded_greeter(fx: &Fx, lesson_summary: &str) -> Record {
+    let other = fx
+        .store
+        .create_task(new_task("Earlier work"))
+        .await
+        .unwrap();
+    let lesson = fx
+        .store
+        .add_record(record(
+            other.id,
+            RecordKind::Decision,
+            lesson_summary,
+            "",
+            vec![anchor("app/greeter.py", Some("Greeter.hello"))],
+        ))
+        .await
+        .unwrap();
+    for i in 0..30 {
+        fx.store
+            .add_record(record(
+                other.id,
+                RecordKind::Attempt,
+                &format!(
+                    "Wrapping `Greeter.hello` in a retry loop (variant {i}) hid the real error \
+                     and the suite hung on its second pass."
+                ),
+                "",
+                vec![anchor("app/greeter.py", Some("Greeter.hello"))],
+            ))
+            .await
+            .unwrap();
+    }
+    lesson
+}
+
+fn short(rec: &Record) -> String {
+    format!("rec:{}", &rec.id.0.simple().to_string()[..8])
+}
+
+#[tokio::test]
+async fn records_at_puts_what_matches_the_readers_goal_first() {
+    let fx = fixture().await;
+    let lesson = crowded_greeter(
+        &fx,
+        "A louder hello ends in one exclamation mark; capitals read as shouting to screen readers.",
+    )
+    .await;
+    let at = fx
+        .packer
+        .records_at(fx.task.id, "app/greeter.py", None)
+        .await
+        .unwrap();
+    assert!(
+        at.records.len() < 31,
+        "the answer is cut at its token cap: {}",
+        at.records.len()
+    );
+    assert_eq!(
+        at.records.first(),
+        Some(&short(&lesson)),
+        "no semantic layer: the words of the goal pick the record\n{}",
+        at.markdown
+    );
+}
+
+#[tokio::test]
+async fn records_at_uses_similarity_when_the_words_do_not_match() {
+    let fx = fixture().await;
+    // not one word of the goal
+    let lesson = crowded_greeter(
+        &fx,
+        "Greetings gain volume by punctuation only; capitals read as shouting to screen readers.",
+    )
+    .await;
+    let plain = fx
+        .packer
+        .records_at(fx.task.id, "app/greeter.py", None)
+        .await
+        .unwrap();
+    assert!(
+        !plain.records.contains(&short(&lesson)),
+        "without similarity it is behind 30 newer attempts:\n{}",
+        plain.markdown
+    );
+    let sem = Arc::new(FakeSemantic {
+        hits: vec![record_hit(&lesson, 0.8)],
+        fail: false,
+        delay: Duration::ZERO,
+        calls: AtomicUsize::new(0),
+    });
+    let at = packer_with(&fx, sem)
+        .records_at(fx.task.id, "app/greeter.py", None)
+        .await
+        .unwrap();
+    assert_eq!(at.records.first(), Some(&short(&lesson)), "{}", at.markdown);
+}
+
+#[tokio::test]
+async fn records_at_does_not_wait_for_a_slow_semantic_layer() {
+    let fx = fixture().await;
+    let lesson = crowded_greeter(
+        &fx,
+        "Greetings gain volume by punctuation only; capitals read as shouting to screen readers.",
+    )
+    .await;
+    let sem = Arc::new(FakeSemantic {
+        hits: vec![record_hit(&lesson, 0.8)],
+        fail: false,
+        delay: Duration::from_secs(5),
+        calls: AtomicUsize::new(0),
+    });
+    let started = std::time::Instant::now();
+    let at = packer_with(&fx, sem)
+        .records_at(fx.task.id, "app/greeter.py", None)
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it answered late"
+    );
+    assert!(!at.records.is_empty(), "and still answers: {}", at.markdown);
+}

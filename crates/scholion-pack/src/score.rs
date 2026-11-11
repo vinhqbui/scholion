@@ -31,6 +31,10 @@ pub fn rrf_sim(rank: usize) -> f32 {
 pub fn candidate_limit(budget: u32) -> usize {
     (budget as usize / 250).clamp(SEMANTIC_LIMIT, MAX_CANDIDATES)
 }
+/// Record hits asked of the semantic layer, whatever the budget: a record costs a line, and
+/// whether it is shown is the ranking's decision, not the search's. The pre-read hook orders a
+/// file's records by these.
+pub const RECORD_HITS: usize = 32;
 /// Semantic search is abandoned this long after it starts.
 pub const SEMANTIC_TIMEOUT: Duration = Duration::from_millis(150);
 /// Hop distance assigned to anything not connected to the seeds.
