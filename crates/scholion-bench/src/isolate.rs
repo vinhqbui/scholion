@@ -218,7 +218,7 @@ impl AgentUser {
 
     /// The live processes of this user, from `/proc` (zombies are not counted: a container
     /// without an init never reaps them). Empty where there is no `/proc`.
-    fn processes(&self) -> Vec<u32> {
+    pub fn processes(&self) -> Vec<u32> {
         let Ok(entries) = std::fs::read_dir("/proc") else {
             return vec![];
         };

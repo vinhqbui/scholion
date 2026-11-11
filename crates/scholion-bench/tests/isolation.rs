@@ -42,6 +42,12 @@ if [ -n "$cmd" ]; then
   echo $? > "$out/hook-start.rc"
 fi
 printf 'def add(a, b):\n    return a + b\n' > calc.py || exit 7
+if [ -n "$FAKE_LEAVE_BEHIND" ]; then
+  # what an agent could leave for verify and for the next session: a link where a hidden test
+  # will be written, and a process that outlives it
+  ln -s "$out/stolen" test_local.py
+  (setsid sleep 300 > /dev/null 2>&1 &)
+fi
 cmd=$(hook PostToolUse)
 if [ -n "$cmd" ]; then
   echo "{\"tool_input\":{\"file_path\":\"$PWD/calc.py\"}}" | sh -c "$cmd" > "$out/hook-edit.out" 2> "$out/hook-edit.err"
@@ -110,6 +116,10 @@ struct Probe {
 
 struct Gate {
     _dirs: Vec<TempDir>,
+    /// Holds the bench tree (`tasks/`) and the source repo: root's alone unless a test opens it.
+    closed: PathBuf,
+    /// Holds the tools and the work root.
+    open: PathBuf,
     daemon: TestDaemon,
     specs: Vec<TaskSpec>,
     cfg: RunConfig,
@@ -231,6 +241,8 @@ fn gate(agent: Option<AgentUser>, av_bin: Option<&Path>) -> Gate {
     };
 
     let mut g = Gate {
+        closed: closed.path().to_path_buf(),
+        open: open.path().to_path_buf(),
         _dirs: vec![closed, open],
         daemon,
         specs: vec![spec],
@@ -339,10 +351,14 @@ fn gate(agent: Option<AgentUser>, av_bin: Option<&Path>) -> Gate {
 /// Two sessions in a row per arm, through `orchestrate::run` as `scholion-bench run` does it.
 /// The caller holds `SERIAL`.
 fn two_reps(g: &Gate) -> scholion_bench::Result<RunReport> {
+    sessions(g, &ARMS, 2)
+}
+
+fn sessions(g: &Gate, arms: &[Arm], reps: u32) -> scholion_bench::Result<RunReport> {
     let args = RunArgs {
         out: g.out.clone(),
-        arms: ARMS.to_vec(),
-        reps: 2,
+        arms: arms.to_vec(),
+        reps,
         budget_usd: 100.0,
         seed: 1,
         confirm: true,
@@ -379,14 +395,18 @@ fn read(p: &Path) -> String {
 /// Every session ran as `uid`, edited its own working copy, and passed verify; the av sessions'
 /// hooks fired and the daemon saw the edit.
 fn assert_sessions_worked(g: &Gate, r: &RunReport, uid: u32) {
+    assert_sessions_of(g, r, uid, &ARMS, 2);
+}
+
+fn assert_sessions_of(g: &Gate, r: &RunReport, uid: u32, arms: &[Arm], reps: u32) {
     assert_eq!(r.exit_code, 0);
-    assert_eq!(r.rows.len(), 2 * ARMS.len(), "{:?}", r.rows);
+    assert_eq!(r.rows.len(), reps as usize * arms.len(), "{:?}", r.rows);
     for row in &r.rows {
         assert_eq!(row.status, Status::Ok, "{row:?}");
         assert!(row.success, "verify passed: {row:?}");
     }
-    for arm in ARMS {
-        for rep in [1, 2] {
+    for &arm in arms {
+        for rep in 1..=reps {
             let s = g.session_dir(arm, rep);
             let who = format!("{} r{rep}", arm.as_str());
             assert_eq!(
@@ -416,12 +436,13 @@ fn assert_sessions_worked(g: &Gate, r: &RunReport, uid: u32) {
                 "{who}: both hooks fired"
             );
             for hook in ["hook-start", "hook-edit"] {
+                let err = read(&s.join(format!("claude-config/{hook}.err")));
                 assert_eq!(
                     read(&s.join(format!("claude-config/{hook}.rc"))).trim(),
                     "0",
-                    "{who}: {hook}: {}",
-                    read(&s.join(format!("claude-config/{hook}.err")))
+                    "{who}: {hook}: {err}"
                 );
+                assert_eq!(err.trim(), "", "{who}: {hook} complained");
             }
             assert!(
                 read(&s.join("claude-config/hook-start.out")).contains("## Task"),
@@ -497,7 +518,11 @@ fn a_session_cannot_read_the_grading_files_or_an_earlier_session() {
         }
     };
     let g = gate(Some(user.clone()), None);
-    let r = two_reps(&g).unwrap();
+    // SAFETY: SERIAL is held.
+    unsafe { std::env::set_var("FAKE_LEAVE_BEHIND", "1") };
+    let r = two_reps(&g);
+    unsafe { std::env::remove_var("FAKE_LEAVE_BEHIND") };
+    let r = r.unwrap();
     let mut leaked = vec![];
     let mut tried = 0;
     for arm in ARMS {
@@ -528,6 +553,21 @@ fn a_session_cannot_read_the_grading_files_or_an_earlier_session() {
     for p in &g.probes {
         assert!(p.path.exists(), "`{}`: {}", p.label, p.path.display());
     }
+    // what each fake agent left behind came to nothing: no process of the user is alive, and
+    // the hidden test did not go through its link into a directory of its own
+    assert_eq!(user.processes(), Vec::<u32>::new(), "processes left");
+    for arm in ARMS {
+        for rep in [1, 2] {
+            let stolen = g.session_dir(arm, rep).join("claude-config/stolen");
+            assert!(!stolen.exists(), "{}", stolen.display());
+            let test = g.working_copy(arm, rep).join("test_local.py");
+            assert!(
+                std::fs::symlink_metadata(&test).unwrap().is_file(),
+                "{} is a file of the harness's, not the agent's link",
+                test.display()
+            );
+        }
+    }
     // what the sessions left is root's alone
     for arm in ARMS {
         for rep in [1, 2] {
@@ -557,4 +597,223 @@ fn a_session_cannot_read_the_grading_files_or_an_earlier_session() {
         r.rows.iter().filter(|row| row.success).count(),
         r.rows.len()
     ));
+}
+
+/// The `av` binary cargo built beside this test binary (`<target>/<profile>/av`), if it did.
+fn real_av() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let av = exe.parent()?.parent()?.join("av");
+    av.is_file().then_some(av)
+}
+
+/// The gate's av sessions use the fake `av` every other bench test uses, so they hold wherever
+/// the tests run. This one runs the real hooks as the agent user: `av hook session-start` reads
+/// and rewrites `.av-task`, asks the daemon for the pack and makes the scratch directory;
+/// `av hook post-edit` checkpoints. Without `--keep-work`, so the task is abandoned afterwards.
+#[test]
+fn the_real_av_hooks_work_as_the_agent_user() {
+    let _g = serial();
+    let user = match agent_user() {
+        Ok(u) => u,
+        Err(why) => {
+            say(&format!(
+                "agent-isolation, real av hooks: SKIPPED, {why}. The real hooks were NOT run as \
+                 another user."
+            ));
+            return;
+        }
+    };
+    let Some(av) = real_av() else {
+        say(
+            "agent-isolation, real av hooks: SKIPPED, no `av` binary beside the test binary \
+             (`cargo test --workspace` builds it; so does `cargo build -p scholion-cli`). The \
+             real hooks were NOT run as the agent user; only the fake `av` was.",
+        );
+        return;
+    };
+    let mut g = gate(Some(user.clone()), Some(&av));
+    g.cfg.keep_work = false;
+    let r = sessions(&g, &[Arm::Av], 1).unwrap();
+    assert_sessions_of(&g, &r, user.uid, &[Arm::Av], 1);
+    let s = g.session_dir(Arm::Av, 1);
+    let start = read(&s.join("claude-config/hook-start.out"));
+    assert!(
+        start.contains("Temporary files:"),
+        "the hook got its scratch directory: {start}"
+    );
+    let wc = g.working_copy(Arm::Av, 1);
+    let tf: serde_json::Value = serde_json::from_str(&read(&wc.join(".av-task"))).unwrap();
+    let t: serde_json::Value = ureq::get(&format!(
+        "{}/v1/tasks/{}",
+        g.daemon.url,
+        tf["task"].as_str().unwrap()
+    ))
+    .call()
+    .unwrap()
+    .into_json()
+    .unwrap();
+    assert_eq!(t["task"]["status"], "abandoned", "{t}");
+    for dir in [&s, &wc, &g.av_repo_dir(1)] {
+        let m = std::fs::metadata(dir).unwrap();
+        assert_eq!((m.uid(), m.mode() & 0o077), (0, 0), "{}", dir.display());
+    }
+    say(&format!(
+        "agent-isolation, real av hooks: RAN as root with --agent-user {} (uid {}), {}: \
+         session-start printed the pack and the scratch line, post-edit checkpointed, both \
+         exited 0 with nothing on stderr; verify passed",
+        user.name,
+        user.uid,
+        av.display()
+    ));
+}
+
+/// The gate's fixture for the preflight tests, or `None` (said on stderr) without root.
+fn isolated_gate(test: &str) -> Option<Gate> {
+    match agent_user() {
+        Ok(user) => Some(gate(Some(user), None)),
+        Err(why) => {
+            say(&format!(
+                "agent-isolation, {test}: SKIPPED, {why}. This check did NOT run."
+            ));
+            None
+        }
+    }
+}
+
+/// No session directory was made: the refusal came before the first session.
+fn assert_nothing_launched(g: &Gate) {
+    let run_dir = g.cfg.work_root.join("runs").join(RUN);
+    let made: Vec<_> = std::fs::read_dir(&run_dir)
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(made.is_empty(), "{made:?}");
+    assert!(!g.out.join("rows.jsonl").exists());
+}
+
+#[test]
+fn the_preflight_refuses_a_bench_tree_the_agent_user_can_read_and_names_the_paths() {
+    let _g = serial();
+    let Some(g) = isolated_gate("preflight, readable bench tree") else {
+        return;
+    };
+    // a bench tree mounted for everyone, as in the container that leaked
+    chmod(&g.closed, 0o755);
+    let err = two_reps(&g).err().expect("the run must be refused");
+    assert!(err.contains("refusing to run"), "{err}");
+    let tasks = g.closed.join("tasks");
+    for line in [
+        format!("enter {}", tasks.display()),
+        format!("list {}", tasks.display()),
+        format!("read {}", tasks.join("files/test_local.py").display()),
+        format!("read {}", tasks.join("notes.toml").display()),
+        format!("enter {}", g.closed.join("repo").display()),
+    ] {
+        assert!(err.contains(&line), "`{line}` is named in: {err}");
+    }
+    assert_nothing_launched(&g);
+
+    // closed again, the same run starts
+    chmod(&g.closed, 0o700);
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+}
+
+#[test]
+fn the_preflight_says_when_the_agent_user_cannot_reach_the_work_root() {
+    let _g = serial();
+    let Some(g) = isolated_gate("preflight, unreachable work root") else {
+        return;
+    };
+    // as a work root under /root: a directory on the way that only root may enter
+    chmod(&g.open, 0o700);
+    let err = two_reps(&g).err().expect("the run must be refused");
+    assert!(
+        err.contains("cannot reach the work root")
+            && err.contains(&format!("may not enter {} (mode 700)", g.open.display()))
+            && err.contains("/root"),
+        "{err}"
+    );
+    assert!(!g.out.join("rows.jsonl").exists());
+}
+
+#[test]
+fn the_preflight_refuses_workspaces_and_sessions_left_open_to_the_agent_user() {
+    let _g = serial();
+    let Some(g) = isolated_gate("preflight, daemon workspaces and earlier sessions") else {
+        return;
+    };
+    // the daemon's workspace root as a daemon makes it, and a workspace it kept
+    chmod(&g.daemon.ws_root, 0o755);
+    let kept = g.daemon.ws_root.join("bold-calc-add-av-1");
+    std::fs::create_dir(&kept).unwrap();
+    chmod(&kept, 0o755);
+    // an earlier run made without the flag, and a session of this run's name left open
+    let runs = g.cfg.work_root.join("runs");
+    let earlier = runs.join("pilot");
+    let session = runs.join(RUN).join("calc-add-av-r1");
+    for d in [&earlier, &session] {
+        std::fs::create_dir_all(d).unwrap();
+        chmod(d, 0o755);
+    }
+    let err = two_reps(&g).err().expect("the run must be refused");
+    for line in [
+        format!("list {}", g.daemon.ws_root.display()),
+        format!("enter {}", kept.display()),
+        format!("enter {}", earlier.display()),
+        format!("enter {}", session.display()),
+    ] {
+        assert!(err.contains(&line), "`{line}` is named in: {err}");
+    }
+    assert!(!g.out.join("rows.jsonl").exists());
+
+    // without the daemon's workspace root there is nothing to check the av arms against
+    let mut g = g;
+    g.cfg.av_ws_root = None;
+    let err = two_reps(&g).err().expect("the run must be refused");
+    assert!(err.contains("--av-ws-root"), "{err}");
+    // and the git arms do not need it
+    for d in [&earlier, &session] {
+        chmod(d, 0o700);
+    }
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+}
+
+/// A session that stops before its agent ran (here: `setup_cmd` fails) leaves nothing open for
+/// the next one.
+#[test]
+fn a_session_that_stops_early_is_closed_too() {
+    let _g = serial();
+    let Some(mut g) = isolated_gate("a session that stops early") else {
+        return;
+    };
+    g.specs[0].setup_cmd = "echo set up > made-by-setup; exit 3".into();
+    let r = sessions(&g, &[Arm::Notes], 1).unwrap();
+    assert_eq!(r.rows[0].status, Status::Invalid, "{:?}", r.rows);
+    let s = g.session_dir(Arm::Notes, 1);
+    for dir in [s.clone(), s.join("ws")] {
+        let m = std::fs::metadata(&dir).unwrap();
+        assert_eq!((m.uid(), m.mode() & 0o077), (0, 0), "{}", dir.display());
+    }
+    assert!(s.join("ws/NOTES.md").exists(), "kept for debugging");
+}
+
+/// Not root: the flag is refused with the reason, before anything is launched. (As root this
+/// path cannot be taken; the other tests take the root one.)
+#[test]
+fn the_flag_is_refused_when_the_harness_is_not_root() {
+    let _g = serial();
+    let me = harness_uid().unwrap();
+    if me == 0 {
+        return;
+    }
+    let other = AgentUser {
+        name: "nobody".into(),
+        uid: 65534,
+        gid: 65534,
+    };
+    let g = gate(Some(other), None);
+    let err = two_reps(&g).err().expect("the run must be refused");
+    assert!(err.contains("must run as root"), "{err}");
+    assert!(!g.out.join("rows.jsonl").exists());
 }
