@@ -45,8 +45,9 @@ pub fn record_hit_limit(code_limit: usize) -> usize {
 
 /// The records that match a pack's goal best lead its History section ("Decisions & dead
 /// ends"), ahead of records that are only anchored on a symbol the goal names: at most this
-/// many, and each only while its own anchored code is unchanged (see `GOAL_LEAD_SCORE`). Chosen
-/// on the design set of `bench/results/2026-11-first-pack/PREREG.md`.
+/// many. Each keeps the reason `goal-lead` whatever its anchor's state, but one whose anchored
+/// code changed is damped and may sort below such a record (see `GOAL_LEAD_SCORE`). Chosen on
+/// the design set of `bench/results/2026-11-first-pack/PREREG.md`.
 pub const GOAL_LEADS: usize = 2;
 /// Score of a goal lead before its `record_factor`: no lower than any `record_score` (at most
 /// `1 + SEED_BONUS`), plus how well it matches (more than 0), so a lead is above every record
