@@ -94,15 +94,11 @@ def without_exposed(rows: list) -> None:
     """PREREG.md, leak check: the same table without the sessions `leak.py` found exposed."""
     p = HERE / "exposed.json"
     if not p.exists():
-        print("### Without exposed sessions
-
-`exposed.json` is missing: run `leak.py` first.
-")
+        print("### Without exposed sessions\n\n`exposed.json` is missing: run `leak.py` first.\n")
         return
     exposed = {tuple(x) for x in json.loads(p.read_text(encoding="utf-8"))}
     kept = [r for r in rows if (r["run"], r["task"], r["arm"], r["rep"]) not in exposed]
-    print(f"### Without exposed sessions ({len(rows) - len(kept)} left out)
-")
+    print(f"### Without exposed sessions ({len(rows) - len(kept)} left out)\n")
     accepted_table(kept)
 
 
