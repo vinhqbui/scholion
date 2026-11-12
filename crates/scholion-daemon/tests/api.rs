@@ -3551,6 +3551,18 @@ async fn correct(e: &Env, t: &Value, summary: &str, target: &str) -> (StatusCode
     .await
 }
 
+/// Posts a record of kind `kind` of `t` that supersedes `target`.
+async fn correct_as(e: &Env, t: &Value, kind: &str, target: &str) -> (StatusCode, Value) {
+    post(
+        e,
+        t,
+        "records",
+        json!({"kind": kind, "summary": format!("a {kind} in its place"), "agent": "grok",
+               "supersedes": target}),
+    )
+    .await
+}
+
 async fn record_by_id(e: &Env, t: &Value, rec: &Value) -> Value {
     task_records(e, t)
         .await
@@ -3720,11 +3732,190 @@ async fn reviews_validations_and_other_tasks_intents_and_handoffs_cannot_be_supe
         let (status, body) = correct(&e, &a, "hide it", &handle(rec)).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     }
-    // but it may restate its own intent and handoff
+    // but it may restate its own intent and handoff, with a record of the same kind only: a
+    // note in their place would leave the task without the intent or the state a claim reads
     for rec in &refused[2..] {
         let (status, body) = correct(&e, &a, "restated", &handle(rec)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}: {body}",
+            rec["kind"]
+        );
+        let said = body["error"].as_str().unwrap();
+        assert!(
+            said.contains(rec["kind"].as_str().unwrap()),
+            "says which kind restates it: {said}"
+        );
+        let kept = record_by_id(&e, &a, rec).await;
+        assert!(kept["superseded_by"].is_null(), "{kept}");
+        let (status, body) = correct_as(&e, &a, rec["kind"].as_str().unwrap(), &handle(rec)).await;
         assert_eq!(status, StatusCode::OK, "{}: {body}", rec["kind"]);
+        let old = record_by_id(&e, &a, rec).await;
+        assert_eq!(old["superseded_by"], body["id"], "{old}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_a_decision_an_attempt_or_a_note_corrects_a_record() {
+    let e = env().await;
+    let a = start_task(&e, "Earlier work").await;
+    let b = start_task(&e, "Later work").await;
+    let events_before = superseded_events(&e).await;
+    let records_before = task_records(&e, &b).await.len();
+    // superseding hides the old record from packs and the pre-read hook, and neither shows an
+    // intent, a validation or a handoff in its place: the claim would vanish, not be corrected
+    for old_kind in ["decision", "attempt", "note"] {
+        let claim = record_on(&e, &a, old_kind, "names stay lower case", "app/util.py").await;
+        for kind in ["intent", "review", "validation", "handoff"] {
+            for t in [&b, &a] {
+                let (status, body) = correct_as(&e, t, kind, &handle(&claim)).await;
+                assert_eq!(
+                    status,
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "{old_kind} by {kind}: {body}"
+                );
+                let said = body["error"].as_str().unwrap();
+                assert!(
+                    said.contains("decision, attempt or note"),
+                    "says which kinds may correct: {said}"
+                );
+            }
+        }
+        let kept = record_by_id(&e, &a, &claim).await;
+        assert!(kept["superseded_by"].is_null(), "{kept}");
+    }
+    assert_eq!(task_records(&e, &b).await.len(), records_before);
+    assert_eq!(superseded_events(&e).await, events_before);
+
+    // inline on submit: checked with the rest before anything is written
+    let claim = record_on(&e, &a, "decision", "hello stays quiet", "app/greeter.py").await;
+    edit_greeter(&e, &b);
+    let (status, body) = submit_with(
+        &e,
+        &b,
+        json!([
+            {"kind": "decision", "summary": "Greet by name"},
+            {"kind": "intent", "summary": "Make hello louder", "supersedes": handle(&claim)}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        task_records(&e, &b).await.len(),
+        records_before,
+        "nothing written"
+    );
+    let (_, task) = call(&e.app, "GET", &format!("/v1/tasks/{}", id(&b)), None).await;
+    assert_eq!(task["status"], "open", "{task}");
+
+    // each of the three corrects each of the three
+    for (old_kind, kind) in [
+        ("decision", "attempt"),
+        ("attempt", "note"),
+        ("note", "decision"),
+    ] {
+        let claim = record_on(&e, &a, old_kind, "names stay lower case", "app/util.py").await;
+        let (status, body) = correct_as(&e, &b, kind, &handle(&claim)).await;
+        assert_eq!(status, StatusCode::OK, "{old_kind} by {kind}: {body}");
+    }
+}
+
+/// How many `record:superseded` events the repo has.
+async fn superseded_events(e: &Env) -> usize {
+    let (_, events) = call(&e.app, "GET", "/v1/events?repo=demo&since=0", None).await;
+    events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|ev| ev["kind"] == "record:superseded")
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn supersedes_takes_a_longer_prefix_and_an_id_without_hyphens() {
+    let e = env().await;
+    let a = start_task(&e, "Earlier work").await;
+    let b = start_task(&e, "Later work").await;
+    let bare = |rec: &Value| rec["id"].as_str().unwrap().replace('-', "");
+    let forms: [&dyn Fn(&Value) -> String; 4] = [
+        &|r| bare(r),
+        &|r| format!("rec:{}", &bare(r)[..14]),
+        &|r| bare(r)[..10].to_owned(),
+        &|r| r["id"].as_str().unwrap()[..13].to_owned(),
+    ];
+    for form in forms {
+        let wrong = record_on(&e, &a, "note", "names stay lower case", "app/util.py").await;
+        let named = form(&wrong);
+        let (status, new) = correct(&e, &b, "names are title case", &named).await;
+        assert_eq!(status, StatusCode::OK, "{named}: {new}");
+        assert_eq!(new["supersedes"], wrong["id"], "{named}");
+    }
+
+    // a prefix two records share names neither: 400, and it says so
+    for twin in [
+        "5eed5eed-1111-4111-8111-111111111111",
+        "5eed5eed-2222-4222-8222-222222222222",
+    ] {
+        sqlx::query(
+            "INSERT INTO records (id, task_id, kind, summary, author_agent)
+             VALUES ($1::uuid, $2::uuid, 'note', 'twin', 'claude')",
+        )
+        .bind(twin)
+        .bind(id(&a))
+        .execute(e.store.pool())
+        .await
+        .unwrap();
+    }
+    let before = task_records(&e, &b).await.len();
+    let (status, body) = correct(&e, &b, "fix", "rec:5eed5eed").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("ambiguous"),
+        "{body}"
+    );
+    assert_eq!(task_records(&e, &b).await.len(), before);
+    let (status, body) = correct(&e, &b, "fix", "rec:5eed5eed2").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["supersedes"], "5eed5eed-2222-4222-8222-222222222222",
+        "{body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_conflict_past_the_longest_chain_followed_names_no_live_record() {
+    let e = env().await;
+    let a = start_task(&e, "Earlier work").await;
+    let first = record_on(&e, &a, "note", "version 0", "app/util.py").await;
+    // 70 corrections of corrections: more than the daemon follows to find the live end
+    let mut chain = vec![first];
+    for i in 1..=70 {
+        let (status, next) = correct(
+            &e,
+            &a,
+            &format!("version {i}"),
+            &handle(chain.last().unwrap()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{next}");
+        chain.push(next);
+    }
+    let b = start_task(&e, "Later work").await;
+    let (status, body) = correct(&e, &b, "another version", &handle(&chain[0])).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let said = body["error"].as_str().unwrap();
+    assert!(said.contains("already superseded"), "{said}");
+    assert_eq!(
+        said.matches("rec:").count(),
+        1,
+        "names only the record asked about, not one that is not the live end: {said}"
+    );
+    // within reach, the live end is named
+    let (status, body) = correct(&e, &b, "another version", &handle(&chain[40])).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let said = body["error"].as_str().unwrap();
+    assert!(said.contains(&handle(&chain[70])), "{said}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

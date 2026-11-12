@@ -589,6 +589,105 @@ async fn submit_tool_accepts_records() {
     );
 }
 
+/// What a refused tool call says.
+fn refusal(reply: &Value) -> &str {
+    reply["result"]["content"][0]["text"].as_str().unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn submit_lists_supersedes_for_its_inline_records_and_takes_it() {
+    let e = env().await;
+    let earlier = start_task(&e, "Earlier work").await;
+    let mut handles = vec![];
+    for summary in ["names stay lower case", "hello stays quiet"] {
+        let (status, wrong) = call(
+            &e.app,
+            "POST",
+            &format!("/v1/tasks/{}/records", id(&earlier)),
+            Some(json!({"kind": "decision", "summary": summary, "agent": "claude",
+                        "anchors": [{"path": "app/util.py"}]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{wrong}");
+        handles.push(format!(
+            "rec:{}",
+            &wrong["id"].as_str().unwrap().replace('-', "")[..8]
+        ));
+    }
+
+    let s = connect(&e, "claude-code").await;
+    let list = send(
+        &e,
+        Some(&s),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let tools = list.body["result"]["tools"].as_array().unwrap();
+    let named = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
+    // `submit` says its records take the same fields as `record`: every one `record` lists but
+    // the task is listed for them too
+    let inline = &named("submit")["inputSchema"]["properties"]["records"]["items"]["properties"];
+    assert_eq!(inline["supersedes"], json!({"type": "string"}), "{inline}");
+    for (field, _) in named("record")["inputSchema"]["properties"]
+        .as_object()
+        .unwrap()
+    {
+        assert!(
+            field == "task_id" || inline[field].is_object(),
+            "`record` takes {field}, submit's records do not list it: {inline}"
+        );
+    }
+
+    let t = start_task(&e, "Improve greeting").await;
+    edit_greeter(&e, &t);
+    // a record that may not correct is refused through the tool as through the API
+    let r = tool(
+        &e,
+        &s,
+        "record",
+        json!({"task_id": id(&t), "kind": "intent", "summary": "Make hello louder",
+               "supersedes": handles[0]}),
+    )
+    .await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(refusal(&r).contains("decision, attempt or note"), "{r}");
+    let r = tool(
+        &e,
+        &s,
+        "submit",
+        json!({"task_id": id(&t), "records": [
+            {"kind": "intent", "summary": "Make hello louder", "supersedes": handles[0]}]}),
+    )
+    .await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(refusal(&r).contains("decision, attempt or note"), "{r}");
+
+    let r = tool(
+        &e,
+        &s,
+        "submit",
+        json!({"task_id": id(&t), "records": [
+            {"kind": "decision", "summary": "names are title case", "supersedes": handles[0]}]}),
+    )
+    .await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let (_, records) = call(
+        &e.app,
+        "GET",
+        &format!("/v1/tasks/{}/records", id(&earlier)),
+        None,
+    )
+    .await;
+    let superseded: Vec<&Value> = records["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["superseded_by"].is_string())
+        .collect();
+    assert_eq!(superseded.len(), 1, "{records}");
+    assert_eq!(superseded[0]["summary"], "names stay lower case");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn requests_need_the_session_from_initialize() {
     let e = env().await;
@@ -1142,6 +1241,8 @@ async fn the_tool_list_stays_small() {
     // a reason that pays for itself. `record`'s `supersedes` (85 bytes: how an agent corrects a
     // stored record that is wrong) was paid for inside the limit: `start_task` lost its empty
     // `required` list and `submit`'s inline records the receipt description `record` already has.
+    // The inline records' own `supersedes` (31 bytes, so they list every field `record` takes)
+    // was paid for by `records` losing a description that repeated the tool's (52 bytes).
     assert!(
         bytes <= 10_800,
         "tools/list is {bytes} bytes; it was 10,800 after `supersedes`"
