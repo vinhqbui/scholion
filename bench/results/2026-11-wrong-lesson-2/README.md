@@ -18,7 +18,10 @@ the agent can read contradicts it. The same note was given three ways:
 
 By the pre-registered rule **H1 is reported**: on this task an agent that gets the wrong note as a
 record is accepted less often than one that gets the same text in a notes file. The model solves
-the task every time without any note, so the note is what makes the `av` arm fail.
+the task every time without any note, and 27 times of 30 with the note in a notes file. The run
+does not establish why the record does so much worse: no hypothesis about the cause was
+registered, and the two arms differ in three ways named in advance (see "What this does not
+show").
 
 This is one task, one wrong note, one wording and one model. It says what happens here when a
 record is wrong; it says nothing about how often records are wrong, and nothing about right ones.
@@ -61,6 +64,17 @@ sessions by what its input names.
 - The "looked around" column of `leak.md` is inflated: the scan counts a bare `/` inside other
   text (a regular expression, a fraction). It is kept as written; the exposing classes do not have
   this fault, because they need a path under a named directory.
+- **What the scan can miss.** It classifies a call by the absolute paths and names in its input.
+  A read through `~`, `$HOME` or another variable, a `..` path that names none of the watched
+  words (it is counted only as "looked around"), a path put together in the shell, or a symlink
+  made inside the working copy would not be classed as exposing. Network use is seen only as
+  WebSearch, WebFetch, `curl` or `wget`. So "no session named" is what the scan found, not proof
+  that no session reached.
+- **A second check that does not depend on paths** (post hoc, [`content.py`](content.py),
+  [`content.md`](content.md)): every event of all 72 transcripts, inputs and outputs, was searched
+  for the file name of a hidden test and for the names of the 30 test functions the hidden tests
+  define. No transcript has one. A session that had read a hidden test by any file route would
+  show its text in a tool result. This still says nothing about the daemon or the network.
 
 ## Secondary measures as registered
 
@@ -72,9 +86,12 @@ sessions by what its input names.
 | notes | 30 | 3 | 0 | 3 | 0 |
 | av | 30 | 26 | 0 | 26 | 2 |
 
-The two `av` sessions in the last column (repetitions 4 and 9) wrote the note's approach in a form
-the pattern does not match; their hidden test fails the same way as the others (the parts do not
-add up to the total). So all 28 `av` failures and all 3 `notes` failures are the note's approach.
+By the harness's pattern, 26 of the 28 `av` failures and all 3 `notes` failures wrote the note's
+approach. The other two `av` failures (repetitions 4 and 9) are not matched by the pattern. Post
+hoc, [`content.md`](content.md) prints the last text each of the 31 sessions that were not
+accepted wrote to `tallyho/pricing/quote.py`: all 31, those two included, call `.times(` (the
+note's approach) and none calls `.allocate(` (the one that passes). That table is read from the
+transcripts, which are not in this repository.
 
 **What the agent did with the note** ([`behaviour.md`](behaviour.md), the first run's
 `behaviour.py` unchanged, run through [`behaviour.py`](behaviour.py)):
@@ -99,9 +116,14 @@ in the session-start hook's output, 30 of 30 (the first record of the pack, 709 
 never by the pre-read hook. `notes`: 29 sessions read `NOTES.md` with the Read tool and one with
 `cat`; all 30 have the note's whole summary in a tool result.
 
-**Cost.** In the table above, as the harness reports it at the pre-registered prices. `av` costs
-less per session than `notes` and about ten times more per accepted task, because it is seldom
-accepted.
+**Cost.** Cost per accepted task is in the table above, as the harness reports it at the
+pre-registered prices. Median session cost, from `qs-wrong/report.md` and `qs-cold/report.md`:
+`notes` $0.015, `av` $0.011, `cold` $0.009. `av` costs less per session than `notes` and about
+ten times more per accepted task, because it is seldom accepted.
+
+One sentence of the generated `report.md` files is wrong for this pool: it says the notes are
+commit messages in every arm but `cold`. The wrong notes are marked `no_commit` and are in no
+commit message; the harness's report text was not updated for that.
 
 ## What this does not show
 
@@ -124,8 +146,10 @@ repository, the network is open, and verify runs what the agent wrote as root.
 1. **Smoke.** Three invocations were refused by the harness's preflight before any session
    started (no row, no spend): the import directory was enterable by the agent user, and then
    each refused attempt left an empty run directory that the next preflight refused on. The
-   fourth, `smoke-3`, ran and passed (three valid rows, `agent_isolation: benchagent`). A refused
-   preflight should not leave a directory behind; that is a harness fix to make.
+   fourth, `smoke-3`, ran and passed by the registered criteria (three valid rows, the model
+   answered and edited, verify ran, `agent_isolation: benchagent`); "passed" is about the set-up,
+   not the task: its `cold` session was not accepted. A refused preflight should not leave a
+   directory behind; that is a harness fix to make.
 2. **Leak scan.** The pre-registration names the first run's `leak.py`. This run's `leak.py` is
    that scan with the closed set-up's paths, exact session names (the first script would have
    missed `-r1` inside `-r10`) and a list of every outside path. Written while the primary cell
@@ -141,6 +165,9 @@ repository, the network is open, and verify runs what the agent wrote as root.
 6. **The bill.** The pre-registration expected the bill to be about the harness figure. It was
    about half (below).
 7. **The secondary cell has not run.** It waits for DeepSeek's off-peak window, as registered.
+8. **`content.py`** is not in the pre-registration. It was written after the result was known,
+   when a review of this file asked what the path scan can miss and how the two unmatched `av`
+   failures were known to be the note's approach. It is used for nothing in the decision.
 
 ## Spend
 
@@ -185,8 +212,8 @@ The transcripts (`events.jsonl` per session) are kept in the container under
 - `PREREG.md`: the pre-registration. `qs-cold/`, `qs-wrong/`, `smoke-3/`: what the harness wrote
   (`rows.jsonl`, `meta.json`, `report.md`). `first-packs-qs/`, `first-packs-silent/`: the free
   delivery check before the run.
-- `leak.py`, `leak.md`, `exposed.json`; `analyze.py`, `analysis.md`; `behaviour.py`,
-  `behaviour.md`.
+- `leak.py`, `leak.md`, `exposed.json`; `content.py`, `content.md` (post hoc); `analyze.py`,
+  `analysis.md`; `behaviour.py`, `behaviour.md`.
 
 ## What follows
 
