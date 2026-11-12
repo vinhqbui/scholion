@@ -645,11 +645,16 @@ fn seed_dead_ends(spec: &TaskSpec, daemon: &Daemon, task: &str, generation: i64)
     Ok(())
 }
 
-fn settings(arm: Arm, cfg: &RunConfig, hook_count: &Path) -> Value {
+/// What the hooks themselves write (`hook-count`, `pre-read.out`), by name.
+const HOOK_FILES: [&str; 2] = ["hook-count", "pre-read.out"];
+
+/// The session's settings file. The hook commands write `HOOK_FILES` into `hook_dir`, which
+/// must be a directory the user the agent CLI runs as can write to.
+fn settings(arm: Arm, cfg: &RunConfig, hook_dir: &Path) -> Value {
     if !arm.uses_av() {
         return json!({});
     }
-    let count = sh_quote(&hook_count.to_string_lossy());
+    let count = sh_quote(&hook_dir.join("hook-count").to_string_lossy());
     let av = sh_quote(&cfg.av_bin);
     let code = cfg
         .hook_code
@@ -674,7 +679,7 @@ fn settings(arm: Arm, cfg: &RunConfig, hook_count: &Path) -> Value {
     if cfg.jit_hooks {
         // Claude Code's transcript keeps a SessionStart hook's output but not a PreToolUse
         // hook's, so what the agent was told about a file is kept here (`pre-read.out`).
-        let said = sh_quote(&dir.join("pre-read.out").to_string_lossy());
+        let said = sh_quote(&hook_dir.join("pre-read.out").to_string_lossy());
         let read = format!("echo pre-read >> {count}; {av} hook pre-read | tee -a {said}");
         // The prefix is on the hook command: a bench backlog is empty, and the default
         // wait is 600s. A Stop hook that does not inherit the session environment would
@@ -798,16 +803,17 @@ pub fn run_session(
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|t| crate::calibrate::cl100k_tokens(&t));
 
-    // The hooks are run by the agent CLI, so with an agent user they count in a file of its own
-    // (its home), which is copied to `hook-count` once the session is over.
+    // The hooks are run by the agent CLI, so with an agent user they write their files
+    // (`HOOK_FILES`) in a directory of its own (its home), and those are copied to the session
+    // directory once the session is over.
     let home = dir.join("home");
-    let hook_count = match user {
-        Some(_) => home.join("hook-count"),
-        None => dir.join("hook-count"),
+    let hook_dir = match user {
+        Some(_) => &home,
+        None => &dir,
     };
     let settings_path = dir.join("settings.json");
     let mcp_path = dir.join("mcp.json");
-    write_json(&settings_path, &settings(arm, cfg, &hook_count))?;
+    write_json(&settings_path, &settings(arm, cfg, hook_dir))?;
     write_json(&mcp_path, &mcp_config(arm, cfg, av_task.as_ref()))?;
     let config_dir = dir.join("claude-config");
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
@@ -899,9 +905,8 @@ pub fn run_session(
         // before the checkpoint, the hidden tests and verify: nothing of the agent's runs any
         // more, and the working copy is root's alone
         lent.take_back()?;
-        if hook_count.exists() {
-            std::fs::copy(&hook_count, dir.join("hook-count"))
-                .map_err(|e| format!("{}: {e}", hook_count.display()))?;
+        for name in HOOK_FILES {
+            keep_hook_file(&home.join(name), &dir.join(name))?;
         }
     }
     let ran = ran?;
@@ -963,6 +968,18 @@ pub fn run_session(
         remove_work(&workspace, av_task.as_ref(), daemon.as_ref());
     }
     Ok(outcome)
+}
+
+/// After the take-back: what the hooks wrote in the agent user's home is kept in the session
+/// directory, the harness's alone. The agent owned that home, so only a regular file is copied:
+/// a link it left under the name is not followed, nor a device or pipe read.
+fn keep_hook_file(from: &Path, to: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(from) {
+        Ok(m) if m.is_file() => {}
+        _ => return Ok(()),
+    }
+    std::fs::copy(from, to).map_err(|e| format!("{}: {e}", from.display()))?;
+    isolate::set_mode(to, 0o600)
 }
 
 /// Variables that point a program at the harness user's home, which the agent user cannot

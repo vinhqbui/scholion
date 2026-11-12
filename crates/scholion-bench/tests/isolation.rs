@@ -41,6 +41,11 @@ if [ -n "$cmd" ]; then
   echo "{\"source\":\"startup\",\"cwd\":\"$PWD\"}" | sh -c "$cmd" > "$out/hook-start.out" 2> "$out/hook-start.err"
   echo $? > "$out/hook-start.rc"
 fi
+cmd=$(hook PreToolUse)
+if [ -n "$cmd" ]; then
+  echo "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$PWD/calc.py\"}}" | sh -c "$cmd" > "$out/hook-pre.out" 2> "$out/hook-pre.err"
+  echo $? > "$out/hook-pre.rc"
+fi
 printf 'def add(a, b):\n    return a + b\n' > calc.py || exit 7
 if [ -n "$FAKE_LEAVE_BEHIND" ]; then
   # what an agent could leave for verify and for the next session: a link where a hidden test
@@ -697,6 +702,73 @@ fn the_real_av_hooks_work_as_the_agent_user() {
         user.name,
         user.uid,
         av.display()
+    ));
+}
+
+/// A fake `av` whose pre-read hook has something to say, as the real one has about a file with
+/// records.
+const SAYING_AV: &str = r#"#!/bin/sh
+cat > /dev/null
+case "$2" in
+  session-start) echo '## Task (fake pack)';;
+  pre-read) echo 'a record about calc.py';;
+esac
+exit 0
+"#;
+
+/// `--jit-hooks` with an agent user: the pre-read hook keeps what it told the agent in
+/// `pre-read.out`, and the agent user cannot write in the session directory. A hook that fails
+/// there would lose the agent the records about the file it is about to read, so the hook must
+/// exit 0 as that user, and the harness must still end up with the file, its own alone.
+#[test]
+fn the_pre_read_hook_works_as_the_agent_user_and_what_it_said_is_kept() {
+    let _g = serial();
+    let Some(mut g) = isolated_gate("pre-read hook (--jit-hooks)") else {
+        return;
+    };
+    let user = g.cfg.agent_user.clone().unwrap();
+    g.cfg.jit_hooks = true;
+    script(&g.open.join("tools"), "av", SAYING_AV);
+    let r = sessions(&g, &[Arm::Av], 1).unwrap();
+    assert_eq!(r.rows.len(), 1, "{:?}", r.rows);
+    assert_eq!(r.rows[0].status, Status::Ok, "{:?}", r.rows);
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    let s = g.session_dir(Arm::Av, 1);
+    assert_eq!(
+        read(&s.join("claude-config/fake-uid")).trim(),
+        user.uid.to_string()
+    );
+    let err = read(&s.join("claude-config/hook-pre.err"));
+    assert_eq!(
+        read(&s.join("claude-config/hook-pre.rc")).trim(),
+        "0",
+        "the pre-read hook failed as the agent user: {err}"
+    );
+    assert_eq!(err.trim(), "", "the pre-read hook complained");
+    let told = read(&s.join("claude-config/hook-pre.out"));
+    assert_eq!(told, "a record about calc.py\n", "what the agent was told");
+    assert_eq!(
+        read(&s.join("pre-read.out")),
+        told,
+        "the harness keeps what the hook said"
+    );
+    assert_eq!(
+        read(&s.join("hook-count")).lines().collect::<Vec<_>>(),
+        ["session-start", "pre-read", "post-edit"]
+    );
+    for f in ["pre-read.out", "hook-count", "home/pre-read.out", "home"] {
+        let m = std::fs::metadata(s.join(f)).unwrap();
+        assert_eq!(
+            (m.uid(), m.mode() & 0o077),
+            (0, 0),
+            "{f} is root's and closed to others"
+        );
+    }
+    say(&format!(
+        "agent-isolation, pre-read hook: RAN as root with --agent-user {} (uid {}) and \
+         --jit-hooks: the PreToolUse hook exited 0 with nothing on stderr, the agent got its \
+         output, and <session>/pre-read.out holds it, root's and mode 600",
+        user.name, user.uid
     ));
 }
 
