@@ -2282,7 +2282,13 @@ async fn earlier_record(fx: &Fx, kind: RecordKind, summary: &str, path: &str) ->
         .await
         .unwrap();
     fx.store
-        .add_record(record(other.id, kind, summary, "", vec![anchor(path, None)]))
+        .add_record(record(
+            other.id,
+            kind,
+            summary,
+            "",
+            vec![anchor(path, None)],
+        ))
         .await
         .unwrap()
 }
@@ -2297,7 +2303,11 @@ async fn a_pack_that_shows_another_tasks_record_says_a_wrong_one_can_be_correcte
         "app/greeter.py",
     )
     .await;
-    let pack = fx.packer.build(req(&fx.task, 2500, "claims")).await.unwrap();
+    let pack = fx
+        .packer
+        .build(req(&fx.task, 2500, "claims"))
+        .await
+        .unwrap();
     let md = &pack.markdown;
     let history: Vec<&str> = section(md, "## Decisions & dead ends").lines().collect();
     assert_eq!(history[1], CORRECT_HINT, "right under the heading:\n{md}");
@@ -2311,8 +2321,16 @@ async fn a_pack_that_shows_another_tasks_record_says_a_wrong_one_can_be_correcte
     assert_eq!(pack.tokens, estimate_tokens(md, FAM), "{md}");
 
     // a later pack of the session only refers back to the record: the line is not repeated
-    let again = fx.packer.build(req(&fx.task, 2500, "claims")).await.unwrap();
-    assert!(again.markdown.contains("(sent earlier)"), "{}", again.markdown);
+    let again = fx
+        .packer
+        .build(req(&fx.task, 2500, "claims"))
+        .await
+        .unwrap();
+    assert!(
+        again.markdown.contains("(sent earlier)"),
+        "{}",
+        again.markdown
+    );
     assert!(!again.markdown.contains(CORRECT_HINT), "{}", again.markdown);
 }
 
@@ -2420,9 +2438,9 @@ async fn records_at_says_once_per_session_that_a_wrong_record_can_be_corrected()
 
     let first = at("app/greeter.py", Some("jit")).await;
     assert!(
-        first.markdown.ends_with(&format!(
-            "Full text: `av expand <id>`.\n{RECORDS_AT_HINT}"
-        )),
+        first
+            .markdown
+            .ends_with(&format!("Full text: `av expand <id>`.\n{RECORDS_AT_HINT}")),
         "{}",
         first.markdown
     );
@@ -2432,21 +2450,49 @@ async fn records_at_says_once_per_session_that_a_wrong_record_can_be_corrected()
     );
     // another file in the same session: its records, and not the line again
     let second = at("app/util.py", Some("jit")).await;
-    assert!(second.markdown.contains("shared with goodbye"), "{}", second.markdown);
-    assert!(!second.markdown.contains("--supersedes"), "{}", second.markdown);
+    assert!(
+        second.markdown.contains("shared with goodbye"),
+        "{}",
+        second.markdown
+    );
+    assert!(
+        !second.markdown.contains("--supersedes"),
+        "{}",
+        second.markdown
+    );
     assert!(second.markdown.ends_with("Full text: `av expand <id>`."));
     // a new session is told once more
     let fresh = at("app/util.py", Some("jit-2")).await;
-    assert!(fresh.markdown.ends_with(RECORDS_AT_HINT), "{}", fresh.markdown);
+    assert!(
+        fresh.markdown.ends_with(RECORDS_AT_HINT),
+        "{}",
+        fresh.markdown
+    );
     // without a session nothing is remembered, so every answer says it
     for _ in 0..2 {
         let unnamed = at("app/greeter.py", None).await;
-        assert!(unnamed.markdown.ends_with(RECORDS_AT_HINT), "{}", unnamed.markdown);
+        assert!(
+            unnamed.markdown.ends_with(RECORDS_AT_HINT),
+            "{}",
+            unnamed.markdown
+        );
     }
     // a review finding is no one's to supersede: not said, and still owed to the session
     let review = at("README.md", Some("jit-3")).await;
-    assert!(review.markdown.contains("must name the flag"), "{}", review.markdown);
-    assert!(!review.markdown.contains("--supersedes"), "{}", review.markdown);
+    assert!(
+        review.markdown.contains("must name the flag"),
+        "{}",
+        review.markdown
+    );
+    assert!(
+        !review.markdown.contains("--supersedes"),
+        "{}",
+        review.markdown
+    );
     let later = at("app/greeter.py", Some("jit-3")).await;
-    assert!(later.markdown.ends_with(RECORDS_AT_HINT), "{}", later.markdown);
+    assert!(
+        later.markdown.ends_with(RECORDS_AT_HINT),
+        "{}",
+        later.markdown
+    );
 }

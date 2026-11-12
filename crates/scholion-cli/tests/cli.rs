@@ -467,7 +467,8 @@ fn record_supersedes_corrects_a_record_of_another_task() {
     );
     let line = ok(av_stdin(&d, &ws, &["record", "--json", "-"], &batch));
     assert!(
-        line.trim().ends_with(&format!("(note), supersedes {fixed}")),
+        line.trim()
+            .ends_with(&format!("(note), supersedes {fixed}")),
         "{line}"
     );
 
@@ -498,11 +499,7 @@ fn record_supersedes_corrects_a_record_of_another_task() {
         !o.status.success() && e.contains("records[1]") && e.contains("supersedes"),
         "{e}"
     );
-    let both = av(
-        &d,
-        &ws,
-        &["record", "--json", "-", "--supersedes", &wrong],
-    );
+    let both = av(&d, &ws, &["record", "--json", "-", "--supersedes", &wrong]);
     assert!(!both.status.success(), "{}", err(&both));
 }
 

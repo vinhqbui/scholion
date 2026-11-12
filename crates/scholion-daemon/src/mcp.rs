@@ -86,13 +86,15 @@ fn tools() -> Value {
     let anchors = json!({"type": "array", "description": "Code the record is about.", "items": {
         "type": "object", "required": ["path"],
         "properties": {"path": {"type": "string"}, "symbol": {"type": "string"}}}});
+    // `submit` says its records take the same fields as `record`, which describes them: the
+    // descriptions are not repeated here, since every byte of this list is sent on every turn
     let record_item = json!({"type": "object", "required": ["kind", "summary"], "properties": {
         "kind": {"type": "string", "enum": ["intent", "decision", "attempt", "note"]},
         "summary": {"type": "string"}, "body": {"type": "string"}, "anchors": anchors,
-        "receipt": {"type": "string", "description": "The rcp:… id of the pack you worked from."}}});
+        "receipt": {"type": "string"}}});
     json!([
         {"name": "start_task", "description": "Start a task: creates its isolated workspace and returns the workspace path and a first context pack. Omit title and goal for your next job: a review or merge of others' work, a handoff, else a backlog task that fits you. wait: seconds to wait for one.",
-         "inputSchema": {"type": "object", "required": [], "properties": {
+         "inputSchema": {"type": "object", "properties": {
             "repo": {"type": "string"}, "title": {"type": "string"}, "goal": {"type": "string"},
             "budget": {"type": "integer", "description": "Token budget of the pack (default 800)."},
             "wait": {"type": "integer"}}}},
@@ -103,6 +105,7 @@ fn tools() -> Value {
             "kind": {"type": "string", "enum": ["intent", "decision", "attempt", "note"]},
             "summary": {"type": "string"}, "body": {"type": "string"}, "anchors": anchors,
             "receipt": {"type": "string", "description": "The rcp:… id of the pack you worked from."},
+            "supersedes": {"type": "string", "description": "rec:… id of a record this corrects."},
             "task_id": task_id}}},
         {"name": "get_context", "description": "A token-budgeted context pack for the task (small by default; pass a larger budget for more): code, decisions, dead ends, conventions, other agents' live work. Items sent earlier in this session are referenced, not resent.",
          "inputSchema": {"type": "object", "properties": {
@@ -877,14 +880,27 @@ async fn run_tool(
                     format!("/v1/tasks/{t}/records"),
                     Some(json!({"kind": args["kind"], "summary": args["summary"],
                                     "body": args["body"], "anchors": args["anchors"],
-                                    "receipt": args["receipt"], "agent": agent})),
+                                    "receipt": args["receipt"],
+                                    "supersedes": args["supersedes"], "agent": agent})),
                     generation,
                     |r| {
-                        format!(
+                        let short = |id: &Value| {
+                            id.as_str()
+                                .unwrap_or_default()
+                                .replace('-', "")
+                                .chars()
+                                .take(8)
+                                .collect::<String>()
+                        };
+                        let mut said = format!(
                             "recorded rec:{} ({})",
-                            &r["id"].as_str().unwrap_or_default().replace('-', "")[..8],
+                            short(&r["id"]),
                             r["kind"].as_str().unwrap_or_default()
-                        )
+                        );
+                        if r["supersedes"].is_string() {
+                            said.push_str(&format!(", supersedes rec:{}", short(&r["supersedes"])));
+                        }
+                        said
                     },
                 ),
                 "get_context" => {

@@ -81,6 +81,22 @@ str_enum!(RecordKind {
     Validation => "validation",
 });
 
+/// Why a record of another task (`own_task` false) or of the same one must not supersede a
+/// record of `kind`; `None` when it may. Superseding hides a record from every pack, hook and
+/// search, so no agent may hide a review finding or a validation (a failed check stays visible),
+/// and only a task itself restates its `intent` or its `handoff` state.
+pub fn supersede_refusal(kind: RecordKind, own_task: bool) -> Option<&'static str> {
+    match kind {
+        RecordKind::Review | RecordKind::Validation => {
+            Some("reviews and validations cannot be superseded")
+        }
+        RecordKind::Intent | RecordKind::Handoff if !own_task => {
+            Some("only its own task can supersede a task's intent or handoff")
+        }
+        _ => None,
+    }
+}
+
 str_enum!(Verdict {
     Approve => "approve",
     RequestChanges => "request_changes",
@@ -613,6 +629,23 @@ mod tests {
         assert_eq!(obj["symbol_id"], 7);
         assert!(obj["task_id"].is_null());
         assert_eq!(obj["superseded"], false);
+    }
+
+    #[test]
+    fn what_may_be_superseded() {
+        use RecordKind::*;
+        for kind in [Decision, Attempt, Note] {
+            assert_eq!(supersede_refusal(kind, false), None, "{kind:?}");
+            assert_eq!(supersede_refusal(kind, true), None, "{kind:?}");
+        }
+        for kind in [Review, Validation] {
+            assert!(supersede_refusal(kind, false).is_some(), "{kind:?}");
+            assert!(supersede_refusal(kind, true).is_some(), "{kind:?}");
+        }
+        for kind in [Intent, Handoff] {
+            assert!(supersede_refusal(kind, false).is_some(), "{kind:?}");
+            assert_eq!(supersede_refusal(kind, true), None, "{kind:?}");
+        }
     }
 
     #[test]

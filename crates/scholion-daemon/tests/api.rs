@@ -3624,7 +3624,11 @@ async fn a_correction_without_anchors_takes_the_anchors_of_the_record_it_correct
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{own}");
-    assert_eq!(own["anchors"], json!([{"path": "app/greeter.py"}]), "{own}");
+    assert_eq!(
+        own["anchors"],
+        json!([{"path": "app/greeter.py", "symbol": null}]),
+        "{own}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,17 +1,44 @@
 //! Markdown rendering of an allocation.
 
+use std::collections::HashSet;
+
 use scholion_core::{AgentFamily, Tier};
 
 use crate::budget::{Item, Section};
+use crate::ledger::sent_line;
 use crate::tokens::estimate_tokens;
 
 const FOOTER_RULE: &str = "---";
 
+/// The first line of the records section when it shows a record of another task. A stored
+/// record is what an earlier agent believed, and an agent handed one as a record followed it
+/// even when it was wrong, where the same text in a notes file was simply edited
+/// (`bench/results/2026-11-wrong-lesson`). So the pack says what a record is and how a wrong one
+/// is corrected. Not printed for a task's own records alone, nor when every other task's record
+/// in the section is only a back-reference to an earlier pack of the session.
+pub(crate) const CORRECT_HINT: &str = "Claims by earlier agents: check against the code; correct \
+     wrong ones with `av record --supersedes rec:…`";
+
 pub(crate) fn push_section(out: &mut String, heading: &str, items: &[&(Item, Tier)], always: bool) {
+    push_section_noted(out, heading, None, items, always);
+}
+
+/// `push_section` with a line of `note` between the heading and the items.
+fn push_section_noted(
+    out: &mut String,
+    heading: &str,
+    note: Option<&str>,
+    items: &[&(Item, Tier)],
+    always: bool,
+) {
     if items.is_empty() && !always {
         return;
     }
     out.push_str(&format!("## {heading}\n"));
+    if let Some(note) = note {
+        out.push_str(note);
+        out.push('\n');
+    }
     if items.is_empty() {
         out.push_str("(none)\n");
     }
@@ -22,8 +49,11 @@ pub(crate) fn push_section(out: &mut String, heading: &str, items: &[&(Item, Tie
     out.push('\n');
 }
 
+/// `foreign`: ids of the History items that are another task's records the reader may supersede
+/// (`Gathered::foreign`).
 pub(crate) fn render(
     chosen: &[(Item, Tier)],
+    foreign: &HashSet<String>,
     omitted: &[String],
     omitted_total: usize,
     tokens: u32,
@@ -52,10 +82,15 @@ pub(crate) fn render(
         &pick(&|i| i.section == Section::Map),
         show_empty_map,
     );
-    push_section(
+    let history = pick(&|i| i.section == Section::History);
+    let claims = history
+        .iter()
+        .any(|(i, tier)| foreign.contains(&i.id) && i.text(*tier) != sent_line(&i.id));
+    push_section_noted(
         &mut out,
         "Decisions & dead ends",
-        &pick(&|i| i.section == Section::History),
+        claims.then_some(CORRECT_HINT),
+        &history,
         false,
     );
     push_section(
@@ -149,8 +184,8 @@ fn stable(render: impl Fn(u32) -> String, family: AgentFamily) -> (String, u32) 
     (md, est)
 }
 
-/// Worst-case fixed text of a pack (every heading, footer with large numbers); its token cost is
-/// subtracted from the budget before items are allocated.
+/// Worst-case fixed text of a pack (every heading, the line under the records heading, footer
+/// with large numbers); its token cost is subtracted from the budget before items are allocated.
 pub(crate) fn skeleton_text() -> String {
     let chosen: Vec<(Item, Tier)> = Section::ALL
         .iter()
@@ -171,7 +206,8 @@ pub(crate) fn skeleton_text() -> String {
             )
         })
         .collect();
-    let mut text = render(&chosen, &[], 99_999, 99_999, 99_999, true);
+    let foreign = HashSet::from(["conv:0".to_owned()]);
+    let mut text = render(&chosen, &foreign, &[], 99_999, 99_999, 99_999, true);
     text.push_str("## Live work\n");
     text
 }

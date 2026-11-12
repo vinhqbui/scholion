@@ -84,8 +84,15 @@ pub struct RecordsAt {
 /// Most tokens `records_at` returns: it rides along with a file read, so it stays a few lines.
 pub const RECORDS_AT_TOKENS: u32 = 400;
 
+/// The last line of a `records_at` answer, once per session: the records are other agents'
+/// claims, and a wrong one is corrected, not followed (`render::CORRECT_HINT` says why).
+const RECORDS_AT_HINT: &str =
+    "Check them against the code; correct wrong ones with `av record --supersedes <id>`.";
+/// The session ledger's entry for `RECORDS_AT_HINT` having been sent.
+const RECORDS_AT_HINT_ID: &str = "hint:supersedes";
+
 /// Bumped by any change to ranking or rendering; recorded in every receipt.
-pub const PACKER_VERSION: u32 = 7;
+pub const PACKER_VERSION: u32 = 8;
 
 pub struct Packer {
     vcs: Arc<dyn Vcs>,
@@ -160,6 +167,7 @@ impl Packer {
             collapse_sent(&mut gathered.items, &sent);
         }
 
+        let foreign = std::mem::take(&mut gathered.foreign);
         let skeleton = estimate_tokens(&skeleton_text(), req.family);
         let alloc = allocate(
             gathered.items,
@@ -179,6 +187,7 @@ impl Packer {
             |c, total, n| {
                 render(
                     c,
+                    &foreign,
                     &alloc.omitted,
                     total,
                     n,
@@ -395,9 +404,19 @@ impl Packer {
             None => Default::default(),
         };
         let head = format!("**av: recorded about `{path}`** (by other tasks)");
-        let foot = "Full text: `av expand <id>`.";
-        let mut used = estimate_tokens(&format!("{head}\n{foot}"), AgentFamily::default());
+        let mut foot = "Full text: `av expand <id>`.".to_owned();
+        // Once per session, and counted before the records are chosen, so the answer stays
+        // within its cap.
+        let hint_due = !sent.contains_key(RECORDS_AT_HINT_ID);
+        let fixed = if hint_due {
+            format!("{head}\n{foot}\n{RECORDS_AT_HINT}")
+        } else {
+            format!("{head}\n{foot}")
+        };
+        let mut used = estimate_tokens(&fixed, AgentFamily::default());
         let (mut lines, mut ids) = (vec![], vec![]);
+        // whether a record shown is one the reader may supersede (not a review or a handoff)
+        let mut correctable = false;
         for rec in recs {
             let (id, texts) = record_texts(rec, false, false);
             // a handle (a clipped summary) does not count as sent
@@ -415,13 +434,21 @@ impl Packer {
             used += cost;
             lines.push(text.clone());
             ids.push(id);
+            correctable |= scholion_core::supersede_refusal(rec.kind, false).is_none();
         }
         if ids.is_empty() {
             return Ok(RecordsAt::default());
         }
+        let hint = hint_due && correctable;
+        if hint {
+            foot = format!("{foot}\n{RECORDS_AT_HINT}");
+        }
         if let Some(s) = session {
-            let note: Vec<(String, Tier)> =
+            let mut note: Vec<(String, Tier)> =
                 ids.iter().map(|i| (i.clone(), Tier::Summary)).collect();
+            if hint {
+                note.push((RECORDS_AT_HINT_ID.to_owned(), Tier::Summary));
+            }
             self.store.ledger_put(s, &note).await?;
         }
         Ok(RecordsAt {

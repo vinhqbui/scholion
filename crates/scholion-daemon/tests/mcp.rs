@@ -293,7 +293,10 @@ async fn the_record_tool_corrects_a_record_by_the_handle_a_pack_prints() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{wrong}");
-    let handle = format!("rec:{}", &wrong["id"].as_str().unwrap().replace('-', "")[..8]);
+    let handle = format!(
+        "rec:{}",
+        &wrong["id"].as_str().unwrap().replace('-', "")[..8]
+    );
 
     let s = connect(&e, "grok").await;
     let list = send(
@@ -1136,10 +1139,12 @@ async fn the_tool_list_stays_small() {
     // tokens) to the 10,040 before it, Plan 9 112 (start_task's wait and its longer description),
     // propose mode 477 (`post_backlog`: before it an agent had no way to leave follow-up work for
     // another agent, or to propose optional work for a human to accept); a bigger tool list needs
-    // a reason that pays for itself.
+    // a reason that pays for itself. `record`'s `supersedes` (85 bytes: how an agent corrects a
+    // stored record that is wrong) was paid for inside the limit: `start_task` lost its empty
+    // `required` list and `submit`'s inline records the receipt description `record` already has.
     assert!(
         bytes <= 10_800,
-        "tools/list is {bytes} bytes; it was 10,789 after propose mode"
+        "tools/list is {bytes} bytes; it was 10,800 after `supersedes`"
     );
 }
 

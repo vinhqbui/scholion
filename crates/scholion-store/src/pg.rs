@@ -2200,6 +2200,35 @@ async fn insert_record(
     receipt_hex: Option<String>,
 ) -> Result<RecordId> {
     let id = Uuid::new_v4();
+    let repo: String = sqlx::query_scalar("SELECT repo FROM tasks WHERE id = $1")
+        .bind(r.task_id.0)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(serr)?
+        .ok_or_else(|| AvError::NotFound(format!("task {}", r.task_id)))?;
+    // A record supersedes only a record of its own repo: superseding hides the old one from every
+    // pack and search of the repo it belongs to. Records are never deleted, so what is read here
+    // still holds when the outbox row below is written.
+    let superseded: Option<(RecordId, Uuid)> = match r.supersedes {
+        Some(old) => {
+            let (old_repo, old_task): (String, Uuid) = sqlx::query_as(
+                "SELECT t.repo, r.task_id FROM records r
+                 JOIN tasks t ON t.id = r.task_id WHERE r.id = $1",
+            )
+            .bind(old.0)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(serr)?
+            .ok_or_else(|| AvError::NotFound(format!("record {old}")))?;
+            if old_repo != repo {
+                return Err(AvError::IllegalState(format!(
+                    "record {old} is not a record of repo {repo}, so it cannot be superseded there"
+                )));
+            }
+            Some((old, old_task))
+        }
+        None => None,
+    };
     sqlx::query(
         "INSERT INTO records (id, task_id, kind, summary, body, change_id, supersedes, author_agent,
                               receipt_id)
@@ -2231,11 +2260,6 @@ async fn insert_record(
         .await
         .map_err(serr)?;
     }
-    let repo: String = sqlx::query_scalar("SELECT repo FROM tasks WHERE id = $1")
-        .bind(r.task_id.0)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(serr)?;
     let text = if r.body.is_empty() {
         r.summary.clone()
     } else {
@@ -2260,22 +2284,14 @@ async fn insert_record(
         },
     )
     .await?;
-    if let Some(old) = r.supersedes {
-        let (old_repo, old_task): (String, Uuid) = sqlx::query_as(
-            "SELECT t.repo, r.task_id FROM records r
-             JOIN tasks t ON t.id = r.task_id WHERE r.id = $1",
-        )
-        .bind(old.0)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(serr)?;
+    if let Some((old, old_task)) = superseded {
         PgStore::enqueue(
             &mut **tx,
             &NewOutbox {
                 kind: SemanticKind::Record,
                 op: OutboxOp::Supersede,
                 entity_id: old.to_string(),
-                repo: old_repo,
+                repo,
                 task_id: Some(TaskId(old_task)),
                 record_id: Some(old),
                 symbol_id: None,
