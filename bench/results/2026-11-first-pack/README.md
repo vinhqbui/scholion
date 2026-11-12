@@ -271,3 +271,27 @@ candidate only through an anchor.
   and the 33rd not. It was checked to fail when the intent is made to count toward the cap in
   `merge_hits`, and when the search stops asking for one record more; both edits were reverted,
   and `crates/*/src` is unchanged since `46c221f`.
+
+### Found in review (2026-11-11, after the held-out set; the packer was not changed)
+
+A second reviewer (Grok, read-only, on the pull request) read the diff of both changes. It found
+no panic, no nondeterminism reaching a pack and no disagreement between the two `search_with`
+implementations, and its spot-checks of two rows of the tables above matched the files. It found
+these limits, which the replays could not show because no relay record has a changed anchor:
+
+- **A goal lead whose anchored code has changed since it was recorded does not lead.** A lead
+  scores `(GOAL_LEAD_SCORE + match) * record_factor`. For a record whose anchor changed,
+  `record_factor` is `CHANGED_FACTOR` (0.7), so the lead scores about 1.42, below an unchanged
+  record anchored on a symbol the goal names (up to 2.0; 1.58 to 1.70 in the N = 500 receipts).
+  "Lead with a score above any anchored record's" is therefore true only for records whose
+  anchors are unchanged, which is every record of this benchmark. Whether a possibly stale record
+  should lead is a decision for a follow-up, not a slip to patch here: ranking a record down when
+  its code has moved is the one defence the packer has against a note that went out of date.
+- `score::tests::a_goal_lead_outranks_every_record_score` compares `GOAL_LEAD_SCORE` with the
+  best record score before `record_factor`, so it does not pin the case above either way. No test
+  covers a lead with a changed anchor, or that exactly two records are promoted.
+- In `merge_hits` a semantic hit is counted toward the record cap before `include_record` drops a
+  record the store says is superseded, so a stale vector can use up one of the 32 places.
+- Without an embedder, one goal word that is not in every candidate is enough for a record to
+  lead. Candidates then come only through anchors, so this reorders records already anchored near
+  the task. It is covered by unit tests and was not measured on a benchmark.
