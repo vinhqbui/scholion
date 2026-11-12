@@ -73,8 +73,9 @@ sessions by what its input names.
 - **A second check that does not depend on paths** (post hoc, [`content.py`](content.py),
   [`content.md`](content.md)): every event of all 72 transcripts, inputs and outputs, was searched
   for the file name of a hidden test and for the names of the 30 test functions the hidden tests
-  define. No transcript has one. A session that had read a hidden test by any file route would
-  show its text in a tool result. This still says nothing about the daemon or the network.
+  define. No transcript has one. A session that had read a hidden test whole, by any file route,
+  would show one of those names in a tool result; a partial read that happened to show none of
+  them would not. This still says nothing about the daemon or the network.
 
 ## Secondary measures as registered
 
@@ -90,8 +91,11 @@ By the harness's pattern, 26 of the 28 `av` failures and all 3 `notes` failures 
 approach. The other two `av` failures (repetitions 4 and 9) are not matched by the pattern. Post
 hoc, [`content.md`](content.md) prints the last text each of the 31 sessions that were not
 accepted wrote to `tallyho/pricing/quote.py`: all 31, those two included, call `.times(` (the
-note's approach) and none calls `.allocate(` (the one that passes). That table is read from the
-transcripts, which are not in this repository.
+note's approach) and none calls `.allocate(` (the one that passes). The table shows the last
+Edit or Write call on that file, not the file as it was tested: a later change through the shell
+would not be seen, and for a multi-part edit the replaced text is searched too. The base file
+calls neither. It is read from the transcripts, which are not in this repository, and only the
+first 300 characters of each text are printed.
 
 **What the agent did with the note** ([`behaviour.md`](behaviour.md), the first run's
 `behaviour.py` unchanged, run through [`behaviour.py`](behaviour.py)):
