@@ -2223,3 +2223,44 @@ async fn a_tie_that_the_cut_would_split_promotes_neither_record_and_a_tie_above_
     assert_eq!(why[&short(&notes[1])], "goal-lead", "{why:?}");
     assert_eq!(why[&short(&notes[2])], "semantic", "{why:?}");
 }
+
+#[tokio::test]
+async fn a_superseded_record_hit_takes_no_place_under_the_record_hit_cap() {
+    let fx = fixture().await;
+    // One more note than the cap, and no hit for the task's own intent, so every hit counts
+    // and the search (which answers the cap and one more) returns them all.
+    let mut hits = own_intent_then_cabbage_notes(&fx, RECORD_HITS + 1).await;
+    let hits = hits.split_off(1);
+    // The best hit was superseded after it was embedded: its vector does not say so yet, the
+    // store does.
+    let old = hits[0].record_id.unwrap();
+    let mut newer = record(
+        hits[0].task_id.unwrap(),
+        RecordKind::Note,
+        "Turnips keep longer than anything else down there",
+        "",
+        vec![],
+    );
+    newer.supersedes = Some(old);
+    fx.store.add_record(newer).await.unwrap();
+    let sem = Arc::new(FakeSemantic {
+        hits,
+        fail: false,
+        delay: Duration::ZERO,
+        calls: AtomicUsize::new(0),
+    });
+    // 4000 tokens: the record cap is RECORD_HITS, and every candidate is at least named
+    let pack = packer_with(&fx, sem)
+        .build(req(&fx.task, 4000, "record-hits-superseded"))
+        .await
+        .unwrap();
+    let md = &pack.markdown;
+    assert!(
+        !md.contains("Cabbage note 00"),
+        "a superseded record is not shown:\n{md}"
+    );
+    assert!(
+        md.contains(&format!("Cabbage note {RECORD_HITS:02}")),
+        "the superseded hit took the place of the last record hit:\n{md}"
+    );
+}
