@@ -1285,6 +1285,50 @@ fn a_finished_run_closes_its_run_directory() {
     );
 }
 
+/// A run that stops on an error after its preflight passed (here: the same `--out` at another
+/// noise level) closes its run directory too, which that preflight had opened again.
+#[test]
+fn a_run_that_stops_on_an_error_closes_its_run_directory() {
+    let _g = serial();
+    let Some(g) = isolated_gate("a run that stops on an error") else {
+        return;
+    };
+    let run_dir = g.cfg.work_root.join("runs").join(RUN);
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    let args = RunArgs {
+        out: g.out.clone(),
+        arms: vec![Arm::Cold],
+        reps: 1,
+        budget_usd: 100.0,
+        seed: 1,
+        confirm: true,
+        dry_run: false,
+        est_session_usd: None,
+        pilot: None,
+        meta: Meta {
+            noise: Some(5),
+            noise_seed: Some(1),
+            ..Meta::default()
+        },
+    };
+    let err = run(&g.specs, &args, &g.cfg)
+        .err()
+        .expect("another noise level in the same --out is refused");
+    assert!(err.contains("one --out per noise level"), "{err}");
+    assert!(!err.contains("refusing to run"), "the preflight passed: {err}");
+    assert_eq!(
+        mode_of(&run_dir),
+        0o700,
+        "the run's directory is closed after the error"
+    );
+    say(
+        "agent-isolation, a run that stops on an error: RAN as root with --agent-user nobody: \
+         after a passing preflight the run stopped on an error, and its run directory was mode \
+         700",
+    );
+}
+
 /// An earlier run's directory the agent user can enter is refused by name, with what to do,
 /// and left as it is: another run may be using it.
 #[test]
