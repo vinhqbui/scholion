@@ -1172,6 +1172,13 @@ async fn merge_hits(
                     Err(AvError::NotFound(_)) => continue,
                     Err(e) => return Err(e),
                 };
+                // A vector is marked superseded a moment after the store is (the outbox), so a
+                // hit can still say `superseded: false` for a record the store has replaced.
+                // `include_record` would drop it; dropped here, it does not count toward the
+                // cap first and take the place of a record that would be shown.
+                if rec.superseded_by.is_some() {
+                    continue;
+                }
                 if !(rec.kind == RecordKind::Intent && rec.task_id == task.id) {
                     if records == record_cap {
                         continue;
