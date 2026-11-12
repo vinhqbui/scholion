@@ -168,7 +168,12 @@ impl Packer {
         }
 
         let foreign = std::mem::take(&mut gathered.foreign);
-        let skeleton = estimate_tokens(&skeleton_text(), req.family);
+        // the line about correcting records is paid for only by a pack that may print it
+        let claims = gathered
+            .items
+            .iter()
+            .any(|i| i.section == Section::History && foreign.contains(&i.id));
+        let skeleton = estimate_tokens(&skeleton_text(claims), req.family);
         let alloc = allocate(
             gathered.items,
             req.budget_tokens.saturating_sub(skeleton),

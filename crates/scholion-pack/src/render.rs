@@ -184,9 +184,10 @@ fn stable(render: impl Fn(u32) -> String, family: AgentFamily) -> (String, u32) 
     (md, est)
 }
 
-/// Worst-case fixed text of a pack (every heading, the line under the records heading, footer
-/// with large numbers); its token cost is subtracted from the budget before items are allocated.
-pub(crate) fn skeleton_text() -> String {
+/// Worst-case fixed text of a pack (every heading, footer with large numbers, and with `claims`
+/// the line under the records heading: `CORRECT_HINT`, for a pack that may show another task's
+/// record); its token cost is subtracted from the budget before items are allocated.
+pub(crate) fn skeleton_text(claims: bool) -> String {
     let chosen: Vec<(Item, Tier)> = Section::ALL
         .iter()
         .map(|s| {
@@ -206,7 +207,7 @@ pub(crate) fn skeleton_text() -> String {
             )
         })
         .collect();
-    let foreign = HashSet::from(["conv:0".to_owned()]);
+    let foreign: HashSet<String> = claims.then(|| "conv:0".to_owned()).into_iter().collect();
     let mut text = render(&chosen, &foreign, &[], 99_999, 99_999, 99_999, true);
     text.push_str("## Live work\n");
     text
