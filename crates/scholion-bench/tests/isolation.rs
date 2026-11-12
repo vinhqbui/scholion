@@ -1316,7 +1316,10 @@ fn a_run_that_stops_on_an_error_closes_its_run_directory() {
         .err()
         .expect("another noise level in the same --out is refused");
     assert!(err.contains("one --out per noise level"), "{err}");
-    assert!(!err.contains("refusing to run"), "the preflight passed: {err}");
+    assert!(
+        !err.contains("refusing to run"),
+        "the preflight passed: {err}"
+    );
     assert_eq!(
         mode_of(&run_dir),
         0o700,

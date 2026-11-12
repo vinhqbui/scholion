@@ -502,53 +502,135 @@ fn find_copies(
 /// What the preflight says of another run's directory under `runs/`.
 const EARLIER_RUN: &str = "an earlier run's sessions";
 
+/// A directory as the preflight found it: where, and which one (device and inode).
+struct Found {
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+impl Found {
+    fn of(path: &Path, m: &std::fs::Metadata) -> Found {
+        Found {
+            path: path.to_path_buf(),
+            dev: m.dev(),
+            ino: m.ino(),
+        }
+    }
+
+    /// Whether the path is still this directory: not a symlink, not another directory.
+    fn still_there(&self) -> bool {
+        std::fs::symlink_metadata(&self.path)
+            .is_ok_and(|m| m.is_dir() && m.dev() == self.dev && m.ino() == self.ino)
+    }
+}
+
+/// What is at `path`, without following a symlink; `None` when nothing is.
+fn look(path: &Path) -> Result<Option<std::fs::Metadata>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) => Ok(Some(m)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io_err(path, e)),
+    }
+}
+
 /// What the preflight made and changed, put back when it refuses, so a refused run leaves
-/// nothing a later preflight would refuse on (a run directory the agent user may enter).
+/// nothing a later preflight would refuse on (a run directory the agent user may enter). It
+/// remembers which directories they were, and touches a path only while it is still that one.
 #[derive(Default)]
 struct Undo {
-    /// Directories that were not there.
-    made: Vec<PathBuf>,
+    /// Directories noted as not there, before the creation that may make them.
+    missing: Vec<PathBuf>,
+    /// Directories the preflight made, as found right after.
+    made: Vec<Found>,
     /// Directories that were there, with their modes.
-    modes: Vec<(PathBuf, u32)>,
+    modes: Vec<(Found, u32)>,
 }
 
 impl Undo {
-    /// Notes the directories of the absolute `path`, itself included, that are not there yet.
+    /// Notes the directories of the absolute `path`, itself included, that are not there yet. A
+    /// path that cannot be looked at is an error, not a missing directory.
     fn missing(&mut self, path: &Path) -> Result<()> {
         for dir in path.ancestors() {
-            if dir.as_os_str().is_empty() || std::fs::symlink_metadata(dir).is_ok() {
+            if dir.as_os_str().is_empty() || look(dir)?.is_some() {
                 break;
             }
-            if !self.made.iter().any(|d| d == dir) {
-                self.made.push(dir.to_path_buf());
+            if !self.missing.iter().any(|d| d == dir) {
+                self.missing.push(dir.to_path_buf());
             }
         }
         Ok(())
     }
 
-    /// After a creation: what was noted as missing and is there now.
-    fn now_made(&mut self) {}
+    /// After a creation (whether or not it worked): which directory each one noted as missing
+    /// now is, if it is one.
+    fn now_made(&mut self) {
+        for path in std::mem::take(&mut self.missing) {
+            if let Ok(m) = std::fs::symlink_metadata(&path)
+                && m.is_dir()
+            {
+                self.made.push(Found::of(&path, &m));
+            }
+        }
+    }
 
-    /// Notes the mode of `path`, if it is there.
+    /// Notes the mode of the directory at `path`, if one is there (not through a symlink).
     fn mode(&mut self, path: &Path) -> Result<()> {
-        if let Ok(m) = std::fs::metadata(path) {
-            self.modes.push((path.to_path_buf(), m.mode() & 0o7777));
+        if let Some(m) = look(path)?
+            && m.is_dir()
+        {
+            self.modes.push((Found::of(path, &m), m.mode() & 0o7777));
         }
         Ok(())
     }
 
     /// The modes back, and the directories it made removed, deepest first, each only while it is
-    /// empty (`remove_dir` refuses one that is not): what anything else put there stays.
+    /// empty (`remove_dir` refuses one that is not): what anything else put there stays. One it
+    /// made and cannot remove is closed instead (mode 700), unless it is only the way to one
+    /// deeper that was kept. A path that is no longer the directory it was is left alone.
+    /// Returns a line for each thing it could not put back, saying what to do.
     fn put_back(mut self) -> Vec<String> {
-        for (path, mode) in self.modes.iter().rev() {
-            let _ = set_mode(path, *mode);
+        let mut left = vec![];
+        for (dir, mode) in self.modes.iter().rev() {
+            if !dir.still_there() {
+                continue;
+            }
+            if let Err(e) = set_mode(&dir.path, *mode) {
+                left.push(format!(
+                    "  {path}: its mode could not be put back to {mode:o} ({e}): `chmod {mode:o} \
+                     {path}`",
+                    path = dir.path.display()
+                ));
+            }
         }
         self.made
-            .sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+            .sort_by_key(|d| std::cmp::Reverse(d.path.components().count()));
+        let mut kept: Vec<&Path> = vec![];
         for dir in &self.made {
-            let _ = std::fs::remove_dir(dir);
+            if !dir.still_there() {
+                continue;
+            }
+            let Err(e) = std::fs::remove_dir(&dir.path) else {
+                continue;
+            };
+            let way = kept.iter().any(|k| k.starts_with(&dir.path));
+            kept.push(&dir.path);
+            if way {
+                continue;
+            }
+            let path = dir.path.display();
+            left.push(match set_mode(&dir.path, 0o700) {
+                Ok(()) => format!(
+                    "  {path} could not be removed ({e}), so it was closed instead (mode 700); \
+                     remove it once nothing in it is needed"
+                ),
+                Err(c) => format!(
+                    "  {path} could be neither removed ({e}) nor closed ({c}): `chmod 700 \
+                     {path}`, or remove it"
+                ),
+            });
         }
-        vec![]
+        left
     }
 }
 
@@ -636,7 +718,7 @@ pub fn preflight(
         let left = undo.put_back();
         if !left.is_empty() {
             msg.push_str(&format!(
-                "\nWhat this refused run could not put back:\n{}",
+                "\nWhat this refused run made or changed and could not put back:\n{}",
                 left.join("\n")
             ));
         }
@@ -1019,7 +1101,11 @@ mod tests {
         }
         std::fs::write(run_dir.join("appeared"), "").unwrap();
         let left = undo.put_back();
-        assert_eq!(mode_of(&run_dir), 0o700, "closed, since it cannot be removed");
+        assert_eq!(
+            mode_of(&run_dir),
+            0o700,
+            "closed, since it cannot be removed"
+        );
         assert!(run_dir.join("appeared").exists(), "what is in it stays");
         let text = left.join("\n");
         assert!(
@@ -1060,7 +1146,11 @@ mod tests {
             "the link stays"
         );
         assert!(target.is_dir());
-        assert_eq!(mode_of(&target), 0o711, "nothing was changed through a link");
+        assert_eq!(
+            mode_of(&target),
+            0o711,
+            "nothing was changed through a link"
+        );
         assert_eq!(left, Vec::<String>::new());
     }
 
@@ -1088,7 +1178,10 @@ mod tests {
             std::fs::rename(&other, path).unwrap();
         }
         let left = undo.put_back();
-        assert!(made.is_dir(), "another directory where the made one was stays");
+        assert!(
+            made.is_dir(),
+            "another directory where the made one was stays"
+        );
         assert_eq!(mode_of(&kept), 0o755, "its mode is not put back");
         assert_eq!(left, Vec::<String>::new());
     }
@@ -1101,7 +1194,10 @@ mod tests {
         std::fs::write(&file, "").unwrap();
         let mut undo = Undo::default();
         let err = undo.missing(&file.join("runs")).unwrap_err();
-        assert!(err.contains(&file.join("runs").display().to_string()), "{err}");
+        assert!(
+            err.contains(&file.join("runs").display().to_string()),
+            "{err}"
+        );
     }
 
     #[test]

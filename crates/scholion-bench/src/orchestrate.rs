@@ -281,9 +281,18 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
     }
     // The run's directory is open to the agent user while the run goes (its sessions are under
     // it); once it is over, closed, so the next run's preflight finds no way into this one.
-    let closed = crate::isolate::set_mode(&cfg.work_root.join("runs").join(&run_id), 0o700);
-    let report = ran?;
-    closed.map(|()| report)
+    let run_dir = cfg.work_root.join("runs").join(&run_id);
+    let closed = crate::isolate::set_mode(&run_dir, 0o700).map_err(|e| {
+        format!(
+            "the run's directory could not be closed ({e}): `chmod 700 {}`",
+            run_dir.display()
+        )
+    });
+    match (ran, closed) {
+        (Ok(report), Ok(())) => Ok(report),
+        (Err(e), Ok(())) | (Ok(_), Err(e)) => Err(e),
+        (Err(e), Err(c)) => Err(format!("{e}\nand {c}")),
+    }
 }
 
 fn run_sessions(

@@ -225,9 +225,11 @@ session needs: the run directory, the agent CLI, `av`, and each `path_prepend` d
 
 The run's directory, `<work-root>/runs/<run id>`, is open for passage (mode 711) only while the
 run goes: when the run ends, or stops on an error, the harness sets it to 700, and a resumed run
-opens it again for its own sessions. A preflight that refuses removes the directories it made
-(the run's directory, `--out`, the work root; only while empty) and gives those that were there
-their modes back. Another run's directory that is still open is refused with the `chmod 700`
+opens it again for its own sessions. A run that is killed or panics leaves it open; the next
+preflight then refuses and names the fix. A preflight that refuses removes the directories it
+made (the run's directory, `--out`, the work root; only while empty, and only while each is
+still the directory it made), closes one it cannot remove (mode 700), gives those that were
+there their modes back, and names in the refusal anything it could not put back. Another run's directory that is still open is refused with the `chmod 700`
 that closes it; the harness does not close it itself, since that run may still be going.
 
 Results are checked too, because they hold what a `cold` or `baseline` session must not see:
