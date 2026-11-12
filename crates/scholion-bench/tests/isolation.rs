@@ -51,6 +51,12 @@ if [ -n "$FAKE_LEAVE_BEHIND" ]; then
   # what an agent could leave for verify and for the next session: a link where a hidden test
   # will be written, and a process that outlives it
   ln -s "$out/stolen" test_local.py
+  # and a hard link where the other hidden test will be written, its other name kept in a
+  # directory of the agent's own: writing through it would hand the test to that name
+  echo "the agent's" > "$out/kept" || exit 8
+  rm -f test_calc.py
+  ln "$out/kept" test_calc.py || exit 8
+  stat -c %h test_calc.py > "$out/kept-links"
   (setsid sleep 300 > /dev/null 2>&1 &)
 fi
 cmd=$(hook PostToolUse)
@@ -319,6 +325,14 @@ fn gate(agent: Option<AgentUser>, av_bin: Option<&Path>) -> Gate {
         "daemon workspace root: listing".into(),
         g.daemon.ws_root.clone(),
     );
+    // the results directory: by the second sessions it holds the first sessions' rows
+    add("list", "results: listing".into(), g.out.clone());
+    add(
+        "read",
+        "results: rows.jsonl".into(),
+        g.out.join("rows.jsonl"),
+    );
+    add("read", "results: meta.json".into(), g.out.join("meta.json"));
     for arm in ARMS {
         let a = arm.as_str();
         let s = g.session_dir(arm, 1);
@@ -381,8 +395,13 @@ fn two_reps(g: &Gate) -> scholion_bench::Result<RunReport> {
 }
 
 fn sessions(g: &Gate, arms: &[Arm], reps: u32) -> scholion_bench::Result<RunReport> {
+    sessions_to(g, &g.out, arms, reps)
+}
+
+/// As [`sessions`], into the results directory `out` (whose name is the run id).
+fn sessions_to(g: &Gate, out: &Path, arms: &[Arm], reps: u32) -> scholion_bench::Result<RunReport> {
     let args = RunArgs {
-        out: g.out.clone(),
+        out: out.to_path_buf(),
         arms: arms.to_vec(),
         reps,
         budget_usd: 100.0,
@@ -592,7 +611,53 @@ fn a_session_cannot_read_the_grading_files_or_an_earlier_session() {
                 "{} is a file of the harness's, not the agent's link",
                 test.display()
             );
+            // nor through its hard link: the agent did link a file of its own there (two names),
+            // and the test is a new file, with the agent's other name left holding its own bytes
+            let who = format!("{} r{rep}", arm.as_str());
+            let config = g.session_dir(arm, rep).join("claude-config");
+            assert_eq!(
+                read(&config.join("kept-links")).trim(),
+                "2",
+                "{who}: the agent hard-linked its file where the hidden test goes"
+            );
+            let kept = config.join("kept");
+            let test = g.working_copy(arm, rep).join("test_calc.py");
+            let (k, t) = (
+                std::fs::symlink_metadata(&kept).unwrap(),
+                std::fs::symlink_metadata(&test).unwrap(),
+            );
+            assert!(t.is_file(), "{who}: {}", test.display());
+            assert_ne!(t.ino(), k.ino(), "{who}: the hidden test is a new file");
+            assert_eq!(
+                (t.nlink(), k.nlink()),
+                (1, 1),
+                "{who}: neither file has another name"
+            );
+            assert_eq!(
+                read(&kept),
+                "the agent's\n",
+                "{who}: the agent's other name"
+            );
+            assert!(
+                read(&test).contains("assert add(2, 3) == 5"),
+                "{who}: the hidden test is at its path"
+            );
         }
+    }
+    // the results are root's alone: the directory the preflight made, and each file in it
+    for path in [
+        g.out.clone(),
+        g.out.join("rows.jsonl"),
+        g.out.join("meta.json"),
+        g.out.join("report.md"),
+    ] {
+        let m = std::fs::metadata(&path).unwrap();
+        assert_eq!(
+            (m.uid(), m.mode() & 0o077),
+            (0, 0),
+            "{} is root's and closed to others",
+            path.display()
+        );
     }
     // what the sessions left is root's alone: the directories, and the transcript by itself
     for arm in ARMS {
@@ -627,7 +692,8 @@ fn a_session_cannot_read_the_grading_files_or_an_earlier_session() {
         "agent-isolation gate: RAN as root with --agent-user {} (uid {}): the second sessions \
          read 0 of {tried} probed paths ({} paths x {} arms: cold, notes, av), each refused \
          with a permission error; {} of {} sessions passed verify; the av hooks fired in both \
-         av sessions",
+         av sessions; in each of the 6 sessions the agent hard-linked a file of its own where a \
+         hidden test goes, and the test was written as a new file (another inode, one name)",
         user.name,
         user.uid,
         g.probes.len(),
@@ -920,6 +986,135 @@ fn the_preflight_refuses_a_copy_of_a_hidden_test_in_a_shared_directory() {
     assert!(r.rows[0].success, "{:?}", r.rows);
 }
 
+/// Results hold what a `cold` or `baseline` session must not see: `first-packs` writes packs
+/// with the tasks' lessons, `run` the rows of earlier sessions. An `--out` that is there and
+/// open is refused, and so is a results directory beside it; a missing `--out` is made root's
+/// alone, with the files in it.
+#[test]
+fn the_preflight_refuses_results_the_agent_user_can_read() {
+    let _g = serial();
+    let Some(g) = isolated_gate("preflight, results directories") else {
+        return;
+    };
+    let results = g.out.parent().unwrap().to_path_buf();
+    // as `first-packs --out` and an earlier `run --out` leave them: default modes
+    let packs = results.join("first-pack/n500");
+    let earlier = results.join("pilot");
+    for d in [&g.out, &packs.join("packs"), &earlier] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let lesson = packs.join("packs/calc-add-start.md");
+    let report = g.out.join("report.md");
+    for f in [
+        &lesson,
+        &packs.join("first-packs.jsonl"),
+        &earlier.join("rows.jsonl"),
+        &report,
+    ] {
+        std::fs::write(f, "").unwrap();
+        chmod(f, 0o644);
+    }
+    for d in [
+        &g.cfg.work_root,
+        &results,
+        &results.join("first-pack"),
+        &packs,
+        &packs.join("packs"),
+        &earlier,
+        &g.out,
+    ] {
+        chmod(d, 0o755);
+    }
+    let err = two_reps(&g).err().expect("the run must be refused");
+    assert!(err.contains("refusing to run"), "{err}");
+    for line in [
+        format!("enter {}", g.out.display()),
+        format!("list {}", g.out.display()),
+        format!("read {}", report.display()),
+        format!("enter {}", packs.display()),
+        format!("enter {}", earlier.display()),
+    ] {
+        assert!(err.contains(&line), "`{line}` is named in: {err}");
+    }
+    assert!(err.contains("chmod 700"), "{err}");
+    assert_nothing_launched(&g);
+
+    // closed, each of them, the same run starts, and what it writes is root's alone
+    for d in [&g.out, &packs, &earlier] {
+        chmod(d, 0o700);
+    }
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    for f in ["rows.jsonl", "meta.json", "report.md"] {
+        let m = std::fs::metadata(g.out.join(f)).unwrap();
+        assert_eq!(
+            (m.uid(), m.mode() & 0o077),
+            (0, 0),
+            "{f} is root's and closed to others"
+        );
+    }
+    say(
+        "agent-isolation, results directories: RAN as root with --agent-user nobody: an open \
+         --out (enter, list, a file in it) and two open results directories beside it (one of \
+         first-packs, one of run) were refused by name; closed, the run started and wrote \
+         rows.jsonl, meta.json and report.md as root's, mode 600",
+    );
+}
+
+/// The harness gives the agent a `HOME` of its own per session, but a program can ask the
+/// password database for the user's home (`getpwuid`). If that directory is there and the user
+/// can write to it, a session can leave its work in it for a later one.
+#[test]
+fn the_preflight_refuses_a_home_the_agent_user_can_write_to_or_list() {
+    let _g = serial();
+    let Some(mut g) = isolated_gate("preflight, the agent user's own home") else {
+        return;
+    };
+    let user = g.cfg.agent_user.clone().unwrap();
+    let resolved = user.home.clone();
+    // the home `nobody` has here, when it is no directory: nothing to refuse, as in every other
+    // test of this file. A directory stands in for a home that exists.
+    let home = g.open.join("passwd-home");
+    std::fs::create_dir(&home).unwrap();
+    std::os::unix::fs::chown(&home, Some(user.uid), Some(user.gid)).unwrap();
+    chmod(&home, 0o700);
+    g.cfg.agent_user.as_mut().unwrap().home = Some(home.clone());
+    let err = two_reps(&g).err().expect("the run must be refused");
+    assert!(err.contains("refusing to run"), "{err}");
+    let (write, list) = (
+        format!("write to {}", home.display()),
+        format!("list {}", home.display()),
+    );
+    for line in [&write, &list] {
+        assert!(err.contains(line.as_str()), "`{line}` is named in: {err}");
+    }
+    assert!(err.contains("usermod -d"), "how to close it: {err}");
+    assert_nothing_launched(&g);
+
+    // root's but open to read: nothing can be left there, what is there can still be listed
+    std::os::unix::fs::chown(&home, Some(0), Some(0)).unwrap();
+    chmod(&home, 0o755);
+    let err = two_reps(&g).err().expect("the run must be refused");
+    assert!(err.contains(&list) && !err.contains(&write), "{err}");
+    assert_nothing_launched(&g);
+
+    // root's and closed, the run starts; so it does when the directory is not there at all
+    chmod(&home, 0o700);
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    std::fs::remove_dir(&home).unwrap();
+    let r = sessions(&g, &[Arm::Notes], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    say(&format!(
+        "agent-isolation, the agent user's home: RAN as root with --agent-user {} (uid {}), \
+         whose home in the password database is {resolved:?}: a home that user owns was refused \
+         (write, list), one of root's open to read was refused (list), one closed or missing \
+         was accepted. The directory was set on the fixture's user, not in the password \
+         database",
+        user.name, user.uid
+    ));
+}
+
 /// A session that stops before its agent ran (here: `setup_cmd` fails) leaves nothing open for
 /// the next one.
 #[test]
@@ -952,9 +1147,255 @@ fn the_flag_is_refused_when_the_harness_is_not_root() {
         name: "nobody".into(),
         uid: 65534,
         gid: 65534,
+        home: None,
     };
     let g = gate(Some(other), None);
     let err = two_reps(&g).err().expect("the run must be refused");
     assert!(err.contains("must run as root"), "{err}");
     assert!(!g.out.join("rows.jsonl").exists());
+}
+
+fn mode_of(p: &Path) -> u32 {
+    std::fs::metadata(p)
+        .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+        .mode()
+        & 0o7777
+}
+
+/// The entries of a directory; none when it is not there.
+fn entries_of(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default()
+}
+
+/// A run the preflight refuses leaves nothing it made: no run directory under `runs/` (which the
+/// agent user may enter, so the next preflight would refuse on it), no `--out`, no work root.
+/// Directories that were there before are kept, with the modes they had.
+#[test]
+fn a_refused_preflight_leaves_nothing_the_next_one_refuses() {
+    let _g = serial();
+    let Some(g) = isolated_gate("a refused preflight leaves nothing behind") else {
+        return;
+    };
+    let results = g.out.parent().unwrap().to_path_buf();
+    let runs = g.cfg.work_root.join("runs");
+    // refused for a reason of its own (the bench tree open to everyone), three times in a row,
+    // each with a new --out, as an operator retries
+    chmod(&g.closed, 0o755);
+    let tasks = format!("enter {}", g.closed.join("tasks").display());
+    for name in ["try1", "try2", "try3"] {
+        let out = results.join(name);
+        let err = sessions_to(&g, &out, &[Arm::Cold], 1)
+            .err()
+            .expect("the run must be refused");
+        assert!(
+            err.contains(&tasks),
+            "{name}: refused for the bench tree: {err}"
+        );
+        assert!(
+            !err.contains(&runs.display().to_string()),
+            "{name}: refused on what an earlier try left under {}: {err}",
+            runs.display()
+        );
+        let left = entries_of(&runs);
+        assert!(
+            left.is_empty(),
+            "{name}: the refused run left {left:?} under {}",
+            runs.display()
+        );
+        assert!(
+            !out.exists(),
+            "{name}: the refused run left its --out {}",
+            out.display()
+        );
+        assert!(
+            !g.cfg.work_root.exists(),
+            "{name}: the refused run left the work root it made, {}",
+            g.cfg.work_root.display()
+        );
+    }
+    // a --out and a run directory that were there before stay, and so do their modes
+    let kept_out = results.join("kept");
+    let kept_run = runs.join("kept");
+    for d in [&kept_out, &kept_run] {
+        std::fs::create_dir_all(d).unwrap();
+        chmod(d, 0o700);
+    }
+    let err = sessions_to(&g, &kept_out, &[Arm::Cold], 1)
+        .err()
+        .expect("the run must be refused");
+    assert!(err.contains(&tasks), "{err}");
+    for d in [&kept_out, &kept_run] {
+        assert_eq!(mode_of(d), 0o700, "{} kept as it was", d.display());
+    }
+    // fixed, a run with a new --out starts with no manual step
+    chmod(&g.closed, 0o700);
+    let r = sessions_to(&g, &results.join("fixed"), &[Arm::Cold], 1)
+        .unwrap_or_else(|e| panic!("after the fix: {e}"));
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    say(
+        "agent-isolation, a refused preflight: RAN as root with --agent-user nobody: three \
+         refused runs (each with a new --out) left no run directory, --out or work root; a \
+         --out and run directory that were there before were kept at mode 700; the fixed run \
+         with a new --out started",
+    );
+}
+
+/// A run that ends closes its run directory (mode 700), so the next run in the same work root,
+/// with another `--out`, starts with no manual step. A resumed run opens it for its own sessions
+/// and closes it again.
+#[test]
+fn a_finished_run_closes_its_run_directory() {
+    let _g = serial();
+    let Some(g) = isolated_gate("a finished run closes its run directory") else {
+        return;
+    };
+    let user = g.cfg.agent_user.clone().unwrap();
+    let runs = g.cfg.work_root.join("runs");
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    assert_eq!(
+        mode_of(&runs.join(RUN)),
+        0o700,
+        "the finished run's directory is closed"
+    );
+    // the next run, with another --out, in the same work root
+    let next = g.out.parent().unwrap().join("next");
+    let r = sessions_to(&g, &next, &[Arm::Cold], 1).unwrap_or_else(|e| panic!("the next run: {e}"));
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    assert_eq!(mode_of(&runs.join("next")), 0o700);
+    // resumed with a second rep: its session gets through the run's directory again
+    let r = sessions(&g, &[Arm::Cold], 2).unwrap_or_else(|e| panic!("the resume: {e}"));
+    assert_eq!(r.rows.len(), 2, "{:?}", r.rows);
+    assert!(r.rows.iter().all(|row| row.success), "{:?}", r.rows);
+    assert_eq!(
+        read(&g.session_dir(Arm::Cold, 2).join("claude-config/fake-uid")).trim(),
+        user.uid.to_string()
+    );
+    assert_eq!(
+        mode_of(&runs.join(RUN)),
+        0o700,
+        "closed again after the resume"
+    );
+    say(
+        "agent-isolation, a finished run: RAN as root with --agent-user nobody: the run's \
+         directory was mode 700 after the run, a second run with another --out started with no \
+         manual step, and a resume ran its session as nobody and closed the directory again",
+    );
+}
+
+/// A run that stops on an error after its preflight passed (here: the same `--out` at another
+/// noise level) closes its run directory too, which that preflight had opened again.
+#[test]
+fn a_run_that_stops_on_an_error_closes_its_run_directory() {
+    let _g = serial();
+    let Some(g) = isolated_gate("a run that stops on an error") else {
+        return;
+    };
+    let run_dir = g.cfg.work_root.join("runs").join(RUN);
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    let args = RunArgs {
+        out: g.out.clone(),
+        arms: vec![Arm::Cold],
+        reps: 1,
+        budget_usd: 100.0,
+        seed: 1,
+        confirm: true,
+        dry_run: false,
+        est_session_usd: None,
+        pilot: None,
+        meta: Meta {
+            noise: Some(5),
+            noise_seed: Some(1),
+            ..Meta::default()
+        },
+    };
+    let err = run(&g.specs, &args, &g.cfg)
+        .err()
+        .expect("another noise level in the same --out is refused");
+    assert!(err.contains("one --out per noise level"), "{err}");
+    assert!(
+        !err.contains("refusing to run"),
+        "the preflight passed: {err}"
+    );
+    assert_eq!(
+        mode_of(&run_dir),
+        0o700,
+        "the run's directory is closed after the error"
+    );
+    say(
+        "agent-isolation, a run that stops on an error: RAN as root with --agent-user nobody: \
+         after a passing preflight the run stopped on an error, and its run directory was mode \
+         700",
+    );
+}
+
+/// An earlier run's directory the agent user can enter is refused by name, with what to do,
+/// and left as it is: another run may be using it.
+#[test]
+fn the_preflight_names_an_open_earlier_run_directory_and_the_fix() {
+    let _g = serial();
+    let Some(g) = isolated_gate("preflight, an open earlier run directory") else {
+        return;
+    };
+    let earlier = g.cfg.work_root.join("runs").join("lastnight");
+    std::fs::create_dir_all(&earlier).unwrap();
+    chmod(&earlier, 0o711);
+    let err = sessions(&g, &[Arm::Cold], 1)
+        .err()
+        .expect("the run must be refused");
+    for part in [
+        format!("enter {}", earlier.display()),
+        format!("chmod 700 {}", earlier.display()),
+        "or remove it if it is empty".to_owned(),
+        "another run may be using it".to_owned(),
+    ] {
+        assert!(err.contains(&part), "`{part}` is in: {err}");
+    }
+    assert_eq!(
+        mode_of(&earlier),
+        0o711,
+        "the harness neither closes nor removes another run's directory"
+    );
+    chmod(&earlier, 0o700);
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    say(
+        "agent-isolation, an open earlier run directory: RAN as root with --agent-user nobody: \
+         refused by name with `chmod 700 <dir>`, left at mode 711; closed, the run started",
+    );
+}
+
+/// With an agent user the results files are mode 600 even after a resume that adds no row,
+/// whatever mode they were left with.
+#[test]
+fn a_resume_that_adds_no_row_leaves_the_results_closed() {
+    let _g = serial();
+    let Some(g) = isolated_gate("results files on a resume with nothing to run") else {
+        return;
+    };
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert!(r.rows[0].success, "{:?}", r.rows);
+    let files = ["rows.jsonl", "meta.json", "report.md"].map(|f| g.out.join(f));
+    for f in &files {
+        assert_eq!(mode_of(f), 0o600, "{}", f.display());
+        chmod(f, 0o644);
+    }
+    let r = sessions(&g, &[Arm::Cold], 1).unwrap();
+    assert_eq!(r.rows.len(), 1, "nothing ran again: {:?}", r.rows);
+    for f in &files {
+        let m = std::fs::metadata(f).unwrap();
+        assert_eq!(
+            (m.uid(), m.mode() & 0o7777),
+            (0, 0o600),
+            "{} after a resume that added no row",
+            f.display()
+        );
+    }
+    say(
+        "agent-isolation, results files on a resume: RAN as root with --agent-user nobody: \
+         rows.jsonl, meta.json and report.md left at 644 were 600 after a resume that ran nothing",
+    );
 }

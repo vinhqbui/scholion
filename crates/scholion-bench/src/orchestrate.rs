@@ -166,12 +166,33 @@ pub fn plan_text(
     t
 }
 
-fn append_row(path: &Path, row: &Row) -> Result<()> {
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
+/// Opens a results file to write it whole, or with `append` to add to it. With an agent user
+/// (`private`) it is the harness's alone (mode 600) before its first byte, whatever the mode of
+/// the directory it is in: rows and reports say what earlier sessions did.
+fn open_result(path: &Path, append: bool, private: bool) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
+    if private {
+        return crate::isolate::open_private(options, path);
+    }
+    options
         .open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn write_result(path: &Path, bytes: impl AsRef<[u8]>, private: bool) -> Result<()> {
+    open_result(path, false, private)?
+        .write_all(bytes.as_ref())
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn append_row(path: &Path, row: &Row, private: bool) -> Result<()> {
+    let mut f = open_result(path, true, private)?;
     writeln!(f, "{}", serde_json::to_string(row).expect("json")).map_err(|e| e.to_string())
 }
 
@@ -253,7 +274,36 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
         .unwrap_or_else(|| "run".into())
         .to_lowercase();
     // with --agent-user: nothing is launched while that user can read what it must not
-    crate::isolate::preflight(specs, &args.arms, cfg, &run_id)?;
+    crate::isolate::preflight(specs, &args.arms, cfg, &run_id, &args.out)?;
+    let ran = run_sessions(specs, args, cfg, &run_id, &sessions, text);
+    if cfg.agent_user.is_none() {
+        return ran;
+    }
+    // The run's directory is open to the agent user while the run goes (its sessions are under
+    // it); once it is over, closed, so the next run's preflight finds no way into this one.
+    let run_dir = cfg.work_root.join("runs").join(&run_id);
+    let closed = crate::isolate::set_mode(&run_dir, 0o700).map_err(|e| {
+        format!(
+            "the run's directory could not be closed ({e}): `chmod 700 {}`",
+            run_dir.display()
+        )
+    });
+    match (ran, closed) {
+        (Ok(report), Ok(())) => Ok(report),
+        (Err(e), Ok(())) | (Ok(_), Err(e)) => Err(e),
+        (Err(e), Err(c)) => Err(format!("{e}\nand {c}")),
+    }
+}
+
+fn run_sessions(
+    specs: &[TaskSpec],
+    args: &RunArgs,
+    cfg: &RunConfig,
+    run_id: &str,
+    sessions: &[Planned],
+    text: String,
+) -> Result<RunReport> {
+    let private = cfg.agent_user.is_some();
     std::fs::create_dir_all(&args.out).map_err(|e| format!("{}: {e}", args.out.display()))?;
     let rows_path = args.out.join("rows.jsonl");
     let mut rows = if rows_path.exists() {
@@ -261,6 +311,10 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
     } else {
         vec![]
     };
+    if private && rows_path.exists() {
+        // a resume may add no row: the rows are still the harness's alone
+        crate::isolate::set_mode(&rows_path, 0o600)?;
+    }
     // sessions an earlier run skipped for budget are tried again (with this run's budget)
     if rows.iter().any(|r| r.status == Status::SkippedBudget) {
         rows.retain(|r| r.status != Status::SkippedBudget);
@@ -268,7 +322,7 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
             .iter()
             .map(|r| serde_json::to_string(r).expect("json") + "\n")
             .collect();
-        std::fs::write(&rows_path, kept).map_err(|e| e.to_string())?;
+        write_result(&rows_path, kept, private)?;
     }
     let mut spent: f64 = rows.iter().map(|r| r.cost_usd).sum();
     // from the configuration, not the caller: a result must not be labelled by hand
@@ -282,13 +336,13 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
     };
     check_noise_level(&args.out, &meta)?;
     check_isolation(&args.out, &meta)?;
-    std::fs::write(
-        args.out.join("meta.json"),
+    write_result(
+        &args.out.join("meta.json"),
         serde_json::to_vec_pretty(&meta).expect("json"),
-    )
-    .map_err(|e| e.to_string())?;
+        private,
+    )?;
     let mut over_budget = false;
-    for p in &sessions {
+    for p in sessions {
         let spec = &specs[p.task];
         let done = rows
             .iter()
@@ -318,7 +372,7 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
                 p.rep,
                 args.budget_usd
             );
-            let o = run_session(spec, p.arm, p.rep, &run_id, cfg)?;
+            let o = run_session(spec, p.arm, p.rep, run_id, cfg)?;
             let events = std::fs::read_to_string(&o.events_path).unwrap_or_default();
             let m = compute_priced(
                 spec,
@@ -344,11 +398,14 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
                 memory_tokens: o.memory_tokens,
             }
         };
-        append_row(&rows_path, &row)?;
+        append_row(&rows_path, &row, private)?;
         rows.push(row);
     }
-    std::fs::write(args.out.join("report.md"), render_report(&rows, &meta))
-        .map_err(|e| e.to_string())?;
+    write_result(
+        &args.out.join("report.md"),
+        render_report(&rows, &meta),
+        private,
+    )?;
     Ok(RunReport {
         rows,
         plan_text: text,

@@ -6,7 +6,7 @@ use crate::common::*;
 use async_trait::async_trait;
 use scholion_core::*;
 use scholion_index::{CodeIndex, ScopeView};
-use scholion_pack::{CodeDetail, PackRequest, Packer, estimate_tokens};
+use scholion_pack::{CodeDetail, Pack, PackRequest, Packer, estimate_tokens};
 
 /// Scripted `Semantic`. `calls` counts `search` invocations. Like the real one, each kind of hit
 /// answers at most `limit`, best first.
@@ -2022,5 +2022,651 @@ async fn a_record_mined_from_git_history_does_not_lead_even_when_it_matches_best
         vec![short(&attempt), short(&mined)],
         "{}",
         pack.markdown
+    );
+}
+
+// ---- what the review of the goal leads found (bench/results/2026-11-first-pack/README.md,
+// "Found in review" and the follow-up under it) ----
+
+/// Why each chosen item of a pack is in it, by item id: the `reason` in its receipt.
+async fn reasons(fx: &Fx, pack: &Pack) -> std::collections::HashMap<String, String> {
+    let id = pack.receipt.clone().expect("pack carries a receipt id");
+    let r = fx.store.get_receipt(&id[4..]).await.unwrap();
+    let mut out = std::collections::HashMap::new();
+    for it in r["items"].as_array().unwrap() {
+        let item = it["id"].as_str().unwrap().to_owned();
+        let reason = it["reason"].as_str().unwrap().to_owned();
+        out.insert(item, reason);
+    }
+    out
+}
+
+#[tokio::test]
+async fn a_goal_lead_whose_anchor_changed_ranks_below_an_unchanged_record_on_a_named_symbol() {
+    // Deliberate, not an oversight. A goal lead keeps its `record_factor`, so one whose anchored
+    // code changed since it was recorded is damped (`CHANGED_FACTOR`) and may not lead: ranking
+    // a record down when its code has moved is the packer's only defence against a note that
+    // went out of date. The decision and its reasons are recorded in
+    // `bench/results/2026-11-first-pack/README.md`, "Found in review" and the follow-up under
+    // it. Change this test only together with that decision.
+    let fx = fixture().await;
+    // the goal names `format_name`, which makes it a seed
+    let t = cold_task(
+        &fx,
+        "Rename",
+        "Rename format_name to pretty_name everywhere",
+    )
+    .await;
+    let other = fx
+        .store
+        .create_task(new_task("Earlier work"))
+        .await
+        .unwrap();
+    let on_named = vec![anchor("app/util.py", Some("format_name"))];
+    // two words of the goal ("rename", "name"): the one record that matches it
+    let lesson = fx
+        .store
+        .add_record(record(
+            other.id,
+            RecordKind::Decision,
+            "Callers import the old name long after a rename; keep an alias for a release.",
+            "",
+            on_named.clone(),
+        ))
+        .await
+        .unwrap();
+    // not one word of the goal: all it has is its anchor on the symbol the goal names
+    let rival = fx
+        .store
+        .add_record(record(
+            other.id,
+            RecordKind::Attempt,
+            "Wrapping it in a retry loop hid the real error and the suite hung.",
+            "",
+            on_named.clone(),
+        ))
+        .await
+        .unwrap();
+    let now = fx.packer.anchor_hashes(t.id, &on_named).await.unwrap();
+    assert!(now[0].is_some(), "the anchored symbol exists at head");
+    fx.store.set_anchor_hashes(lesson.id, &now).await.unwrap();
+    fx.store.set_anchor_hashes(rival.id, &now).await.unwrap();
+
+    // neither record's code has changed: the goal lead leads
+    let pack = fx.packer.build(req(&t, 2000, "same")).await.unwrap();
+    let ids = record_ids(section(&pack.markdown, "## Decisions & dead ends"));
+    assert_eq!(ids, [short(&lesson), short(&rival)], "{}", pack.markdown);
+
+    // the lesson's code is no longer what it was when the lesson was recorded
+    fx.store
+        .set_anchor_hashes(lesson.id, &[Some("0".repeat(64))])
+        .await
+        .unwrap();
+    let pack = fx.packer.build(req(&t, 2000, "moved")).await.unwrap();
+    let md = &pack.markdown;
+    let ids = record_ids(section(md, "## Decisions & dead ends"));
+    assert_eq!(ids, [short(&rival), short(&lesson)], "{md}");
+    let lesson_id = short(&lesson);
+    let line = md
+        .lines()
+        .find(|l| l.contains(&lesson_id))
+        .unwrap_or_else(|| panic!("{md}"));
+    assert!(line.contains("(changed since recorded)"), "{line}");
+    // it is still the goal lead, only damped: the order above is not a promotion that was lost
+    let why = reasons(&fx, &pack).await;
+    assert_eq!(why[&short(&lesson)], "goal-lead", "{why:?}");
+    assert_eq!(why[&short(&rival)], "anchored", "{why:?}");
+}
+
+/// An attempt anchored on the changed symbol, and three notes of the same earlier task that
+/// only a semantic hit brings into a pack (no anchor). None of the four has a word of the goal.
+async fn seed_attempt_and_three_notes(fx: &Fx) -> (Record, Vec<Record>) {
+    let other = fx
+        .store
+        .create_task(new_task("Earlier work"))
+        .await
+        .unwrap();
+    let attempt = fx
+        .store
+        .add_record(record(
+            other.id,
+            RecordKind::Attempt,
+            "Wrapping the greeter in a retry loop hid the real error.",
+            "",
+            vec![anchor("app/greeter.py", Some("Greeter.hello"))],
+        ))
+        .await
+        .unwrap();
+    let mut notes = vec![];
+    for what in ["punctuation", "capitals", "whispering"] {
+        let rec = fx
+            .store
+            .add_record(record(
+                other.id,
+                RecordKind::Note,
+                &format!("Greetings and {what}: what screen readers do with them"),
+                "",
+                vec![],
+            ))
+            .await
+            .unwrap();
+        notes.push(rec);
+    }
+    (attempt, notes)
+}
+
+/// A semantic layer that answers with three notes as record hits, at these similarities.
+fn notes_as_hits(notes: &[Record], similarity: [f32; 3]) -> Arc<FakeSemantic> {
+    Arc::new(FakeSemantic {
+        hits: vec![
+            record_hit(&notes[0], similarity[0]),
+            record_hit(&notes[1], similarity[1]),
+            record_hit(&notes[2], similarity[2]),
+        ],
+        fail: false,
+        delay: Duration::ZERO,
+        calls: AtomicUsize::new(0),
+    })
+}
+
+#[tokio::test]
+async fn exactly_two_records_lead_and_the_third_best_match_keeps_its_own_rank() {
+    let fx = fixture().await;
+    let (attempt, notes) = seed_attempt_and_three_notes(&fx).await;
+    // three records match the goal, each a little less than the one before
+    let sem = notes_as_hits(&notes, [0.9, 0.8, 0.7]);
+    let pack = packer_with(&fx, sem)
+        .build(req(&fx.task, 4000, "two-leads"))
+        .await
+        .unwrap();
+    let md = &pack.markdown;
+    // the two best lead, then what is anchored on the changed symbol, then the third match
+    let want = [&notes[0], &notes[1], &attempt, &notes[2]].map(short);
+    let ids = record_ids(section(md, "## Decisions & dead ends"));
+    assert_eq!(ids, want, "{md}");
+    let why = reasons(&fx, &pack).await;
+    let leads = why.values().filter(|r| *r == "goal-lead").count();
+    assert_eq!(leads, 2, "{why:?}");
+    assert_eq!(why[&short(&notes[2])], "semantic", "{why:?}");
+}
+
+#[tokio::test]
+async fn a_tie_that_the_cut_would_split_promotes_neither_record_and_a_tie_above_it_both() {
+    let fx = fixture().await;
+    let (attempt, notes) = seed_attempt_and_three_notes(&fx).await;
+    // The second and third match equally well. Which of the two leads could only be decided by
+    // something that says nothing about the task (a record id, the order they were written
+    // in), so neither does (`relevance::leads`).
+    let sem = notes_as_hits(&notes, [0.9, 0.8, 0.8]);
+    let pack = packer_with(&fx, sem)
+        .build(req(&fx.task, 4000, "lead-tie"))
+        .await
+        .unwrap();
+    let md = &pack.markdown;
+    let ids = record_ids(section(md, "## Decisions & dead ends"));
+    assert_eq!(ids.len(), 4, "{md}");
+    assert_eq!(ids[..2], [short(&notes[0]), short(&attempt)], "{md}");
+    let why = reasons(&fx, &pack).await;
+    assert_eq!(why[&short(&notes[0])], "goal-lead", "{why:?}");
+    assert_eq!(why[&short(&notes[1])], "semantic", "{why:?}");
+    assert_eq!(why[&short(&notes[2])], "semantic", "{why:?}");
+
+    // The first and second match equally well and the third less: that tie is above the cut,
+    // so both lead.
+    let sem = notes_as_hits(&notes, [0.9, 0.9, 0.7]);
+    let pack = packer_with(&fx, sem)
+        .build(req(&fx.task, 4000, "lead-pair"))
+        .await
+        .unwrap();
+    let why = reasons(&fx, &pack).await;
+    assert_eq!(why[&short(&notes[0])], "goal-lead", "{why:?}");
+    assert_eq!(why[&short(&notes[1])], "goal-lead", "{why:?}");
+    assert_eq!(why[&short(&notes[2])], "semantic", "{why:?}");
+}
+
+#[tokio::test]
+async fn a_superseded_record_hit_takes_no_place_under_the_record_hit_cap() {
+    let fx = fixture().await;
+    // One more note than the cap, and no hit for the task's own intent, so every hit counts
+    // and the search (which answers the cap and one more) returns them all.
+    let mut hits = own_intent_then_cabbage_notes(&fx, RECORD_HITS + 1).await;
+    let hits = hits.split_off(1);
+    // The best hit was superseded after it was embedded: its vector does not say so yet, the
+    // store does.
+    let old = hits[0].record_id.unwrap();
+    let mut newer = record(
+        hits[0].task_id.unwrap(),
+        RecordKind::Note,
+        "Turnips keep longer than anything else down there",
+        "",
+        vec![],
+    );
+    newer.supersedes = Some(old);
+    fx.store.add_record(newer).await.unwrap();
+    let sem = Arc::new(FakeSemantic {
+        hits,
+        fail: false,
+        delay: Duration::ZERO,
+        calls: AtomicUsize::new(0),
+    });
+    // 4000 tokens: the record cap is RECORD_HITS, and every candidate is at least named
+    let pack = packer_with(&fx, sem)
+        .build(req(&fx.task, 4000, "record-hits-superseded"))
+        .await
+        .unwrap();
+    let md = &pack.markdown;
+    assert!(
+        !md.contains("Cabbage note 00"),
+        "a superseded record is not shown:\n{md}"
+    );
+    assert!(
+        md.contains(&format!("Cabbage note {RECORD_HITS:02}")),
+        "the superseded hit took the place of the last record hit:\n{md}"
+    );
+}
+
+// ---- records are claims that can be corrected ----
+
+/// What a pack prints under its records heading when it shows another task's record.
+const CORRECT_HINT: &str = "Claims by earlier agents: check against the code; correct wrong ones \
+                            with `av record --supersedes rec:…`";
+/// What `records_at` (the pre-read hook) ends with, once per session.
+const RECORDS_AT_HINT: &str =
+    "Check them against the code; correct wrong ones with `av record --supersedes <id>`.";
+
+/// A record of another task, anchored to `path`.
+async fn earlier_record(fx: &Fx, kind: RecordKind, summary: &str, path: &str) -> Record {
+    let other = fx
+        .store
+        .create_task(new_task("Earlier work"))
+        .await
+        .unwrap();
+    fx.store
+        .add_record(record(
+            other.id,
+            kind,
+            summary,
+            "",
+            vec![anchor(path, None)],
+        ))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_pack_that_shows_another_tasks_record_says_a_wrong_one_can_be_corrected() {
+    let fx = fixture().await;
+    earlier_record(
+        &fx,
+        RecordKind::Decision,
+        "hello never ends in a mark",
+        "app/greeter.py",
+    )
+    .await;
+    let pack = fx
+        .packer
+        .build(req(&fx.task, 2500, "claims"))
+        .await
+        .unwrap();
+    let md = &pack.markdown;
+    let history: Vec<&str> = section(md, "## Decisions & dead ends").lines().collect();
+    assert_eq!(history[1], CORRECT_HINT, "right under the heading:\n{md}");
+    assert!(history[2].starts_with("- rec:"), "{md}");
+    assert_eq!(md.matches(CORRECT_HINT).count(), 1, "{md}");
+    assert!(
+        estimate_tokens(CORRECT_HINT, FAM) <= 25,
+        "the line costs {} tokens",
+        estimate_tokens(CORRECT_HINT, FAM)
+    );
+    assert_eq!(pack.tokens, estimate_tokens(md, FAM), "{md}");
+
+    // a later pack of the session only refers back to the record: the line is not repeated
+    let again = fx
+        .packer
+        .build(req(&fx.task, 2500, "claims"))
+        .await
+        .unwrap();
+    assert!(
+        again.markdown.contains("(sent earlier)"),
+        "{}",
+        again.markdown
+    );
+    assert!(!again.markdown.contains(CORRECT_HINT), "{}", again.markdown);
+}
+
+#[tokio::test]
+async fn a_pack_without_a_correctable_record_of_another_task_does_not_say_it() {
+    let fx = fixture().await;
+    // the task's own record
+    fx.store
+        .add_record(record(
+            fx.task.id,
+            RecordKind::Attempt,
+            "tried memoizing hello; broke tests",
+            "",
+            vec![anchor("app/greeter.py", Some("Greeter.hello"))],
+        ))
+        .await
+        .unwrap();
+    // another task's review finding: shown, but no one supersedes a review
+    earlier_record(
+        &fx,
+        RecordKind::Review,
+        "hello must not shout",
+        "app/greeter.py",
+    )
+    .await;
+    let pack = fx.packer.build(req(&fx.task, 2500, "own")).await.unwrap();
+    let md = &pack.markdown;
+    assert!(md.contains("tried memoizing hello"), "{md}");
+    assert!(md.contains("hello must not shout"), "{md}");
+    assert!(!md.contains("--supersedes"), "{md}");
+}
+
+#[tokio::test]
+async fn the_line_about_correcting_records_is_counted_inside_the_budget() {
+    let fx = fixture().await;
+    for i in 0..6 {
+        earlier_record(
+            &fx,
+            RecordKind::Decision,
+            &format!("hello never ends in a mark, reason {i}"),
+            "app/greeter.py",
+        )
+        .await;
+    }
+    let mut said = 0;
+    for budget in [90, 120, 150, 200, 260, 330, 400, 600, 800] {
+        let pack = fx
+            .packer
+            .build(req(&fx.task, budget, &format!("budget-{budget}")))
+            .await
+            .unwrap();
+        let md = &pack.markdown;
+        assert!(pack.tokens <= budget, "{} > {budget}:\n{md}", pack.tokens);
+        assert_eq!(pack.tokens, estimate_tokens(md, FAM), "{md}");
+        if md.contains(CORRECT_HINT) {
+            said += 1;
+            assert!(md.contains("\n- rec:"), "the line without a record:\n{md}");
+        } else {
+            assert!(
+                !section_or_empty(md, "## Decisions & dead ends").contains("- rec:"),
+                "records of another task without the line:\n{md}"
+            );
+        }
+    }
+    assert!(said >= 3, "only {said} of the packs had room for records");
+}
+
+fn section_or_empty<'a>(md: &'a str, heading: &str) -> &'a str {
+    if md.contains(heading) {
+        section(md, heading)
+    } else {
+        ""
+    }
+}
+
+#[tokio::test]
+async fn records_at_says_once_per_session_that_a_wrong_record_can_be_corrected() {
+    let fx = fixture().await;
+    earlier_record(
+        &fx,
+        RecordKind::Decision,
+        "hello never ends in a mark",
+        "app/greeter.py",
+    )
+    .await;
+    earlier_record(
+        &fx,
+        RecordKind::Note,
+        "format_name is shared with goodbye",
+        "app/util.py",
+    )
+    .await;
+    earlier_record(
+        &fx,
+        RecordKind::Review,
+        "the readme must name the flag",
+        "README.md",
+    )
+    .await;
+    let at = |path: &'static str, session: Option<&'static str>| {
+        let packer = &fx.packer;
+        let task = fx.task.id;
+        async move { packer.records_at(task, path, session).await.unwrap() }
+    };
+
+    let first = at("app/greeter.py", Some("jit")).await;
+    assert!(
+        first
+            .markdown
+            .ends_with(&format!("Full text: `av expand <id>`.\n{RECORDS_AT_HINT}")),
+        "{}",
+        first.markdown
+    );
+    assert!(
+        estimate_tokens(&first.markdown, AgentFamily::default())
+            <= scholion_pack::RECORDS_AT_TOKENS
+    );
+    // another file in the same session: its records, and not the line again
+    let second = at("app/util.py", Some("jit")).await;
+    assert!(
+        second.markdown.contains("shared with goodbye"),
+        "{}",
+        second.markdown
+    );
+    assert!(
+        !second.markdown.contains("--supersedes"),
+        "{}",
+        second.markdown
+    );
+    assert!(second.markdown.ends_with("Full text: `av expand <id>`."));
+    // a new session is told once more
+    let fresh = at("app/util.py", Some("jit-2")).await;
+    assert!(
+        fresh.markdown.ends_with(RECORDS_AT_HINT),
+        "{}",
+        fresh.markdown
+    );
+    // without a session nothing is remembered, so every answer says it
+    for _ in 0..2 {
+        let unnamed = at("app/greeter.py", None).await;
+        assert!(
+            unnamed.markdown.ends_with(RECORDS_AT_HINT),
+            "{}",
+            unnamed.markdown
+        );
+    }
+    // a review finding is no one's to supersede: not said, and still owed to the session
+    let review = at("README.md", Some("jit-3")).await;
+    assert!(
+        review.markdown.contains("must name the flag"),
+        "{}",
+        review.markdown
+    );
+    assert!(
+        !review.markdown.contains("--supersedes"),
+        "{}",
+        review.markdown
+    );
+    let later = at("app/greeter.py", Some("jit-3")).await;
+    assert!(
+        later.markdown.ends_with(RECORDS_AT_HINT),
+        "{}",
+        later.markdown
+    );
+}
+
+/// A pack without its footer (`tokens: N/B` and what was omitted).
+fn above_footer(md: &str) -> &str {
+    md.rsplit_once("\ntokens: ").map_or(md, |(body, _)| body)
+}
+
+/// The smallest budget at which the second pack of a session (whose first pack had room for
+/// everything) still holds all that it holds with room to spare, and that pack. Every budget
+/// probed is a new session with the same first pack.
+async fn smallest_whole_second_pack(fx: &Fx, tag: &str) -> (u32, String) {
+    const ROOMY: u32 = 4000;
+    let second = |session: String, budget: u32| async move {
+        let first = fx
+            .packer
+            .build(req(&fx.task, ROOMY, &session))
+            .await
+            .unwrap();
+        assert!(first.omitted.is_empty(), "{}", first.markdown);
+        fx.packer
+            .build(req(&fx.task, budget, &session))
+            .await
+            .unwrap()
+    };
+    let all = second(format!("{tag}-all"), ROOMY).await;
+    assert!(all.omitted.is_empty(), "{}", all.markdown);
+    let whole = above_footer(&all.markdown).to_owned();
+    let holds_all = |budget: u32| {
+        let whole = &whole;
+        async move {
+            let pack = second(format!("{tag}-{budget}"), budget).await;
+            assert!(pack.tokens <= budget, "{}", pack.markdown);
+            above_footer(&pack.markdown) == whole
+        }
+    };
+    let (mut low, mut high) = (all.tokens / 2, 1000);
+    assert!(
+        !holds_all(low).await,
+        "{low} holds a pack of {}",
+        all.tokens
+    );
+    assert!(
+        holds_all(high).await,
+        "{high} does not hold:\n{}",
+        all.markdown
+    );
+    // the smallest budget that holds it all is in (low, high]
+    while high - low > 1 {
+        let mid = low + (high - low) / 2;
+        if holds_all(mid).await {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    (high, all.markdown)
+}
+
+#[tokio::test]
+async fn a_pack_that_only_refers_back_to_a_record_keeps_no_room_for_the_line() {
+    let fx = fixture().await;
+    // the task's own record keeps the records section in both measurements
+    fx.store
+        .add_record(record(
+            fx.task.id,
+            RecordKind::Attempt,
+            "tried memoizing hello; broke tests",
+            "",
+            vec![anchor("app/greeter.py", Some("Greeter.hello"))],
+        ))
+        .await
+        .unwrap();
+    let (before, md) = smallest_whole_second_pack(&fx, "before").await;
+    assert!(!md.contains(CORRECT_HINT), "{md}");
+
+    // Another task's record, which the session's first pack shows (with the line) and its second
+    // pack only refers back to (without it).
+    let claim = earlier_record(
+        &fx,
+        RecordKind::Decision,
+        "hello never ends in a mark",
+        "app/greeter.py",
+    )
+    .await;
+    let first = fx
+        .packer
+        .build(req(&fx.task, 4000, "after-first"))
+        .await
+        .unwrap();
+    assert!(first.markdown.contains(CORRECT_HINT), "{}", first.markdown);
+    let (after, md) = smallest_whole_second_pack(&fx, "after").await;
+    let back = format!(
+        "- ↩ rec:{} (sent earlier)\n",
+        &claim.id.0.simple().to_string()[..8]
+    );
+    assert!(md.contains(&back), "{md}");
+    assert!(!md.contains(CORRECT_HINT), "{md}");
+    // The tight pack that holds everything grows by the back-reference at most, not by the line
+    // too: a line that is not printed takes no room from the items (it would be about 25 tokens,
+    // enough to push one out).
+    let line = estimate_tokens(CORRECT_HINT, FAM);
+    let grew = i64::from(after) - i64::from(before);
+    let allowed = i64::from(estimate_tokens(&back, FAM)) + 4;
+    assert!(
+        allowed < i64::from(line),
+        "the test cannot tell the line ({line} tokens) from the back-reference"
+    );
+    assert!(
+        grew <= allowed,
+        "everything fits from {before} tokens without the record and from {after} with its \
+         back-reference; the line is {line} tokens"
+    );
+}
+
+#[tokio::test]
+async fn records_at_keeps_no_room_for_a_line_no_record_there_can_use() {
+    let fx = fixture().await;
+    earlier_record(
+        &fx,
+        RecordKind::Decision,
+        "hello never ends in a mark",
+        "app/greeter.py",
+    )
+    .await;
+    // review findings only, more than one answer holds, each smaller than the line
+    let reviewer = fx.store.create_task(new_task("A review")).await.unwrap();
+    for i in 0..60 {
+        fx.store
+            .add_record(record(
+                reviewer.id,
+                RecordKind::Review,
+                &format!("f{i}"),
+                "",
+                vec![anchor("a.py", None)],
+            ))
+            .await
+            .unwrap();
+    }
+    let at = |path: &'static str, session: Option<&'static str>| {
+        let packer = &fx.packer;
+        let task = fx.task.id;
+        async move { packer.records_at(task, path, session).await.unwrap() }
+    };
+    // a session that has had the line: its answers keep nothing back for it
+    let told = at("app/greeter.py", Some("told")).await;
+    assert!(
+        told.markdown.ends_with(RECORDS_AT_HINT),
+        "{}",
+        told.markdown
+    );
+    let without = at("a.py", Some("told")).await;
+    // a session that is still owed the line, at a file where no record can be superseded
+    for session in [None, Some("fresh")] {
+        let owed = at("a.py", session).await;
+        assert!(!owed.markdown.contains("--supersedes"), "{}", owed.markdown);
+        assert!(owed.records.len() < 60, "the cap did not bind");
+        assert_eq!(
+            owed.records.len(),
+            without.records.len(),
+            "room kept for a line that is not printed:\n{}",
+            owed.markdown
+        );
+        assert!(
+            estimate_tokens(&owed.markdown, AgentFamily::default())
+                <= scholion_pack::RECORDS_AT_TOKENS
+        );
+    }
+    // and the line is still owed where a record can be corrected
+    let later = at("app/greeter.py", Some("fresh")).await;
+    assert!(
+        later.markdown.ends_with(RECORDS_AT_HINT),
+        "{}",
+        later.markdown
     );
 }
