@@ -742,7 +742,7 @@ pub(crate) struct RecordBody {
     agent: String,
     change_id: Option<ChangeId>,
     /// The record this one corrects: the `rec:<hex>` handle a pack prints, a prefix of the id
-    /// (6 or more hex characters) or the full id.
+    /// (6 or more hex characters, hyphens optional) or the full id.
     supersedes: Option<String>,
     /// `rcp:…` of the pack the author worked from (Plan 2b).
     receipt: Option<String>,
@@ -759,7 +759,7 @@ pub(crate) async fn check_record(st: &AppState, task: &Task, b: &RecordBody) -> 
         st.store.get_receipt(rc).await?;
     }
     if let Some(s) = &b.supersedes {
-        superseded_by_task(st, task, s).await?;
+        superseded_by_task(st, task, s, b.kind).await?;
     }
     Ok(())
 }
@@ -772,15 +772,25 @@ fn rec_handle(id: RecordId) -> String {
 /// Longest chain of superseded records followed to its live end.
 const MAX_SUPERSEDE_CHAIN: usize = 64;
 
-/// The record a new record of `task` names in `supersedes`, when it may supersede it. Records
-/// are append-only: superseding leaves the old record as it is and hides it from packs, the
-/// pre-read hook and search, so what one agent may hide from every other is limited here.
+/// The record a new record of `task`, of kind `by`, names in `supersedes`, when it may supersede
+/// it. Records are append-only: superseding leaves the old record as it is and hides it from
+/// packs, the pre-read hook and search, so what one agent may hide from every other is limited
+/// here, and again by the store inside the insert (`PgStore`'s `insert_record`), where two tasks
+/// superseding one record at once are told apart.
 ///
-/// Refused: a record of another repo (422); a `review` or `validation` record (422: a finding or
-/// a failed check must not be hidden by writing a note); another task's `intent` or `handoff`
-/// (422: they say what that task is for and where it stands); a record that is already
-/// superseded (409, naming the live record at the end of the chain, which is the one to correct).
-async fn superseded_by_task(st: &AppState, task: &Task, named: &str) -> Result<Record> {
+/// Refused: a record of another repo (422); what `supersede_refusal` refuses (422): a `review`
+/// or `validation` record (a finding or a failed check must not be hidden by writing a note),
+/// another task's `intent` or `handoff` (they say what that task is for and where it stands),
+/// a task's own `intent` or `handoff` by a record of another kind, and a decision, attempt or
+/// note by a record that is not one of those three (packs would show nothing in its place); a
+/// record that is already superseded (409, naming the live record at the end of the chain, which
+/// is the one to correct, when the chain is short enough to follow).
+async fn superseded_by_task(
+    st: &AppState,
+    task: &Task,
+    named: &str,
+    by: RecordKind,
+) -> Result<Record> {
     let named = named.trim();
     let old = st
         .store
@@ -793,10 +803,11 @@ async fn superseded_by_task(st: &AppState, task: &Task, named: &str) -> Result<R
             task.repo
         )));
     }
-    if let Some(why) = supersede_refusal(old.kind, old.task_id == task.id) {
+    if let Some(why) = supersede_refusal(old.kind, by, old.task_id == task.id) {
         return Err(AvError::IllegalState(format!(
-            "{shown} is a {} record: {why}",
-            old.kind.as_str()
+            "{shown} ({}) cannot be superseded by a record of kind {}: {why}",
+            old.kind.as_str(),
+            by.as_str()
         )));
     }
     if old.superseded_by.is_some() {
@@ -807,10 +818,14 @@ async fn superseded_by_task(st: &AppState, task: &Task, named: &str) -> Result<R
                 None => break,
             }
         }
-        return Err(AvError::Conflict(format!(
-            "{shown} is already superseded; the live record is {} (supersede that one)",
-            rec_handle(live.id)
-        )));
+        // a chain longer than is followed: the row the walk stopped on is not the live one
+        return Err(AvError::Conflict(match live.superseded_by {
+            None => format!(
+                "{shown} is already superseded; the live record is {} (supersede that one)",
+                rec_handle(live.id)
+            ),
+            Some(_) => format!("{shown} is already superseded"),
+        }));
     }
     Ok(old)
 }
@@ -821,7 +836,7 @@ async fn superseded_by_task(st: &AppState, task: &Task, named: &str) -> Result<R
 /// holds `AppState::lock_task` and has run `fence`.
 pub(crate) async fn write_record(st: &AppState, task: &Task, b: RecordBody) -> Result<Record> {
     let old = match b.supersedes.as_deref() {
-        Some(named) => Some(superseded_by_task(st, task, named).await?),
+        Some(named) => Some(superseded_by_task(st, task, named, b.kind).await?),
         None => None,
     };
     let mut anchors = b.anchors.unwrap_or_default();

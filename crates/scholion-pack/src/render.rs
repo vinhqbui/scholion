@@ -49,6 +49,21 @@ fn push_section_noted(
     out.push('\n');
 }
 
+/// Whether `item` is another task's record the reader may supersede (`foreign`) that a pack
+/// shows as more than a back-reference to an earlier pack of the session: at `tier`, or with
+/// `None` at any tier it has left. It is what the line under the records heading, `CORRECT_HINT`,
+/// is printed for, and so what a pack keeps room for it for (`Packer::build`).
+pub(crate) fn claim_shown(item: &Item, foreign: &HashSet<String>, tier: Option<Tier>) -> bool {
+    if !foreign.contains(&item.id) {
+        return false;
+    }
+    let back = sent_line(&item.id);
+    match tier {
+        Some(tier) => item.text(tier) != back,
+        None => item.tiers.iter().any(|text| *text != back),
+    }
+}
+
 /// `foreign`: ids of the History items that are another task's records the reader may supersede
 /// (`Gathered::foreign`).
 pub(crate) fn render(
@@ -85,7 +100,7 @@ pub(crate) fn render(
     let history = pick(&|i| i.section == Section::History);
     let claims = history
         .iter()
-        .any(|(i, tier)| foreign.contains(&i.id) && i.text(*tier) != sent_line(&i.id));
+        .any(|(i, tier)| claim_shown(i, foreign, Some(*tier)));
     push_section_noted(
         &mut out,
         "Decisions & dead ends",
@@ -211,4 +226,48 @@ pub(crate) fn skeleton_text(claims: bool) -> String {
     let mut text = render(&chosen, &foreign, &[], 99_999, 99_999, 99_999, true);
     text.push_str("## Live work\n");
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::collapse_sent;
+    use std::collections::HashMap;
+
+    fn record(id: &str) -> Item {
+        Item {
+            id: id.into(),
+            section: Section::History,
+            score: 1.0,
+            tiers: ["handle".into(), "summary".into(), "full".into()],
+            reason: "",
+            source: None,
+            required: false,
+            group: None,
+            order: None,
+        }
+    }
+
+    #[test]
+    fn a_record_that_can_only_be_referred_back_to_is_not_a_claim_shown() {
+        let foreign: HashSet<String> = ["rec:1".to_owned(), "rec:2".to_owned()].into();
+        let mut items = vec![record("rec:1"), record("rec:2"), record("rec:3")];
+        collapse_sent(
+            &mut items,
+            &HashMap::from([
+                ("rec:1".to_owned(), Tier::Full),
+                ("rec:2".to_owned(), Tier::Summary),
+            ]),
+        );
+        // sent in full: every tier refers back, so no pack of this session shows it again
+        assert!(!claim_shown(&items[0], &foreign, None));
+        assert!(!claim_shown(&items[0], &foreign, Some(Tier::Full)));
+        // sent as a summary: only its full text is still to show
+        assert!(claim_shown(&items[1], &foreign, None));
+        assert!(!claim_shown(&items[1], &foreign, Some(Tier::Summary)));
+        assert!(claim_shown(&items[1], &foreign, Some(Tier::Full)));
+        // not another task's supersedable record
+        assert!(!claim_shown(&items[2], &foreign, None));
+        assert!(!claim_shown(&items[2], &foreign, Some(Tier::Full)));
+    }
 }

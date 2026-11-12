@@ -2531,8 +2531,16 @@ async fn smallest_whole_second_pack(fx: &Fx, tag: &str) -> (u32, String) {
         }
     };
     let (mut low, mut high) = (all.tokens / 2, 1000);
-    assert!(!holds_all(low).await, "{low} holds a pack of {}", all.tokens);
-    assert!(holds_all(high).await, "{high} does not hold:\n{}", all.markdown);
+    assert!(
+        !holds_all(low).await,
+        "{low} holds a pack of {}",
+        all.tokens
+    );
+    assert!(
+        holds_all(high).await,
+        "{high} does not hold:\n{}",
+        all.markdown
+    );
     // the smallest budget that holds it all is in (low, high]
     while high - low > 1 {
         let mid = low + (high - low) / 2;
@@ -2632,7 +2640,11 @@ async fn records_at_keeps_no_room_for_a_line_no_record_there_can_use() {
     };
     // a session that has had the line: its answers keep nothing back for it
     let told = at("app/greeter.py", Some("told")).await;
-    assert!(told.markdown.ends_with(RECORDS_AT_HINT), "{}", told.markdown);
+    assert!(
+        told.markdown.ends_with(RECORDS_AT_HINT),
+        "{}",
+        told.markdown
+    );
     let without = at("a.py", Some("told")).await;
     // a session that is still owed the line, at a file where no record can be superseded
     for session in [None, Some("fresh")] {
@@ -2652,5 +2664,9 @@ async fn records_at_keeps_no_room_for_a_line_no_record_there_can_use() {
     }
     // and the line is still owed where a record can be corrected
     let later = at("app/greeter.py", Some("fresh")).await;
-    assert!(later.markdown.ends_with(RECORDS_AT_HINT), "{}", later.markdown);
+    assert!(
+        later.markdown.ends_with(RECORDS_AT_HINT),
+        "{}",
+        later.markdown
+    );
 }

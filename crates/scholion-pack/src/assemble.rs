@@ -63,7 +63,8 @@ impl RecordFacts {
             text: format!("{} {}", rec.summary, rec.body),
             may_lead: !history::is_mined(&rec.author_agent) && !foreign_intent,
             factor: record_factor(rec, task, changed),
-            foreign: rec.task_id != task.id && supersede_refusal(rec.kind, false).is_none(),
+            foreign: rec.task_id != task.id
+                && supersede_refusal(rec.kind, RecordKind::Note, false).is_none(),
         }
     }
 }

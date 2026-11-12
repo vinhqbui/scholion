@@ -604,8 +604,10 @@ async fn submit_lists_supersedes_for_its_inline_records_and_takes_it() {
             &e.app,
             "POST",
             &format!("/v1/tasks/{}/records", id(&earlier)),
-            Some(json!({"kind": "decision", "summary": summary, "agent": "claude",
-                        "anchors": [{"path": "app/util.py"}]})),
+            Some(
+                json!({"kind": "decision", "summary": summary, "agent": "claude",
+                        "anchors": [{"path": "app/util.py"}]}),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{wrong}");

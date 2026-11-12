@@ -7,11 +7,11 @@ use scholion_core::{
 use scholion_index::{CodeIndex, ScopeView};
 use serde::{Deserialize, Serialize};
 
-use crate::assemble::{Deps, code_block, excerpt, gather, record_texts};
+use crate::assemble::{Deps, code_block, excerpt, gather, record_texts, short_id};
 use crate::budget::{Section, allocate};
 use crate::bundle::{Bundle, BundleInputs, BundleRequest, ReviewInputs};
 use crate::ledger::{collapse_sent, delivered};
-use crate::render::{fit, render, skeleton_text};
+use crate::render::{claim_shown, fit, render, skeleton_text};
 use crate::tokens::estimate_tokens;
 
 /// Longest code excerpt returned by `expand`.
@@ -168,11 +168,17 @@ impl Packer {
         }
 
         let foreign = std::mem::take(&mut gathered.foreign);
-        // the line about correcting records is paid for only by a pack that may print it
+        // The line about correcting records is paid for only by a pack that may print it, by
+        // `render`'s own condition: another task's record shown as more than a back-reference.
+        // A record this session was sent in full can only be referred back to, so it keeps no
+        // room for the line. Which candidates are chosen, and at which tier, is not known yet:
+        // a record that is then left out, or shown as a back-reference though a fuller tier was
+        // left, has still kept the room (about 25 tokens that go unused). That is accepted: the
+        // cost of the line has to be known before items are allocated.
         let claims = gathered
             .items
             .iter()
-            .any(|i| i.section == Section::History && foreign.contains(&i.id));
+            .any(|i| i.section == Section::History && claim_shown(i, &foreign, None));
         let skeleton = estimate_tokens(&skeleton_text(claims), req.family);
         let alloc = allocate(
             gathered.items,
@@ -409,45 +415,57 @@ impl Packer {
             None => Default::default(),
         };
         let head = format!("**av: recorded about `{path}`** (by other tasks)");
-        let mut foot = "Full text: `av expand <id>`.".to_owned();
-        // Once per session, and counted before the records are chosen, so the answer stays
-        // within its cap.
-        let hint_due = !sent.contains_key(RECORDS_AT_HINT_ID);
-        let fixed = if hint_due {
-            format!("{head}\n{foot}\n{RECORDS_AT_HINT}")
-        } else {
-            format!("{head}\n{foot}")
+        let foot = "Full text: `av expand <id>`.";
+        let answer = |lines: &[String], hint: bool| {
+            let mut md = format!("{head}\n{}\n{foot}", lines.join("\n"));
+            if hint {
+                md.push('\n');
+                md.push_str(RECORDS_AT_HINT);
+            }
+            md
         };
-        let mut used = estimate_tokens(&fixed, AgentFamily::default());
+        // a handle (a clipped summary) does not count as sent
+        let is_sent = |id: &str| {
+            sent.get(id)
+                .is_some_and(|t| *t as usize >= Tier::Summary as usize)
+        };
+        let correctable = |rec: &scholion_core::Record| {
+            scholion_core::supersede_refusal(rec.kind, scholion_core::RecordKind::Note, false)
+                .is_none()
+        };
+        // Once per session, and counted while the records are chosen, so the answer stays
+        // within its cap. Room is kept only when a record that may be shown can be superseded: a
+        // file with nothing but review findings and handoffs gives all its room to them. When
+        // the records that can be superseded are then the ones that do not fit, the room was
+        // kept for nothing (about 20 tokens of records fewer in this answer, never over the cap).
+        let hint_due = !sent.contains_key(RECORDS_AT_HINT_ID)
+            && recs
+                .iter()
+                .any(|&r| correctable(r) && !is_sent(&short_id("rec", &r.id.0)));
         let (mut lines, mut ids) = (vec![], vec![]);
         // whether a record shown is one the reader may supersede (not a review or a handoff)
-        let mut correctable = false;
+        let mut shows_correctable = false;
         for rec in recs {
             let (id, texts) = record_texts(rec, false, false);
-            // a handle (a clipped summary) does not count as sent
-            if sent
-                .get(&id)
-                .is_some_and(|t| *t as usize >= Tier::Summary as usize)
-            {
+            if is_sent(&id) {
                 continue;
             }
-            let text = &texts[Tier::Summary as usize];
-            let cost = estimate_tokens(text, AgentFamily::default());
-            if used + cost > RECORDS_AT_TOKENS {
+            // The answer is measured whole: rows joined cost more than the sum of each alone
+            // (their line breaks), which over twenty short rows is more than a row.
+            lines.push(texts[Tier::Summary as usize].clone());
+            if estimate_tokens(&answer(&lines, hint_due), AgentFamily::default())
+                > RECORDS_AT_TOKENS
+            {
+                lines.pop();
                 break;
             }
-            used += cost;
-            lines.push(text.clone());
             ids.push(id);
-            correctable |= scholion_core::supersede_refusal(rec.kind, false).is_none();
+            shows_correctable |= correctable(rec);
         }
         if ids.is_empty() {
             return Ok(RecordsAt::default());
         }
-        let hint = hint_due && correctable;
-        if hint {
-            foot = format!("{foot}\n{RECORDS_AT_HINT}");
-        }
+        let hint = hint_due && shows_correctable;
         if let Some(s) = session {
             let mut note: Vec<(String, Tier)> =
                 ids.iter().map(|i| (i.clone(), Tier::Summary)).collect();
@@ -457,7 +475,7 @@ impl Packer {
             self.store.ledger_put(s, &note).await?;
         }
         Ok(RecordsAt {
-            markdown: format!("{head}\n{}\n{foot}", lines.join("\n")),
+            markdown: answer(&lines, hint),
             records: ids,
         })
     }

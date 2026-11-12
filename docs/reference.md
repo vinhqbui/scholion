@@ -517,22 +517,30 @@ av record --kind note --summary "os.replace overwrites on Windows too; os.rename
 ```
 
 `--supersedes` takes the `rec:…` id that a pack, the pre-read hook and `av search` print. A
-prefix of the id (6 or more hex characters) or the full id works too; a prefix two records share
-is refused. Each entry of `av record --json` may carry `"supersedes": "rec:…"`, the MCP `record`
-tool has the same `supersedes` argument, and so has the body of `POST /v1/tasks/{id}/records`
-(and each of `submit`'s inline `records`).
+prefix of the id (6 or more hex characters) or the full id works too, with or without the id's
+hyphens; a prefix two records share is refused. Each entry of `av record --json` may carry
+`"supersedes": "rec:…"`, the MCP `record` tool has the same `supersedes` argument, and so has the
+body of `POST /v1/tasks/{id}/records` (and each of `submit`'s inline `records`, in the API and in
+the MCP tool).
 
 - The old record is neither deleted nor edited. It stays in its task's records
   (`GET /v1/tasks/{id}/records`, with `superseded_by` set) and is no longer shown by packs, the
   pre-read hook or search, which show the new record instead.
 - A correction given no anchor takes the anchors of the record it corrects, so it is shown
   wherever the wrong one was. Given anchors of its own, it keeps those.
-- Any task of the repo may correct a decision, attempt or note, its own included. Refused: an
-  id no record has (`404`); a malformed or ambiguous one (`400`); a record of another repo
-  (`422`); a `review` or `validation` record (`422`: a finding or a failed check is not hidden by
-  writing a note); another task's `intent` or `handoff` (`422`; a task may restate its own); and
-  a record that is already superseded (`409`, naming the live record at the end of the chain,
-  which is the one to correct).
+- Any task of the repo may correct a decision, attempt or note, its own included, and the
+  correction is itself a decision, an attempt or a note: those are what packs and the pre-read
+  hook show in the old record's place. A record of another kind is refused (`422`, saying which
+  kinds may correct), since the claim would vanish instead of being corrected.
+- Also refused: an id no record has (`404`); a malformed or ambiguous one (`400`); a record of
+  another repo (`422`); a `review` or `validation` record (`422`: a finding or a failed check is
+  not hidden by writing a note); another task's `intent` or `handoff` (`422`; a task may restate
+  its own, with a record of the same kind only); and a record that is already superseded (`409`,
+  naming the live record at the end of the chain, which is the one to correct; a chain longer
+  than 64 corrections is not followed to its end, and the answer then names none).
+- The store enforces the same rules inside the insert, with the old record's row locked: when
+  two tasks supersede one record at the same moment, one is written and the other gets the `409`.
+  A record has at most one successor.
 - The feed gets a `record:superseded` event (`{old, new, by}`).
 
 Agents are told. A pack whose *Decisions & dead ends* section shows another task's decision,

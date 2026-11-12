@@ -88,10 +88,11 @@ fn tools() -> Value {
         "properties": {"path": {"type": "string"}, "symbol": {"type": "string"}}}});
     // `submit` says its records take the same fields as `record`, which describes them: the
     // descriptions are not repeated here, since every byte of this list is sent on every turn
+    // (nor is one given for `records` itself: the tool's description says what they are for)
     let record_item = json!({"type": "object", "required": ["kind", "summary"], "properties": {
         "kind": {"type": "string", "enum": ["intent", "decision", "attempt", "note"]},
         "summary": {"type": "string"}, "body": {"type": "string"}, "anchors": anchors,
-        "receipt": {"type": "string"}}});
+        "receipt": {"type": "string"}, "supersedes": {"type": "string"}}});
     json!([
         {"name": "start_task", "description": "Start a task: creates its isolated workspace and returns the workspace path and a first context pack. Omit title and goal for your next job: a review or merge of others' work, a handoff, else a backlog task that fits you. wait: seconds to wait for one.",
          "inputSchema": {"type": "object", "properties": {
@@ -137,7 +138,7 @@ fn tools() -> Value {
             "task_id": {"type": "string"}, "budget": {"type": "integer"}}}},
         {"name": "submit", "description": "Send the task to review; checkpoints for you. Needs changes and a recorded decision, attempt or note. Pass the last ones as `records` (same fields as `record`) to record and submit in one call; if any is invalid nothing is written and the task stays open.",
          "inputSchema": {"type": "object", "properties": {
-            "records": {"type": "array", "description": "Records to write before submitting.", "items": record_item},
+            "records": {"type": "array", "items": record_item},
             "task_id": task_id}}},
         {"name": "review_task", "description": "The review bundle of a task: tests at its head, risks, a conventions checklist, changes and records.",
          "inputSchema": {"type": "object", "required": ["task_id"], "properties": {
