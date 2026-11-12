@@ -3807,7 +3807,7 @@ async fn only_a_decision_an_attempt_or_a_note_corrects_a_record() {
         "nothing written"
     );
     let (_, task) = call(&e.app, "GET", &format!("/v1/tasks/{}", id(&b)), None).await;
-    assert_eq!(task["status"], "open", "{task}");
+    assert_eq!(task["task"]["status"], "open", "{task}");
 
     // each of the three corrects each of the three
     for (old_kind, kind) in [
