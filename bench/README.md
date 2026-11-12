@@ -203,8 +203,10 @@ user and takes the working copy back (root's, no permission left for group or ot
 session directory and the daemon's directory of that repo closed). One user serves every
 session, so this is what keeps session N from reading session N−1, with or without
 `--keep-work`. The hidden tests are then written as new files: a symlink the agent left on the
-way is removed, not followed. The hooks count in the agent's home; the harness copies the
-count to `<session>/hook-count` afterwards. `setup_cmd` and `verify_cmd` run as before, as the
+way is removed, not followed. The hooks write in the agent's home (their count, and with
+`--jit-hooks` what the pre-read hook told the agent); the harness copies both to
+`<session>/hook-count` and `<session>/pre-read.out` afterwards, as files of its own. The agent
+could write to them during the session, so they are its account, not the harness's. `setup_cmd` and `verify_cmd` run as before, as the
 harness's user.
 
 **Preflight.** Before the first session, with no model, the harness tries as that user: each
