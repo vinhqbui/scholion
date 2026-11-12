@@ -13,7 +13,7 @@
 //! `verify_cmd`, which runs what the agent wrote as the harness's user.
 
 use std::io::Write as _;
-use std::os::unix::fs::{MetadataExt, PermissionsExt, lchown};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, lchown};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -109,6 +109,18 @@ pub fn private_dir(path: &Path) -> Result<()> {
 pub fn private_file(path: &Path) -> Result<()> {
     std::fs::write(path, b"").map_err(|e| io_err(path, e))?;
     set_mode(path, 0o600)
+}
+
+/// Opens a file with `options` so that only the harness can read it before anything is written:
+/// a new file is made mode 600, an existing one is set to 600 first.
+pub fn open_private(mut options: std::fs::OpenOptions, path: &Path) -> Result<std::fs::File> {
+    let file = options
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| io_err(path, e))?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| io_err(path, e))?;
+    Ok(file)
 }
 
 /// Every entry under `path` becomes `uid:gid`'s. Symlinks are changed themselves, never
@@ -487,6 +499,53 @@ fn find_copies(
     }
 }
 
+/// What the preflight says of another run's directory under `runs/`.
+const EARLIER_RUN: &str = "an earlier run's sessions";
+
+/// What the preflight made and changed, put back when it refuses, so a refused run leaves
+/// nothing a later preflight would refuse on (a run directory the agent user may enter).
+#[derive(Default)]
+struct Undo {
+    /// Directories that were not there.
+    made: Vec<PathBuf>,
+    /// Directories that were there, with their modes.
+    modes: Vec<(PathBuf, u32)>,
+}
+
+impl Undo {
+    /// Notes the directories of the absolute `path`, itself included, that are not there yet.
+    fn missing(&mut self, path: &Path) {
+        for dir in path.ancestors() {
+            if dir.as_os_str().is_empty() || std::fs::symlink_metadata(dir).is_ok() {
+                break;
+            }
+            if !self.made.iter().any(|d| d == dir) {
+                self.made.push(dir.to_path_buf());
+            }
+        }
+    }
+
+    /// Notes the mode of `path`, if it is there.
+    fn mode(&mut self, path: &Path) {
+        if let Ok(m) = std::fs::metadata(path) {
+            self.modes.push((path.to_path_buf(), m.mode() & 0o7777));
+        }
+    }
+
+    /// The modes back, and the directories it made removed, deepest first, each only while it is
+    /// empty (`remove_dir` refuses one that is not): what anything else put there stays.
+    fn put_back(mut self) {
+        for (path, mode) in self.modes.iter().rev() {
+            let _ = set_mode(path, *mode);
+        }
+        self.made
+            .sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+        for dir in &self.made {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
 /// What the preflight says of the agent user's home.
 const HOME_WHAT: &str = "that user's home in the password database: what a session leaves there, \
                          a later one finds";
@@ -553,7 +612,8 @@ fn failing<'a>(
 ///
 /// It makes the harness's own directories as they must be (`runs/` and the run's directory:
 /// entered, never listed; the import dir and `out`, if missing: root's alone) and changes
-/// nothing else.
+/// nothing else. When it refuses it puts them back: the directories it made are removed while
+/// empty, and those that were there get their modes back.
 pub fn preflight(
     specs: &[TaskSpec],
     arms: &[Arm],
@@ -564,6 +624,23 @@ pub fn preflight(
     let Some(user) = &cfg.agent_user else {
         return Ok(());
     };
+    let mut undo = Undo::default();
+    let checked = check(user, specs, arms, cfg, run_id, out, &mut undo);
+    if checked.is_err() {
+        undo.put_back();
+    }
+    checked
+}
+
+fn check(
+    user: &AgentUser,
+    specs: &[TaskSpec],
+    arms: &[Arm],
+    cfg: &RunConfig,
+    run_id: &str,
+    out: &Path,
+    undo: &mut Undo,
+) -> Result<()> {
     let flag = format!("--agent-user {}", user.name);
     let me = harness_uid()?;
     if me != 0 {
@@ -577,9 +654,10 @@ pub fn preflight(
     let runs = work_root.join("runs");
     let run_dir = runs.join(run_id);
     // Can the user get there at all? Asked of the directories that exist, before anything is
-    // made or changed under the work root.
+    // made or changed under the work root. Not of the run's own directory, which a run closes
+    // when it ends and opens below when it is resumed.
     let mut way: Vec<Check> = vec![];
-    let mut up: Vec<&Path> = run_dir.ancestors().filter(|d| d.is_dir()).collect();
+    let mut up: Vec<&Path> = runs.ancestors().filter(|d| d.is_dir()).collect();
     up.reverse();
     for dir in up {
         add(&mut way, Access::Enter, dir, "");
@@ -595,6 +673,10 @@ pub fn preflight(
             work_root.display(),
             at.path.display()
         ));
+    }
+    undo.missing(&run_dir);
+    for d in [&runs, &run_dir] {
+        undo.mode(d);
     }
     std::fs::create_dir_all(&run_dir).map_err(|e| io_err(&run_dir, e))?;
     for d in [&runs, &run_dir] {
@@ -612,10 +694,12 @@ pub fn preflight(
         (_, false) => None,
     };
     if av {
+        undo.missing(&absolute(&cfg.import_dir)?);
         private_dir(&cfg.import_dir)?;
     }
     // the results directory is the harness's alone when the harness makes it
     let out = absolute(out)?;
+    undo.missing(&out);
     private_dir(&out)?;
     let mut path: Vec<PathBuf> = vec![];
     for dir in specs.iter().flat_map(|s| &s.path_prepend) {
@@ -686,7 +770,7 @@ pub fn preflight(
     }
     add(&mut deny, Access::List, &runs, "the runs root");
     for other in entries(&runs).iter().filter(|p| **p != run_dir) {
-        add(&mut deny, Access::Enter, other, "an earlier run's sessions");
+        add(&mut deny, Access::Enter, other, EARLIER_RUN);
     }
     add(&mut deny, Access::List, &run_dir, "the run's directory");
     for session in entries(&run_dir) {
@@ -789,6 +873,21 @@ pub fn preflight(
                  {home} && chmod 700 {home}`).",
                 user.name,
                 home = home.display()
+            ));
+        }
+        let earlier: Vec<String> = open
+            .iter()
+            .filter(|c| c.what == EARLIER_RUN)
+            .map(|c| format!("  chmod 700 {}", c.path.display()))
+            .collect();
+        if !earlier.is_empty() {
+            msg.push_str(&format!(
+                "\nAn earlier run's directory under {} is open to that user (a run keeps its own \
+                 open only while it runs; one left open was left by a run that was killed or by an \
+                 older harness). Once no run is using it, close it, or remove it if it is empty:\n{}\nThe harness does not do this \
+                 itself: another run may be using it, and its sessions need to enter it.",
+                runs.display(),
+                earlier.join("\n")
             ));
         }
     }

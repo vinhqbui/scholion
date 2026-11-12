@@ -223,6 +223,13 @@ read one: a copy someone made while looking into a run is a leak like any other.
 copies only, and prints a line when it stopped at the entry limit. It also checks what a
 session needs: the run directory, the agent CLI, `av`, and each `path_prepend` directory.
 
+The run's directory, `<work-root>/runs/<run id>`, is open for passage (mode 711) only while the
+run goes: when the run ends, or stops on an error, the harness sets it to 700, and a resumed run
+opens it again for its own sessions. A preflight that refuses removes the directories it made
+(the run's directory, `--out`, the work root; only while empty) and gives those that were there
+their modes back. Another run's directory that is still open is refused with the `chmod 700`
+that closes it; the harness does not close it itself, since that run may still be going.
+
 Results are checked too, because they hold what a `cold` or `baseline` session must not see:
 `first-packs --out DIR` writes packs with the tasks' lessons to `DIR/packs/`, and `run --out`
 the rows of earlier sessions. A `--out` that does not exist is made root's alone. One that
