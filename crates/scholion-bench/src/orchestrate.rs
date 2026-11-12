@@ -155,15 +155,38 @@ pub fn plan_text(
         "budget: ${:.2}; sessions stop launching once spent + one session's cap would exceed it",
         args.budget_usd
     );
+    if let Some(u) = &cfg.agent_user {
+        let _ = writeln!(
+            t,
+            "agent isolation: the agent runs as user {} (uid {}); what that user can read is \
+             checked before the first session",
+            u.name, u.uid
+        );
+    }
     t
 }
 
-fn append_row(path: &Path, row: &Row) -> Result<()> {
+/// With an agent user (`private`), a results file is the harness's alone whatever the mode of
+/// the directory it is in: rows and reports say what earlier sessions did.
+fn close_result(path: &Path, private: bool) -> Result<()> {
+    if private {
+        crate::isolate::set_mode(path, 0o600)?;
+    }
+    Ok(())
+}
+
+fn write_result(path: &Path, bytes: impl AsRef<[u8]>, private: bool) -> Result<()> {
+    std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+    close_result(path, private)
+}
+
+fn append_row(path: &Path, row: &Row, private: bool) -> Result<()> {
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
+    close_result(path, private)?;
     writeln!(f, "{}", serde_json::to_string(row).expect("json")).map_err(|e| e.to_string())
 }
 
@@ -194,6 +217,27 @@ fn check_noise_level(out: &Path, meta: &Meta) -> Result<()> {
     ))
 }
 
+/// Rows do not say whether their agent was isolated (`--agent-user`), so a results directory
+/// holds one setting: a run that would resume into rows made under another is refused. Results
+/// from before the option count as not isolated.
+fn check_isolation(out: &Path, meta: &Meta) -> Result<()> {
+    let Ok(bytes) = std::fs::read(out.join("meta.json")) else {
+        return Ok(());
+    };
+    let Ok(old) = serde_json::from_slice::<Meta>(&bytes) else {
+        return Ok(());
+    };
+    if old.isolation() == meta.isolation() || !out.join("rows.jsonl").exists() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} holds results with agent isolation `{}`, this run is `{}`: use one --out per setting",
+        out.display(),
+        old.isolation(),
+        meta.isolation()
+    ))
+}
+
 /// The whole run. Sessions already in `out/rows.jsonl` (an interrupted run) are not repeated and
 /// their cost counts toward the budget.
 pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunReport> {
@@ -213,6 +257,19 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
         let url = cfg.av_url.as_deref().ok_or("the av arms need --av-url")?;
         Daemon::new(url, cfg.av_token.as_deref()).preflight()?;
     }
+    let run_id = args
+        .out
+        .file_name()
+        .map(|n| {
+            n.to_string_lossy()
+                .replace(|c: char| !c.is_ascii_alphanumeric(), "")
+        })
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "run".into())
+        .to_lowercase();
+    // with --agent-user: nothing is launched while that user can read what it must not
+    crate::isolate::preflight(specs, &args.arms, cfg, &run_id, &args.out)?;
+    let private = cfg.agent_user.is_some();
     std::fs::create_dir_all(&args.out).map_err(|e| format!("{}: {e}", args.out.display()))?;
     let rows_path = args.out.join("rows.jsonl");
     let mut rows = if rows_path.exists() {
@@ -227,25 +284,25 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
             .iter()
             .map(|r| serde_json::to_string(r).expect("json") + "\n")
             .collect();
-        std::fs::write(&rows_path, kept).map_err(|e| e.to_string())?;
+        write_result(&rows_path, kept, private)?;
     }
     let mut spent: f64 = rows.iter().map(|r| r.cost_usd).sum();
-    let run_id = args
-        .out
-        .file_name()
-        .map(|n| {
-            n.to_string_lossy()
-                .replace(|c: char| !c.is_ascii_alphanumeric(), "")
-        })
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "run".into())
-        .to_lowercase();
-    check_noise_level(&args.out, &args.meta)?;
-    std::fs::write(
-        args.out.join("meta.json"),
-        serde_json::to_vec_pretty(&args.meta).expect("json"),
-    )
-    .map_err(|e| e.to_string())?;
+    // from the configuration, not the caller: a result must not be labelled by hand
+    let meta = Meta {
+        agent_isolation: Some(
+            cfg.agent_user
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), |u| u.name.clone()),
+        ),
+        ..args.meta.clone()
+    };
+    check_noise_level(&args.out, &meta)?;
+    check_isolation(&args.out, &meta)?;
+    write_result(
+        &args.out.join("meta.json"),
+        serde_json::to_vec_pretty(&meta).expect("json"),
+        private,
+    )?;
     let mut over_budget = false;
     for p in &sessions {
         let spec = &specs[p.task];
@@ -303,11 +360,14 @@ pub fn run(specs: &[TaskSpec], args: &RunArgs, cfg: &RunConfig) -> Result<RunRep
                 memory_tokens: o.memory_tokens,
             }
         };
-        append_row(&rows_path, &row)?;
+        append_row(&rows_path, &row, private)?;
         rows.push(row);
     }
-    std::fs::write(args.out.join("report.md"), render_report(&rows, &args.meta))
-        .map_err(|e| e.to_string())?;
+    write_result(
+        &args.out.join("report.md"),
+        render_report(&rows, &meta),
+        private,
+    )?;
     Ok(RunReport {
         rows,
         plan_text: text,

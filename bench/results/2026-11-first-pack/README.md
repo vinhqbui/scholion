@@ -280,9 +280,9 @@ no panic, no nondeterminism reaching a pack and no disagreement between the two 
 implementations, and its spot-checks of two rows of the tables above matched the files. It found
 these limits, which the replays could not show because no relay record has a changed anchor:
 
-- **A goal lead whose anchored code has changed since it was recorded does not lead.** A lead
-  scores `(GOAL_LEAD_SCORE + match) * record_factor`. For a record whose anchor changed,
-  `record_factor` is `CHANGED_FACTOR` (0.7), so the lead scores about 1.42, below an unchanged
+- **A goal lead whose anchored code has changed since it was recorded may not come first.** It
+  keeps the reason `goal-lead`, but a lead scores `(GOAL_LEAD_SCORE + match) * record_factor`.
+  For a record whose anchor changed, `record_factor` is `CHANGED_FACTOR` (0.7), so the lead scores about 1.42, below an unchanged
   record anchored on a symbol the goal names (up to 2.0; 1.58 to 1.70 in the N = 500 receipts).
   "Lead with a score above any anchored record's" is therefore true only for records whose
   anchors are unchanged, which is every record of this benchmark. Whether a possibly stale record
