@@ -235,6 +235,49 @@ async fn superseded_record_hidden_from_anchor_query_but_still_in_task_records() 
 }
 
 #[tokio::test]
+async fn a_record_cannot_supersede_a_record_of_another_repo() {
+    let (_db, s) = store().await;
+    let ours = s.create_task(new_task("Ours")).await.unwrap();
+    let mut elsewhere = new_task("Theirs");
+    elsewhere.repo = "other".into();
+    let theirs = s.create_task(elsewhere).await.unwrap();
+    let old = s
+        .add_record(rec(
+            theirs.id,
+            RecordKind::Decision,
+            "use md5",
+            vec![anchor("a.py", None)],
+        ))
+        .await
+        .unwrap();
+    let mut newer = rec(ours.id, RecordKind::Decision, "use argon2", vec![]);
+    newer.supersedes = Some(old.id);
+    let err = s.add_record(newer).await.unwrap_err();
+    assert!(matches!(err, AvError::IllegalState(_)), "{err}");
+    // nothing was written, and the other repo's record still shows
+    assert_eq!(s.task_records(ours.id).await.unwrap().len(), 0);
+    assert_eq!(s.get_record(old.id).await.unwrap().superseded_by, None);
+    assert_eq!(
+        s.records_anchored_to("other", &["a.py".into()], &[])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn superseding_an_unknown_record_is_not_found() {
+    let (_db, s) = store().await;
+    let t = s.create_task(new_task("T")).await.unwrap();
+    let mut newer = rec(t.id, RecordKind::Decision, "use argon2", vec![]);
+    newer.supersedes = Some(RecordId(uuid::Uuid::new_v4()));
+    let err = s.add_record(newer).await.unwrap_err();
+    assert!(matches!(err, AvError::NotFound(_)), "{err}");
+    assert_eq!(s.task_records(t.id).await.unwrap().len(), 0);
+}
+
+#[tokio::test]
 async fn summary_201_chars_rejected_by_store() {
     let (_db, s) = store().await;
     let t = s.create_task(new_task("T")).await.unwrap();

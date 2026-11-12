@@ -278,6 +278,98 @@ async fn start_task_then_get_context_roundtrip_over_mcp() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_record_tool_corrects_a_record_by_the_handle_a_pack_prints() {
+    let e = env().await;
+    // an earlier task recorded something wrong about a file
+    let earlier = start_task(&e, "Earlier work").await;
+    let (status, wrong) = call(
+        &e.app,
+        "POST",
+        &format!("/v1/tasks/{}/records", id(&earlier)),
+        Some(
+            json!({"kind": "decision", "summary": "names stay lower case", "agent": "claude",
+                    "anchors": [{"path": "app/util.py"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{wrong}");
+    let handle = format!("rec:{}", &wrong["id"].as_str().unwrap().replace('-', "")[..8]);
+
+    let s = connect(&e, "grok").await;
+    let list = send(
+        &e,
+        Some(&s),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let record = list.body["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "record")
+        .unwrap();
+    let property = &record["inputSchema"]["properties"]["supersedes"];
+    assert_eq!(property["type"], "string", "{record}");
+    assert!(
+        property["description"].as_str().unwrap().contains("rec:"),
+        "says what to pass: {record}"
+    );
+
+    tool(
+        &e,
+        &s,
+        "start_task",
+        json!({"repo": "demo", "title": "Later work", "goal": "Make hello louder"}),
+    )
+    .await;
+    let said = text(
+        &tool(
+            &e,
+            &s,
+            "record",
+            json!({"kind": "note", "summary": "names are title case", "supersedes": handle}),
+        )
+        .await,
+    );
+    assert!(said.starts_with("recorded rec:"), "{said}");
+    assert!(
+        said.ends_with(&format!("(note), supersedes {handle}")),
+        "names what was superseded: {said}"
+    );
+    let (_, records) = call(
+        &e.app,
+        "GET",
+        &format!("/v1/tasks/{}/records", id(&earlier)),
+        None,
+    )
+    .await;
+    let old = &records["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == wrong["id"])
+        .unwrap();
+    assert!(old["superseded_by"].is_string(), "{old}");
+
+    // a refusal is a tool error that says why
+    let r = tool(
+        &e,
+        &s,
+        "record",
+        json!({"kind": "note", "summary": "again", "supersedes": handle}),
+    )
+    .await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(
+        r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("already superseded"),
+        "{r}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn second_get_context_in_same_session_marks_items_sent_earlier() {
     let e = env().await;
     let s = connect(&e, "claude-code").await;

@@ -2264,3 +2264,189 @@ async fn a_superseded_record_hit_takes_no_place_under_the_record_hit_cap() {
         "the superseded hit took the place of the last record hit:\n{md}"
     );
 }
+
+// ---- records are claims that can be corrected ----
+
+/// What a pack prints under its records heading when it shows another task's record.
+const CORRECT_HINT: &str = "Claims by earlier agents: check against the code; correct wrong ones \
+                            with `av record --supersedes rec:…`";
+/// What `records_at` (the pre-read hook) ends with, once per session.
+const RECORDS_AT_HINT: &str =
+    "Check them against the code; correct wrong ones with `av record --supersedes <id>`.";
+
+/// A record of another task, anchored to `path`.
+async fn earlier_record(fx: &Fx, kind: RecordKind, summary: &str, path: &str) -> Record {
+    let other = fx
+        .store
+        .create_task(new_task("Earlier work"))
+        .await
+        .unwrap();
+    fx.store
+        .add_record(record(other.id, kind, summary, "", vec![anchor(path, None)]))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_pack_that_shows_another_tasks_record_says_a_wrong_one_can_be_corrected() {
+    let fx = fixture().await;
+    earlier_record(
+        &fx,
+        RecordKind::Decision,
+        "hello never ends in a mark",
+        "app/greeter.py",
+    )
+    .await;
+    let pack = fx.packer.build(req(&fx.task, 2500, "claims")).await.unwrap();
+    let md = &pack.markdown;
+    let history: Vec<&str> = section(md, "## Decisions & dead ends").lines().collect();
+    assert_eq!(history[1], CORRECT_HINT, "right under the heading:\n{md}");
+    assert!(history[2].starts_with("- rec:"), "{md}");
+    assert_eq!(md.matches(CORRECT_HINT).count(), 1, "{md}");
+    assert!(
+        estimate_tokens(CORRECT_HINT, FAM) <= 25,
+        "the line costs {} tokens",
+        estimate_tokens(CORRECT_HINT, FAM)
+    );
+    assert_eq!(pack.tokens, estimate_tokens(md, FAM), "{md}");
+
+    // a later pack of the session only refers back to the record: the line is not repeated
+    let again = fx.packer.build(req(&fx.task, 2500, "claims")).await.unwrap();
+    assert!(again.markdown.contains("(sent earlier)"), "{}", again.markdown);
+    assert!(!again.markdown.contains(CORRECT_HINT), "{}", again.markdown);
+}
+
+#[tokio::test]
+async fn a_pack_without_a_correctable_record_of_another_task_does_not_say_it() {
+    let fx = fixture().await;
+    // the task's own record
+    fx.store
+        .add_record(record(
+            fx.task.id,
+            RecordKind::Attempt,
+            "tried memoizing hello; broke tests",
+            "",
+            vec![anchor("app/greeter.py", Some("Greeter.hello"))],
+        ))
+        .await
+        .unwrap();
+    // another task's review finding: shown, but no one supersedes a review
+    earlier_record(
+        &fx,
+        RecordKind::Review,
+        "hello must not shout",
+        "app/greeter.py",
+    )
+    .await;
+    let pack = fx.packer.build(req(&fx.task, 2500, "own")).await.unwrap();
+    let md = &pack.markdown;
+    assert!(md.contains("tried memoizing hello"), "{md}");
+    assert!(md.contains("hello must not shout"), "{md}");
+    assert!(!md.contains("--supersedes"), "{md}");
+}
+
+#[tokio::test]
+async fn the_line_about_correcting_records_is_counted_inside_the_budget() {
+    let fx = fixture().await;
+    for i in 0..6 {
+        earlier_record(
+            &fx,
+            RecordKind::Decision,
+            &format!("hello never ends in a mark, reason {i}"),
+            "app/greeter.py",
+        )
+        .await;
+    }
+    let mut said = 0;
+    for budget in [90, 120, 150, 200, 260, 330, 400, 600, 800] {
+        let pack = fx
+            .packer
+            .build(req(&fx.task, budget, &format!("budget-{budget}")))
+            .await
+            .unwrap();
+        let md = &pack.markdown;
+        assert!(pack.tokens <= budget, "{} > {budget}:\n{md}", pack.tokens);
+        assert_eq!(pack.tokens, estimate_tokens(md, FAM), "{md}");
+        if md.contains(CORRECT_HINT) {
+            said += 1;
+            assert!(md.contains("\n- rec:"), "the line without a record:\n{md}");
+        } else {
+            assert!(
+                !section_or_empty(md, "## Decisions & dead ends").contains("- rec:"),
+                "records of another task without the line:\n{md}"
+            );
+        }
+    }
+    assert!(said >= 3, "only {said} of the packs had room for records");
+}
+
+fn section_or_empty<'a>(md: &'a str, heading: &str) -> &'a str {
+    if md.contains(heading) {
+        section(md, heading)
+    } else {
+        ""
+    }
+}
+
+#[tokio::test]
+async fn records_at_says_once_per_session_that_a_wrong_record_can_be_corrected() {
+    let fx = fixture().await;
+    earlier_record(
+        &fx,
+        RecordKind::Decision,
+        "hello never ends in a mark",
+        "app/greeter.py",
+    )
+    .await;
+    earlier_record(
+        &fx,
+        RecordKind::Note,
+        "format_name is shared with goodbye",
+        "app/util.py",
+    )
+    .await;
+    earlier_record(
+        &fx,
+        RecordKind::Review,
+        "the readme must name the flag",
+        "README.md",
+    )
+    .await;
+    let at = |path: &'static str, session: Option<&'static str>| {
+        let packer = &fx.packer;
+        let task = fx.task.id;
+        async move { packer.records_at(task, path, session).await.unwrap() }
+    };
+
+    let first = at("app/greeter.py", Some("jit")).await;
+    assert!(
+        first.markdown.ends_with(&format!(
+            "Full text: `av expand <id>`.\n{RECORDS_AT_HINT}"
+        )),
+        "{}",
+        first.markdown
+    );
+    assert!(
+        estimate_tokens(&first.markdown, AgentFamily::default())
+            <= scholion_pack::RECORDS_AT_TOKENS
+    );
+    // another file in the same session: its records, and not the line again
+    let second = at("app/util.py", Some("jit")).await;
+    assert!(second.markdown.contains("shared with goodbye"), "{}", second.markdown);
+    assert!(!second.markdown.contains("--supersedes"), "{}", second.markdown);
+    assert!(second.markdown.ends_with("Full text: `av expand <id>`."));
+    // a new session is told once more
+    let fresh = at("app/util.py", Some("jit-2")).await;
+    assert!(fresh.markdown.ends_with(RECORDS_AT_HINT), "{}", fresh.markdown);
+    // without a session nothing is remembered, so every answer says it
+    for _ in 0..2 {
+        let unnamed = at("app/greeter.py", None).await;
+        assert!(unnamed.markdown.ends_with(RECORDS_AT_HINT), "{}", unnamed.markdown);
+    }
+    // a review finding is no one's to supersede: not said, and still owed to the session
+    let review = at("README.md", Some("jit-3")).await;
+    assert!(review.markdown.contains("must name the flag"), "{}", review.markdown);
+    assert!(!review.markdown.contains("--supersedes"), "{}", review.markdown);
+    let later = at("app/greeter.py", Some("jit-3")).await;
+    assert!(later.markdown.ends_with(RECORDS_AT_HINT), "{}", later.markdown);
+}
