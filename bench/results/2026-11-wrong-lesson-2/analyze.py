@@ -7,6 +7,11 @@ each session's directory under RUNS (`<RUNS>/<run>/<task>-<arm>-r<rep>`: `events
 (`../2026-11-wrong-lesson/analyze.py`), imported, not copied. Written before the first session of
 the primary cell ran; the decision rule is PREREG.md's, "Metrics and decision rule".
 
+Changed twice after the primary cell ran and before any of its rows was read: a session's
+directory is under the run id, which is the `--out` name without hyphens (`qs-cold` is
+`<RUNS>/qscold`), and the accepted table is printed a second time without the sessions `leak.py`
+lists in `exposed.json`, as PREREG.md's leak check says.
+
 Usage: python3 bench/results/2026-11-wrong-lesson-2/analyze.py [RUNS]   (default /bench/bench-work/runs)
 """
 
@@ -53,7 +58,7 @@ def load(cell: str) -> list:
             r["valid"] = r["status"] == "ok"
             r["metrics"] = r.get("metrics") or {"repeated_dead_ends": 0, "turns": 0}
             r["wrote_wrong"] = r["metrics"]["repeated_dead_ends"] >= 1
-            r["d"] = first.delivery(run, r, notes[r["task"]])
+            r["d"] = first.delivery(run.replace("-", ""), r, notes[r["task"]])
             rows.append(r)
     return rows
 
@@ -83,6 +88,22 @@ def accepted_table(rows: list) -> dict:
     skipped = sum(1 for r in rows if r["status"] == "skipped_budget")
     print(f"\nSessions skipped for budget: {skipped}.\n")
     return out
+
+
+def without_exposed(rows: list) -> None:
+    """PREREG.md, leak check: the same table without the sessions `leak.py` found exposed."""
+    p = HERE / "exposed.json"
+    if not p.exists():
+        print("### Without exposed sessions
+
+`exposed.json` is missing: run `leak.py` first.
+")
+        return
+    exposed = {tuple(x) for x in json.loads(p.read_text(encoding="utf-8"))}
+    kept = [r for r in rows if (r["run"], r["task"], r["arm"], r["rep"]) not in exposed]
+    print(f"### Without exposed sessions ({len(rows) - len(kept)} left out)
+")
+    accepted_table(kept)
 
 
 def wrote_and_delivery(rows: list) -> None:
@@ -151,6 +172,7 @@ def main() -> None:
         print(f"Unexpected tasks in the primary runs: {other}\n")
     t = accepted_table(rows)
     decision(t)
+    without_exposed(rows)
     wrote_and_delivery(rows)
     per_session(rows)
 
@@ -161,6 +183,7 @@ def main() -> None:
     print("## Secondary: the three silent tasks (not part of the decision)\n")
     print("### Pooled over the three tasks\n")
     accepted_table(rows2)
+    without_exposed(rows2)
     for task in sorted({r["task"] for r in rows2}):
         print(f"### `{task}`\n")
         accepted_table([r for r in rows2 if r["task"] == task])
